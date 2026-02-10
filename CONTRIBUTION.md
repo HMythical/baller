@@ -86,7 +86,7 @@ No. I only allow languages I understand under the hood, or I can easily learn ho
 
 Until contributions start to pile in in **different** languages, the rust files will have configuration files to enforce certain formatting standards.
 
-All naming conventions will be listed here for youre reference. It will also be in the Baller Docs (when I get around to creating them):
+SOME naming conventions will be listed here for youre reference. It will also be in the Baller Docs (when I get around to creating them) as well as an '.editorconfig' file when I make that:
 
 - Non-OS specific Structs must all be PascalCase, with context included. [Context][Purpose][TypeSuffix]
 - All variables must have explicit declaration
@@ -108,21 +108,88 @@ All naming conventions will be listed here for youre reference. It will also be 
     Common(CommonError),
 
   }
-- 
+
+  The rest will be present in the sources previously mentioned
+
+### Setting your Environment Up
+
+- Git Specific information
+    1. Create a fork of HMythical/baller under your Github Account
+    2. Clone YOUR fork locally
+    3. Open a command line and navigate to that directory
+    4. Add the upstream fork - ' git remote add upstream git@github.com:HMythical/baller.git'
+    5. Run ' git fetch upstream
+    6. Ensure you have your user name and your email set up correctly to atribute your contributions
+    7. Create a branch named specifically to what you are contributing
+    8. Do your work for the specifc branch
+    9. When you are done and want to commit, reference the [**Commit Survival Guide**](#The-Survival-Guide-for-Commits-(I'm-"stealing"-chocolatey's-framework-for-commits...-please-dont-sue-me) )
 
 ## Documenting,Debugging and Testing
+
+
+
+
 ### How should I document my code?
+Please make sure you document the code you write. Leave meaningful and useful comments, inline comments can be used to explain certain variables incase other contributors decide to join in.
+
+Also document how you tested your changes, what the outputs were, what you expected, and the constraints you had. Documented tests are one of the most important that need to be inside your commit message.
+
+Essentially, write down everything you change.
+
 ### How should I test it?
+
+Honestly, since the project has just started, there is no concrete way to test what you created. For now, whatever changes you make, put them in a separate project and run them using your IDE's debug features. I would also make sure you know exactly what your change is supposed to do so you can write the tests separate. Make sure you test for normal cases and edge cases as well.
 
 ## So... about my IDE... which one should I use?!
 
-## The Survival Guide for Commits (I'm "stealing" chocolatey's framework for commits... please dont sue me)
+I have no preference for what IDE you should use. Chocolatey uses Visual Studio 2019+, but I have no clue why they chose that one specifically. I would reccomend a decent JetBrains IDE if you are working on the Linux environment, if not, you can just use NeoVim or some other IDE. If you're working in the Windows environment... honestly have no clue. That'll be hashed out eventually.
+
+## The Survival Guide for Commits (Directly from Chocolatey's guide on commit messages.)
+
+.... Go read [this](https://github.com/chocolatey/choco/edit/develop/CONTRIBUTING.md#prepare-commits)
+
+Chocolatey has an insanely good guide on commits. So use theirs. Thats it. Only difference is that commit messages for baller should (and will be) way longer. It should be a detailed message.
+
+Example of a commit message that I'd be okay with:
+
+```
+(#7) Refactor Libraries in /linux/src/lib.rs and Entry-Point Logic
+
+Previous versions of the entry-point logic in main.rs work for certain
+windows and linux kernels. It does not work on Debian 11 and Windows
+10 due to the absenceof key OS system calls and other nessecary APIs
+within both operating systems. Additionally, certain libraries inside
+of the linux environment will update to accomodate for older versions
+of the two operating systems.
+
+
+Documentation & Tests:
+
+[Insert Documentation here]
+
+[Insert More Documentation here]
+
+[Insert tests here]
+
+If this change does not go through, key systems such as the
+DependencyManager will fail, leading to unsafe execution and possible
+memory corruption.
+
+```
+
 
 ### The Pull Request
 
+Generally, just follow what Chocolatey does [here](https://github.com/chocolatey/choco/edit/develop/CONTRIBUTING.md#submit-pull-request-pr)
+
 ### Feedback?
 
+If your commit message and Pull Request are genuinely unreadable and I cant understand it, then I'll send it back and have you explain more clearly. The key is that you explain what you added so I/Other contributors (You see what I did there?) can add onto what you contributed and build more efficiently.
+
 ## I like how Chocolatey does "x" thing... Can we "implement" it like they do?
+No. Dont copy-paste code. If you contributed to Chocolatey and now you're contributing here... Hi, Im a big fan, would love to have your contributions... But if you just copy paste their code here. Absolutely not. 
+
+Additionally, if you copy-paste code from any other repo without their permission, I am both legally, and morally obligated to report you to them directly. So please dont.
 
 
 
@@ -136,4 +203,5 @@ This contributions file is definetly going to change as Baller gains contributrs
 # Conclusion
 
 **Your contributions will never be forgotten! Thank you for putting your time, energy, and you passion into this project. I am eternally grateful for any who decide to help make Baller come to life! You're work will pave the way for this software to grow exponentially!**
+
 

@@ -1,4 +1,4 @@
-# Contributions 
+# Contributing
 
 Baller is a brand new CLI package-manager that will potentially be able to be installed in Linux **AND** Windows.
 We've just barely started, it's completely bare bones right now, and has a TON of potential to be a great piece
@@ -203,5 +203,6 @@ This contributions file is definetly going to change as Baller gains contributrs
 # Conclusion
 
 **Your contributions will never be forgotten! Thank you for putting your time, energy, and you passion into this project. I am eternally grateful for any who decide to help make Baller come to life! You're work will pave the way for this software to grow exponentially!**
+
 
 

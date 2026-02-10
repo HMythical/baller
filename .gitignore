@@ -1,0 +1,20 @@
+
+#Rust build artifacts
+/target/
+**/*.rs.bk
+
+#Cargo files
+Cargo.lock
+
+#IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+#OS Files
+.DS_Store
+Thumbs.db
+EOF
+

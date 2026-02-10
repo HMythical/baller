@@ -1,4 +1,4 @@
-# Contributions Policy
+# Contributions 
 
 Baller is a brand new CLI package-manager that will potentially be able to be installed in Linux **AND** Windows.
 We've just barely started, it's completely bare bones right now, and has a TON of potential to be a great piece
@@ -46,23 +46,94 @@ Its because there are less constraints, rather than reporting an issue.
 
 ### Pre-requisites
 
-- Submit an Enhanceent Ticket
+- Fork the repo
 - Sign the Contributor License Agreement (CLA) - I'm not trying to get in legal trouble. I checked the CLA, it should not have predatory legal language in any way, shape, or form.
 I will not accept any contributions without it.
 - Sign it for each Baller project that required it. Simple.
 - Why am I having you sign this? Julien Ponge. Specifically section 5.1 of his blog post. Reference his post [here](https://julien.ponge.org/blog/in-defense-of-contributor-license-agreements/).
 - [Sign the CLA Here](https://cla-assistant.io/HMythical/baller)
 
+#### Do I really have to sign the CLA?
+Yes. End of discussion.
 
 
 
-# ...How do I... you know...contribute? 
+
+# Sooo...How do I... you know...contribute? 
+## Choose an environment
+
+As previously stated before, If you want to contribute to baller, you will need to contribute to ONE operating-system environment. Windows OR Linux, one or the other. The only exception to this rule will be for the OS-detection service. That will be just rust with libraries and stuff. 
+
+
+
+### Rust
+Rust will be the **main** language used for this project. Rust was chosen because of it's memory saftey compared to C and C++ as well as its compatibility with both Linux and Windows (I chose rust primarily because of this reason). However, rust isnt just the only language we will have to use to make this package manager work!
+
+### Powershell
+Windows is weird and doesnt use bash normally. We all know about cmd and PowerShell... All contributitions that relate to powershell, rust or something else, must be able to work with Powershell v3 (v2 we can get to eventually). 
+
+### C?? C#?? .NET?? What about those?
+Honestly, I am not opposed to using those languages, however, I do not know exactly how C and Rust would interact if we used them bot. Same thing with C# and the .NET Framework. I am not opposed to contributions with those languages, but you the contributor as well as I need to know how they will interact under the hood. If you do use these languages, make sure to document,compare, and summarize how different the assembly instructions are and make sure the instructions that come out of compilation do not cause memory errors.
+
+Additionally... **please write memory safe code**... I'm going to leave it at that....
+
+
+### Should I use other languages like Go or Ruby or something else?
+
+No. I only allow languages I understand under the hood, or I can easily learn how they work under the hood.
+
+## Code Formatting / Design
+
+Until contributions start to pile in in **different** languages, the rust files will have configuration files to enforce certain formatting standards.
+
+All naming conventions will be listed here for youre reference. It will also be in the Baller Docs (when I get around to creating them):
+
+- Non-OS specific Structs must all be PascalCase, with context included. [Context][Purpose][TypeSuffix]
+- All variables must have explicit declaration
+- Unless you require OS-specific behavior, use Rust primitives DIRECTLY
+- Non-OS specific variables must be in snake_case and explicitly declared
+- Operating System specific variables must be prefixed with "os_"
+- Collections and Tuples must be plural
+- Booleans must be prefixed with is_,has_,can_,should_ and their grammatical opposites when dealing with false Boolean values (isnt_,hasnt_,cant_,etc)
+- OS-specific Structs must be prefixed with their respective OS. (E.g LinuxPackageInfo)
+- Configuration structs must be suffixed with Config (E.g InstallConfig)
+- Builders must be suffixed with Builder (E.g PackageQueryBuilder)
+- Data Transfer Objects must be suffixed with DTO
+- Errors must be suffixed with their OS
+  e.g
+
+  pub enum InstallError{
+    Linux(LinuxError),
+    Windows(WindowsError),
+    Common(CommonError),
+
+  }
+- 
+
+## Documenting,Debugging and Testing
+### How should I document my code?
+### How should I test it?
+
+## So... about my IDE... which one should I use?!
+
+## The Survival Guide for Commits (I'm "stealing" chocolatey's framework for commits... please dont sue me)
+
+### The Pull Request
+
+### Feedback?
+
+## I like how Chocolatey does "x" thing... Can we "implement" it like they do?
 
 
 
 
 # Other important general information
 
+This contributions file is definetly going to change as Baller gains contributrs and development time. This file is meant to lay down the framework for how Baller will want to grow in order to be a reliable piece of software. 
+
 
 
 # Conclusion
+
+**Your contributions will never be forgotten! Thank you for putting your time, energy, and you passion into this project. I am eternally grateful for any who decide to help make Baller come to life! You're work will pave the way for this software to grow exponentially!**
+

@@ -1,7 +1,7 @@
 # B.A.L.L.E.R - The Binary Allocation & Library Launch Environment in Rust - Similar to choco.
 For your purposes, you can just call me baller, because you're baller if you use me.
  
- <img width="80" height="220" alt="image" src="https://github.com/user-attachments/assets/6d0b507c-72a7-457c-b82c-31f0397fb8f8" />
+ <img width="45" height="175" alt="image" src="https://github.com/user-attachments/assets/6d0b507c-72a7-457c-b82c-31f0397fb8f8" />
 
 
 
@@ -19,27 +19,18 @@ I plan to package Baller with all of the great, popular, and powerful packages, 
 
 Technically? Yes, you are correct. Baller is just another package manager when it comes to distributing **packages**. However, Baller will be developed to do several things differently than other pieces of software that makes the UX just as good, if not even better, as other package managers!
 
-### Easier installation Methods
-
-Baller will work in both Windows Powershell and CMD (eventually), and the Linux Kernel. How are we going to do this exactly? The Baller Installer (see what I did there?) and the software will be packaged **together**. The software will detect your operating system FIRST, then install the corresponding version of the package-manager. Simply put, you wont have to download a separate version of baller on the github, updates to OS-specific functions can stay separate at runtime, meaning fewer updates to the whole software, and most importantly, you dont even have to THINK about it (until you gotta update it, but thats just a click of a button!)
-
-### Operating System Specifc Design
-
-As previously stated before, Baller will install the correct version of the package-manager, depending on your operating system. Both Kernels are developed, updated, and managed entirely separately! Contributions to Baller are also managed strictly to prevent Linux-based code from entering Windows-based code, and vice versa.
-
-That ALSO means Baller can be optimized easier in this format. When we begin development (we did already), We can focus on one, focus on the other, do both at the same time- basically what we're saying is that the development cycle and updating cycle will be way better than most package managers, given the environments we want to be open to.
-
+How will that happen? You guys will! Contribute to baller and add your features, optimizations, additions! Make baller the package manager YOU would want to use!
 
 ## I want to contribute to this project. How can I do that?
 
 You'll want to read [this](https://github.com/HMythical/baller/rootdev/CONTRIBUTIONS.md) file in its entirety before contributing code. Ignore anything regarding a CLA right now. That will be implemented when baller releases to the public and we get a community going.
 
 
-## Ok ... I dont want to contribute, but I want to be a developer for B.A.L.L.E.R. How can I become a developer
+## Ok ... I dont want to contribute, but I want to be a developer (not a contributor) for B.A.L.L.E.R. How can I become a developer
 
 Give me an email at this [email address](baller.bugreports@gmail.com) Or DM me on Discord (It's HMythical. Same name as here!)
 
-Please note that this project is open-source under the Apache 2.0 License. There is no premium version of Baller, there never will be, nor will there be a paid version. 
+**Please note that this project is open-source under the Apache 2.0 License. There is no premium version of Baller, there never will be, nor will there be a paid version. Baller will always be free and open-source.**
 
 
 ## Ok.. I dont want to contribute, I dont want to be a developer, but I like this project! What other ways can I support the development process?
@@ -51,7 +42,7 @@ Currently, there is no way to support financially for now (i.e I need to read th
 
 Please, dont get it twisted, you DO NOT need to donate! Baller will never be locked under a donation requirement, there is no perks to donating (atleast not software wise), and donations will not be used for fruadulent reasons (Im not a bum).
 
-Though if you DO choose to donate, and with your written consent, I would love to list your github profile in a donations list in the README. SO if you DO choose to donate, and you want to be known for supporting Baller, that option is available to you
+Though if you DO choose to donate, and with your written consent, I would love to list your github profile in a donations list in the README. SO if you DO choose to donate, and you want to be known for supporting Baller, that option is available to you!
 
 
 ### Github Support
@@ -61,12 +52,9 @@ If you dont want to donate funds for the project, then you can always star and b
 
 ### Advertising Support
 
-... Just tell people about Baller... That's pretty much it...
+If you would like to advertise baller, then go right ahead! Just dont use the "logo" if you post it online.
 
-
-
-
-
+Other than that, I think that's pretty much it!
 
 
 
@@ -77,6 +65,7 @@ I hope you will help me develop this package-manager into something awesome!
 Sincerely,
   HMythical
 
-   <img width="80" height="220" alt="image" src="https://github.com/user-attachments/assets/6d0b507c-72a7-457c-b82c-31f0397fb8f8" />
+   <img width="45" height="175" alt="image" src="https://github.com/user-attachments/assets/6d0b507c-72a7-457c-b82c-31f0397fb8f8" />
+
 
 

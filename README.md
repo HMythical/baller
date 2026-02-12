@@ -32,12 +32,12 @@ That ALSO means Baller can be optimized easier in this format. When we begin dev
 
 ## I want to contribute to this project. How can I do that?
 
-You'll want to read [this](https://github.com/HMythical/baller/rootdev/CONTRIBUTIONS.md) file in its entirety before contributing code. Also sign the CLA, because I dont want to get in legal trouble. Just in case. The Contributions file will explain why I have a CLA implemented here as well
+You'll want to read [this](https://github.com/HMythical/baller/rootdev/CONTRIBUTIONS.md) file in its entirety before contributing code. Ignore anything regarding a CLA right now. That will be implemented when baller releases to the public and we get a community going.
 
 
 ## Ok ... I dont want to contribute, but I want to be a developer for B.A.L.L.E.R. How can I become a developer
 
-Give me an email at this [email address](baller.bugreports@gmail.com) explaining why you want to help develop baller and which environment you want to be a dev in. You'll also need to sign a couple (pending) legal forms about code saftey, code plagarism, Intellectual Property, etc.
+Give me an email at this [email address](baller.bugreports@gmail.com) Or DM me on Discord (It's HMythical. Same name as here!)
 
 Please note that this project is open-source under the Apache 2.0 License. There is no premium version of Baller, there never will be, nor will there be a paid version. 
 
@@ -65,6 +65,11 @@ If you dont want to donate funds for the project, then you can always star and b
 
 
 
+
+
+
+
+
 ## Thank you for reading this, thank you for coming to this repo, and most importantly... Thank you for being Balller!
 
 I hope you will help me develop this package-manager into something awesome!
@@ -73,4 +78,5 @@ Sincerely,
   HMythical
 
    <img width="80" height="220" alt="image" src="https://github.com/user-attachments/assets/6d0b507c-72a7-457c-b82c-31f0397fb8f8" />
+
 

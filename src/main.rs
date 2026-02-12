@@ -13,7 +13,7 @@ pub const CRATE_VERSION: &str = "v0.1";
 
 fn main() {
     if let Err(e) = entry() {
-        eprintln!("[Error]: {}", e);
+        eprintln!("\n[Error]: {}", e);
         exit(1);
     }
 }

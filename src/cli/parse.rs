@@ -1,13 +1,13 @@
 use std::env;
 
-use crate::{cli::{help::execute_command_help, version::execute_command_version}, commands::{clean::execute_command_clean, install::{InstallParameters, execute_command_install, parse_install_parameters}, list::execute_command_list, uninstall::{UninstallParameters, execute_command_uninstall, parse_uninstall_parameters}, update::{UpdateParameters, execute_command_update, parse_update_parameters}}, error::error::BallError};
+use crate::{cli::{help::execute_command_help, version::execute_command_version}, commands::{clean::execute_command_clean, install::{InstallParameters, execute_command_install, parse_install_parameters}, list::{ListParameters, execute_command_list, parse_list_parameters}, uninstall::{UninstallParameters, execute_command_uninstall, parse_uninstall_parameters}, update::{UpdateParameters, execute_command_update, parse_update_parameters}}, error::error::BallError};
 
 // commands that take in parameters require a parameter struct
 #[derive(Debug)]
 pub enum CommandTypes {
     Clean,
     Install(InstallParameters),
-    List,
+    List(ListParameters),
     Uninstall(UninstallParameters),
     Update(UpdateParameters),
     Help,
@@ -35,7 +35,7 @@ impl BallerCommand {
         let command_ty: CommandTypes = match args[1].as_str() {
             "clean" => CommandTypes::Clean,
             "install" => CommandTypes::Install(parse_install_parameters(&args)?),
-            "list" => CommandTypes::List,
+            "list" => CommandTypes::List(parse_list_parameters(&args)?),
             "uninstall" => CommandTypes::Uninstall(parse_uninstall_parameters(&args)?),
             "update" => CommandTypes::Update(parse_update_parameters(&args)?),
             "help" => CommandTypes::Help,
@@ -58,7 +58,7 @@ impl BallerCommand {
         return match &self.ty {
             CommandTypes::Clean => execute_command_clean(),
             CommandTypes::Install(params) => execute_command_install(params),
-            CommandTypes::List => execute_command_list(),
+            CommandTypes::List(params) => execute_command_list(params),
             CommandTypes::Uninstall(params) => execute_command_uninstall(params),
             CommandTypes::Update(params) => execute_command_update(params),
             CommandTypes::Help => execute_command_help(),

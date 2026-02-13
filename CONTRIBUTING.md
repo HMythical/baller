@@ -108,6 +108,8 @@ SOME naming conventions will be listed here for youre reference. It will also be
     Common(CommonError),
 
   }
+- please, always always propagate errors until the main function using the question mark operator
+- make your variable, struct, enum and function names unambiguous, avoid conflicts with names from external librairies (E.g BallerConfig instead of Config)
 
   The rest will be present in the sources previously mentioned
 

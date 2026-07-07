@@ -1,5 +1,8 @@
-pub mod clean;
-pub mod install;
-pub mod list;
-pub mod uninstall;
+pub mod build;
+pub mod draft;
+pub mod eject;
+pub mod freeze;
+pub mod roster;
+pub mod substitute;
+pub mod sweep;
 pub mod update;

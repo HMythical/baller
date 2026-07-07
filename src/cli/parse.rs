@@ -1,68 +1,64 @@
-use std::env;
+use crate::commands::{
+    build::execute_build, draft::execute_draft, eject::execute_eject, freeze::execute_freeze,
+    roster::execute_roster, substitute::execute_substitute, sweep::execute_sweep,
+    update::execute_update,
+};
+use crate::context::AppContext;
+use crate::error::error::BallError;
+use clap::{Parser, Subcommand};
 
-use crate::{cli::{help::execute_command_help, version::execute_command_version}, commands::{clean::execute_command_clean, install::{InstallParameters, execute_command_install, parse_install_parameters}, list::{ListParameters, execute_command_list, parse_list_parameters}, uninstall::{UninstallParameters, execute_command_uninstall, parse_uninstall_parameters}, update::{UpdateParameters, execute_command_update, parse_update_parameters}}, error::error::BallError};
-
-// commands that take in parameters require a parameter struct
-#[derive(Debug)]
-pub enum CommandTypes {
-    Clean,
-    Install(InstallParameters),
-    List(ListParameters),
-    Uninstall(UninstallParameters),
-    Update(UpdateParameters),
-    Help,
-    Version
+#[derive(Parser, Debug)]
+#[command(name = "baller")]
+#[command(about = "B.A.L.L.E.R - The Binary Allocation & Library Launch Environment in Rust", long_about = None)]
+#[command(version)]
+pub struct BallerCommand {
+    #[command(subcommand)]
+    pub command: CommandTypes,
 }
 
-#[derive(Debug)]
-pub struct BallerCommand {
-    ty: CommandTypes,
+#[derive(Subcommand, Debug)]
+pub enum CommandTypes {
+    /// Drafts (Installs) a new player onto your team
+    Draft { package_name: String },
+    /// Ejects (Uninstalls) a player from your team
+    Eject { package_name: String },
+    /// Freezes (Pins) a player so they cannot be substituted or updated
+    Freeze { package_name: String },
+    /// Rosters (Lists) active players on your team or searches for one
+    Roster { package_name: Option<String> },
+    /// Substitutes (Swaps) a current player for a new one cleanly
+    Substitute {
+        old_package: String,
+        new_package: String,
+    },
+    /// Sweeps (Cleans) the arena of leftover caching debris
+    Sweep,
+    /// Updates all active packages on the team
+    Update,
+    /// Builds a package natively from a local manifest
+    Build { path: String },
 }
 
 impl BallerCommand {
     pub fn parse_command() -> Result<Self, BallError> {
-        let mut args: Vec<String> = env::args().collect();
-
-        // if no command is specified treat it as 'baller version'
-        if args.len() < 2 {
-            args.push("version".to_string());
-        }
-        
-        /*
-         * note: arg[0] is the program itself (baller binary)
-         * commands that take parameters need a parse parameters function (declared in commands/<command name>.rs)
-         */
-        let command_ty: CommandTypes = match args[1].as_str() {
-            "clean" => CommandTypes::Clean,
-            "install" => CommandTypes::Install(parse_install_parameters(&args)?),
-            "list" => CommandTypes::List(parse_list_parameters(&args)?),
-            "uninstall" => CommandTypes::Uninstall(parse_uninstall_parameters(&args)?),
-            "update" => CommandTypes::Update(parse_update_parameters(&args)?),
-            "help" => CommandTypes::Help,
-            "version" => CommandTypes::Version,
-            _ => return Err(BallError::UnsupportedCommand(args[1].clone()))
-        };
-
-        let final_command: BallerCommand = BallerCommand {
-            ty: command_ty
-        };
-
-        return Ok(final_command);
+        let cmd = BallerCommand::try_parse()
+            .map_err(|e| BallError::InvalidConfig(format!("CLI Error: {}", e)))?;
+        Ok(cmd)
     }
 
-    pub fn execute(&self) -> Result<(), BallError> {
-        /*
-         * execute the function corresponding to the command
-         * the functions are in commands/<command name>.rs for the exception of help and version
-         */
-        return match &self.ty {
-            CommandTypes::Clean => execute_command_clean(),
-            CommandTypes::Install(params) => execute_command_install(params),
-            CommandTypes::List(params) => execute_command_list(params),
-            CommandTypes::Uninstall(params) => execute_command_uninstall(params),
-            CommandTypes::Update(params) => execute_command_update(params),
-            CommandTypes::Help => execute_command_help(),
-            CommandTypes::Version => execute_command_version(),
-        };
+    pub fn execute(&self, ctx: &AppContext) -> Result<(), BallError> {
+        match &self.command {
+            CommandTypes::Draft { package_name } => execute_draft(ctx, package_name),
+            CommandTypes::Eject { package_name } => execute_eject(ctx, package_name),
+            CommandTypes::Freeze { package_name } => execute_freeze(ctx, package_name),
+            CommandTypes::Roster { package_name } => execute_roster(ctx, package_name),
+            CommandTypes::Substitute {
+                old_package,
+                new_package,
+            } => execute_substitute(ctx, old_package, new_package),
+            CommandTypes::Sweep => execute_sweep(ctx),
+            CommandTypes::Update => execute_update(ctx),
+            CommandTypes::Build { path } => execute_build(ctx, path),
+        }
     }
 }

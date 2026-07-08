@@ -1,0 +1,11 @@
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod context;
+pub mod core;
+pub mod error;
+pub mod http;
+pub mod platform;
+pub mod utils;
+
+pub const CRATE_VERSION: &str = "v0.1";

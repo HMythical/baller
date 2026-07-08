@@ -23,14 +23,95 @@ impl ManifestParser {
         }
     }
 
+    /// Parse TOML manifest content
+    ///
+    /// # Arguments
+    /// * `content` - TOML manifest content as string
+    ///
+    /// # Returns
+    /// * `Result<Package, BallError>` - Parsed package or error
     pub fn parse_toml(content: &str) -> Result<Package, BallError> {
         toml::from_str(content)
             .map_err(|e| BallError::InvalidConfig(format!("Failed to parse TOML manifest: {}", e)))
     }
 
+    /// Parse JSON manifest content
+    ///
+    /// # Arguments
+    /// * `content` - JSON manifest content as string
+    ///
+    /// # Returns
+    /// * `Result<Package, BallError>` - Parsed package or error
     pub fn parse_json(content: &str) -> Result<Package, BallError> {
         serde_json::from_str(content)
             .map_err(|e| BallError::InvalidConfig(format!("Failed to parse JSON manifest: {}", e)))
+    }
+
+    /// Parse manifest from file with automatic format detection
+    ///
+    /// # Arguments
+    /// * `path` - Path to manifest file
+    ///
+    /// # Returns
+    /// * `Result<Package, BallError>` - Parsed package or error
+    ///
+    /// # Formats Supported
+    /// - TOML: file with .toml extension
+    /// - JSON: file with .json extension
+    /// - Default: Any file (assumed TOML format for backwards compatibility)
+    pub fn parse_auto(path: &PathBuf) -> Result<Package, BallError> {
+        match Self::parse(path) {
+            Ok(pkg) => Ok(pkg),
+            Err(BallError::FileIoErr(_)) => Err(BallError::InvalidConfig(format!(
+                "Manifest file not found: {}",
+                path.display()
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Validate manifest requirements (name and version are required fields)
+    ///
+    /// # Arguments
+    /// * `package` - Package to validate
+    ///
+    /// # Returns
+    /// * `Result<(), BallError>` - Success if valid, error otherwise
+    pub fn validate(package: &Package) -> Result<(), BallError> {
+        if package.name.is_empty() {
+            return Err(BallError::InvalidConfig(
+                "Package name is required".to_string(),
+            ));
+        }
+        if package.version.is_empty() {
+            return Err(BallError::InvalidConfig(
+                "Package version is required".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Create example manifest from package
+    ///
+    /// # Arguments
+    /// * `package` - Package to convert
+    /// * `format` - Output format ("toml" or "json")
+    ///
+    /// # Returns
+    /// * `Result<String, BallError>` - Serialized manifest
+    pub fn serialize(package: &Package, format: &str) -> Result<String, BallError> {
+        match format.to_lowercase().as_str() {
+            "json" => serde_json::to_string(package).map_err(|e| {
+                BallError::InvalidConfig(format!("Failed to serialize to JSON: {}", e))
+            }),
+            "toml" => toml::to_string(package).map_err(|e| {
+                BallError::InvalidConfig(format!("Failed to serialize to TOML: {}", e))
+            }),
+            _ => Err(BallError::InvalidConfig(format!(
+                "Unsupported format: {}",
+                format
+            ))),
+        }
     }
 }
 

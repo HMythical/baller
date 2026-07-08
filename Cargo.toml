@@ -26,3 +26,12 @@ xz2 = "0.1"
 hex = "0.4"
 semver = "1.0"
 url = "2.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+mockito = "0.31"
+sysinfo = "0.29"
+rand = "0.8"
+
+[[bench]]
+name = "baller-bench"
+path = "src/benches/mod.rs"
+harness = false

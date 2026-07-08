@@ -90,6 +90,7 @@ impl BallerConfig {
         }
     }
 
+    #[allow(clippy::suspicious_open_options)]
     pub fn parse_config(baller_path: &str) -> Result<BallerConfig, BallError> {
         let mut config = BallerConfig::default();
         let config_path = format!("{}/baller.conf", baller_path);

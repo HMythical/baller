@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+FROM fedora:38
+
+RUN dnf install -y gcc gcc-c++ make ca-certificates perl file \
+    && curl -sSf https://sh.rustup.rs | sh -s -- -y \
+    && source $HOME/.cargo/env \
+    && rustup target add x86_64-unknown-linux-gnu
+
+WORKDIR /workspace
+
+COPY Cargo.toml Cargo.lock* /workspace/
+COPY src/ /workspace/src/
+
+RUN cargo build --release --target x86_64-unknown-linux-gnu
+
+RUN mkdir -p /output && cp /workspace/target/x86_64-unknown-linux-gnu/release/baller /output/
+
+CMD ["baller", "--help"]

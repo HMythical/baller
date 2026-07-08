@@ -455,6 +455,7 @@ impl DbManager {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::type_complexity)]
     pub fn get_all_lock_entries(
         &self,
     ) -> Result<Vec<(String, String, String, Option<String>)>, BallError> {

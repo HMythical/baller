@@ -18,7 +18,7 @@ pub trait PlatformManager {
     }
 
     /// Exposes a package binary by creating a system-appropriate symlink/wrapper.
-    fn create_symlink(source: &PathBuf, executable_name: &str) -> Result<(), BallError>;
+    fn create_symlink(source: &std::path::Path, executable_name: &str) -> Result<(), BallError>;
 
     /// Removes an exposed package binary.
     fn remove_symlink(executable_name: &str) -> Result<(), BallError>;

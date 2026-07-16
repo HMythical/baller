@@ -38,7 +38,8 @@ baller/
 │   │   ├── mod.rs           # HttpClient (reqwest wrapper, retries)
 │   │   ├── github.rs        # GitHub Releases API
 │   │   ├── registry_api.rs  # Baller registry API
-│   │   └── chocolatey.rs    # Chocolatey OData v2 feed
+│   │   ├── chocolatey.rs    # Chocolatey OData v2 feed
+│   │   └── system.rs        # System Linux package manager (apt/dnf/pacman)
 │   ├── platform/            # OS abstraction
 │   │   ├── mod.rs
 │   │   ├── common.rs        # PlatformManager trait
@@ -81,7 +82,7 @@ to every command function and sub-operation.
 ### Package
 The universal package metadata struct used across the entire system:
 - `name`, `version`, `description`, `author`
-- `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`)
+- `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`, `System { manager }`)
 - `download_url`, `sha256`, `dependencies`
 
 ## Platform Abstraction
@@ -102,9 +103,9 @@ trying each until one returns successfully. The per-source `_enabled` booleans
 act as a filter — disabled sources are skipped entirely.
 
 ```
-request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed]
-              ↓ failure           ↓ failure               ↓ failure
-          try next             try next              return error
+request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed] ?→ [System PM]
+              ↓ failure           ↓ failure               ↓ failure            ↓ failure
+          try next             try next              return error         return error
 ```
 
 ## Dependency Resolution
@@ -117,3 +118,27 @@ request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed]
 5. Detects cycles (DFS with White/Gray/Black coloring)
 6. Topological sort (DFS post-order) for install order
 7. Returns packages in dependency-first order
+
+## Error Handling and Rollback
+
+### Partial Failure Rollback
+Commands that install multiple packages (`draft`, `substitute`) track packages
+installed during the current session. If any package fails to install, all
+packages from the session are rolled back (symlink removed, DB entry deleted).
+
+### Orphan Dependency Cleanup
+When ejecting a package, BALLER checks for orphaned dependencies — packages
+that were installed as transitive dependencies and are no longer required by
+any remaining installed package. Orphans are automatically removed with a
+warning message. This relies on the `user_installed` flag in the database:
+packages installed as dependencies are marked `user_installed = false`, while
+packages explicitly installed via `draft` are marked `user_installed = true`.
+
+### Confirmation Prompts
+Destructive commands (`eject`, `sweep`) prompt for confirmation unless the
+`--yes` / `-y` flag is passed.
+
+### Version Comparison
+The `update` command uses semantic versioning (`semver::Version`) for version
+comparison. If versions cannot be parsed as valid semver, falls back to
+string comparison.

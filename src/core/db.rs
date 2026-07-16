@@ -27,6 +27,7 @@ pub struct InstalledPackage {
     #[allow(dead_code)]
     pub sha256: Option<String>,
     pub frozen: bool,
+    pub user_installed: bool,
     pub install_path: String,
     pub bin_path: Option<String>,
     #[allow(dead_code)]
@@ -77,6 +78,7 @@ impl DbManager {
                 download_url TEXT,
                 sha256 TEXT,
                 frozen BOOLEAN NOT NULL DEFAULT 0,
+                user_installed BOOLEAN NOT NULL DEFAULT 1,
                 install_path TEXT NOT NULL,
                 bin_path TEXT,
                 manifest_path TEXT,
@@ -100,6 +102,20 @@ impl DbManager {
         )
         .map_err(|e| BallError::InvalidConfig(format!("failed to create schema: {}", e)))?;
 
+        // Migration: add user_installed column to existing databases that don't have it
+        let has_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='user_installed'",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if has_column == 0 {
+            let _ = conn.execute(
+                "ALTER TABLE installed_packages ADD COLUMN user_installed BOOLEAN NOT NULL DEFAULT 1",
+                [],
+            );
+            // Backfill: entries without the column get default value of 1
+        }
+
         Ok(Self { conn })
     }
 
@@ -109,12 +125,13 @@ impl DbManager {
         install_path: &str,
         bin_path: Option<&str>,
         manifest_path: Option<&str>,
+        user_installed: bool,
     ) -> Result<(), BallError> {
         let (source, source_detail) = serialize_source(&pkg.source);
 
         self.conn.execute(
-            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, install_path, bin_path, manifest_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, user_installed, install_path, bin_path, manifest_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(name) DO UPDATE SET
                  version=excluded.version,
                  source=excluded.source,
@@ -124,6 +141,7 @@ impl DbManager {
                  repository=excluded.repository,
                  download_url=excluded.download_url,
                  sha256=excluded.sha256,
+                 user_installed=excluded.user_installed,
                  install_path=excluded.install_path,
                  bin_path=excluded.bin_path,
                  manifest_path=excluded.manifest_path,
@@ -131,7 +149,7 @@ impl DbManager {
             params![
                 pkg.name, pkg.version, source, source_detail,
                 pkg.description, pkg.author, pkg.repository,
-                pkg.download_url, pkg.sha256, install_path, bin_path, manifest_path
+                pkg.download_url, pkg.sha256, user_installed, install_path, bin_path, manifest_path
             ],
         ).map_err(|e| BallError::InvalidConfig(format!("failed to insert package '{}': {}", pkg.name, e)))?;
 
@@ -196,7 +214,7 @@ impl DbManager {
     pub fn get_package(&self, name: &str) -> Result<InstalledPackage, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
              FROM installed_packages WHERE name = ?1"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -213,10 +231,11 @@ impl DbManager {
                     download_url: row.get(7)?,
                     sha256: row.get(8)?,
                     frozen: row.get(9)?,
-                    install_path: row.get(10)?,
-                    bin_path: row.get(11)?,
-                    manifest_path: row.get(12)?,
-                    installed_at: row.get(13)?,
+                    user_installed: row.get(10)?,
+                    install_path: row.get(11)?,
+                    bin_path: row.get(12)?,
+                    manifest_path: row.get(13)?,
+                    installed_at: row.get(14)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -233,7 +252,7 @@ impl DbManager {
     pub fn list_packages(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
              FROM installed_packages ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -250,10 +269,11 @@ impl DbManager {
                     download_url: row.get(7)?,
                     sha256: row.get(8)?,
                     frozen: row.get(9)?,
-                    install_path: row.get(10)?,
-                    bin_path: row.get(11)?,
-                    manifest_path: row.get(12)?,
-                    installed_at: row.get(13)?,
+                    user_installed: row.get(10)?,
+                    install_path: row.get(11)?,
+                    bin_path: row.get(12)?,
+                    manifest_path: row.get(13)?,
+                    installed_at: row.get(14)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -269,7 +289,7 @@ impl DbManager {
         let pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
              FROM installed_packages WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -286,10 +306,11 @@ impl DbManager {
                     download_url: row.get(7)?,
                     sha256: row.get(8)?,
                     frozen: row.get(9)?,
-                    install_path: row.get(10)?,
-                    bin_path: row.get(11)?,
-                    manifest_path: row.get(12)?,
-                    installed_at: row.get(13)?,
+                    user_installed: row.get(10)?,
+                    install_path: row.get(11)?,
+                    bin_path: row.get(12)?,
+                    manifest_path: row.get(13)?,
+                    installed_at: row.get(14)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -357,7 +378,7 @@ impl DbManager {
     pub fn list_frozen(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
              FROM installed_packages WHERE frozen = 1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -374,10 +395,11 @@ impl DbManager {
                     download_url: row.get(7)?,
                     sha256: row.get(8)?,
                     frozen: row.get(9)?,
-                    install_path: row.get(10)?,
-                    bin_path: row.get(11)?,
-                    manifest_path: row.get(12)?,
-                    installed_at: row.get(13)?,
+                    user_installed: row.get(10)?,
+                    install_path: row.get(11)?,
+                    bin_path: row.get(12)?,
+                    manifest_path: row.get(13)?,
+                    installed_at: row.get(14)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -408,6 +430,16 @@ impl DbManager {
             })?;
 
         Ok(deps)
+    }
+
+    /// Check if a package is listed as a dependency by any other installed package.
+    pub fn is_depended_on(&self, pkg_name: &str) -> Result<bool, BallError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM package_dependencies WHERE dep_name = ?1",
+            params![pkg_name],
+            |row| row.get(0),
+        ).map_err(|e| BallError::InvalidConfig(format!("failed to query deps for '{}': {}", pkg_name, e)))?;
+        Ok(count > 0)
     }
 
     #[allow(dead_code)]
@@ -525,6 +557,9 @@ fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
         PackageSource::Chocolatey { feed_url } => {
             ("chocolatey".to_string(), Some(feed_url.clone()))
         }
+        PackageSource::System { manager } => {
+            ("system".to_string(), Some(manager.clone()))
+        }
     }
 }
 
@@ -578,7 +613,7 @@ mod tests {
         let db = init_db(&path);
         let pkg = make_pkg("test-pkg", "1.0.0");
 
-        db.insert_package(&pkg, "/install/path", Some("/bin/path"), Some("/manifest"))
+        db.insert_package(&pkg, "/install/path", Some("/bin/path"), Some("/manifest"), true)
             .unwrap();
 
         let retrieved = db.get_package("test-pkg").unwrap();
@@ -600,10 +635,10 @@ mod tests {
         let path = test_db_path();
         let db = init_db(&path);
         let pkg1 = make_pkg("test-pkg", "1.0.0");
-        db.insert_package(&pkg1, "/path1", None, None).unwrap();
+        db.insert_package(&pkg1, "/path1", None, None, true).unwrap();
 
         let pkg2 = make_pkg("test-pkg", "2.0.0");
-        db.insert_package(&pkg2, "/path2", None, None).unwrap();
+        db.insert_package(&pkg2, "/path2", None, None, true).unwrap();
 
         let retrieved = db.get_package("test-pkg").unwrap();
         assert_eq!(retrieved.version, "2.0.0");
@@ -617,7 +652,7 @@ mod tests {
         let path = test_db_path();
         let db = init_db(&path);
         let pkg = make_pkg("remove-me", "1.0.0");
-        db.insert_package(&pkg, "/path", None, None).unwrap();
+        db.insert_package(&pkg, "/path", None, None, true).unwrap();
         assert!(db.package_exists("remove-me").unwrap());
 
         db.remove_package("remove-me").unwrap();
@@ -650,8 +685,8 @@ mod tests {
 
         let pkg1 = make_pkg("alpha", "1.0.0");
         let pkg2 = make_pkg("beta", "2.0.0");
-        db.insert_package(&pkg1, "/a", None, None).unwrap();
-        db.insert_package(&pkg2, "/b", None, None).unwrap();
+        db.insert_package(&pkg1, "/a", None, None, true).unwrap();
+        db.insert_package(&pkg2, "/b", None, None, true).unwrap();
 
         let pkgs = db.list_packages().unwrap();
         assert_eq!(pkgs.len(), 2);
@@ -677,7 +712,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("myapp", "1.0.0");
-        db.insert_package(&pkg, "/path", None, None).unwrap();
+        db.insert_package(&pkg, "/path", None, None, true).unwrap();
 
         let results = db.search_installed("myapp").unwrap();
         assert_eq!(results.len(), 1);
@@ -694,7 +729,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("freeze-me", "1.0.0");
-        db.insert_package(&pkg, "/path", None, None).unwrap();
+        db.insert_package(&pkg, "/path", None, None, true).unwrap();
 
         assert!(!db.is_frozen("freeze-me").unwrap());
 
@@ -733,7 +768,7 @@ mod tests {
         assert_eq!(db.package_count().unwrap(), 0);
 
         let pkg = make_pkg("count-me", "1.0.0");
-        db.insert_package(&pkg, "/p", None, None).unwrap();
+        db.insert_package(&pkg, "/p", None, None, true).unwrap();
         assert_eq!(db.package_count().unwrap(), 1);
 
         let _ = std::fs::remove_file(&path);
@@ -746,8 +781,8 @@ mod tests {
 
         let pkg1 = make_pkg("frozen-pkg", "1.0.0");
         let pkg2 = make_pkg("thawed-pkg", "2.0.0");
-        db.insert_package(&pkg1, "/p1", None, None).unwrap();
-        db.insert_package(&pkg2, "/p2", None, None).unwrap();
+        db.insert_package(&pkg1, "/p1", None, None, true).unwrap();
+        db.insert_package(&pkg2, "/p2", None, None, true).unwrap();
 
         db.set_frozen("frozen-pkg", true).unwrap();
 
@@ -764,7 +799,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("with-deps", "1.0.0");
-        db.insert_package(&pkg, "/p", None, None).unwrap();
+        db.insert_package(&pkg, "/p", None, None, true).unwrap();
 
         let deps = db.get_dependencies("with-deps").unwrap();
         assert_eq!(deps.len(), 2);
@@ -780,7 +815,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = Package::new("no-deps", "1.0.0");
-        db.insert_package(&pkg, "/p", None, None).unwrap();
+        db.insert_package(&pkg, "/p", None, None, true).unwrap();
 
         let deps = db.get_dependencies("no-deps").unwrap();
         assert!(deps.is_empty());
@@ -829,7 +864,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("sync-pkg", "1.0.0");
-        db.insert_package(&pkg, "/p", None, None).unwrap();
+        db.insert_package(&pkg, "/p", None, None, true).unwrap();
 
         db.sync_lockfile_from_installed().unwrap();
 
@@ -845,7 +880,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("bin-pkg", "1.0.0");
-        db.insert_package(&pkg, "/install/path", Some("/bin/path"), None)
+        db.insert_package(&pkg, "/install/path", Some("/bin/path"), None, true)
             .unwrap();
 
         let retrieved = db.get_package("bin-pkg").unwrap();
@@ -861,7 +896,7 @@ mod tests {
         let db = init_db(&path);
 
         let pkg = make_pkg("dep-clear", "1.0.0");
-        db.insert_package(&pkg, "/p", None, None).unwrap();
+        db.insert_package(&pkg, "/p", None, None, true).unwrap();
 
         let deps_before = db.get_dependencies("dep-clear").unwrap();
         assert!(!deps_before.is_empty());
@@ -871,6 +906,38 @@ mod tests {
         // deps should be gone since cascade delete
         let deps_after = db.get_dependencies("dep-clear").unwrap();
         assert!(deps_after.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_insert_and_get_system_source_package() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        let pkg = Package {
+            name: "system-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            description: Some("From system PM".to_string()),
+            author: Some("APT".to_string()),
+            repository: None,
+            architectures: None,
+            dependencies: Some(vec!["libc6".to_string()]),
+            sha256: None,
+            download_url: None,
+            source: PackageSource::System {
+                manager: "apt".to_string(),
+            },
+        };
+
+        db.insert_package(&pkg, "/usr/lib", None, None, true).unwrap();
+
+        let retrieved = db.get_package("system-pkg").unwrap();
+        assert_eq!(retrieved.name, "system-pkg");
+        assert_eq!(retrieved.version, "1.0.0");
+        assert_eq!(retrieved.source, "system");
+        assert_eq!(retrieved.source_detail, Some("apt".to_string()));
+        assert_eq!(retrieved.description.unwrap(), "From system PM");
 
         let _ = std::fs::remove_file(&path);
     }

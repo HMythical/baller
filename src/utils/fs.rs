@@ -141,6 +141,41 @@ fn is_executable(path: &Path) -> bool {
     name.ends_with(".exe") || name.ends_with(".bat") || name.ends_with(".cmd")
 }
 
+/// Safely truncate a string to a maximum number of Unicode characters.
+/// Adds "..." if truncated.
+pub fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        format!("{}...", s.chars().take(max_chars.saturating_sub(3)).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// Format bytes into a human-readable string (e.g., "45.2 MB").
+pub fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
+/// Prompt user for confirmation from stdin. Returns true if user confirms.
+pub fn confirm(prompt: &str) -> bool {
+    print!("{prompt} ");
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 pub fn find_binary_in_dir(dir: &Path, pkg_name: &str) -> Option<PathBuf> {
     let candidates = [
         dir.join(pkg_name),
@@ -399,5 +434,55 @@ mod tests {
         let dir = Path::new("/nonexistent_xyz_dir");
         let result = find_binary_in_dir(dir, "app");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_truncate_str_short() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_long() {
+        let result = truncate_str("this is a very long string", 10);
+        assert!(result.len() == 10); // 7 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_str_multi_byte() {
+        let emoji_desc = "Hello world";
+        let result = truncate_str(emoji_desc, 5);
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn test_format_size_zero() {
+        assert_eq!(format_size(0), "0 bytes");
+    }
+
+    #[test]
+    fn test_format_size_bytes() {
+        assert_eq!(format_size(500), "500 bytes");
+    }
+
+    #[test]
+    fn test_format_size_kb() {
+        let result = format_size(1536); // 1.5 KB
+        assert!(result.contains("KB"));
+        assert!(result.contains("1.5"));
+    }
+
+    #[test]
+    fn test_format_size_mb() {
+        let result = format_size(10_485_760); // ~10 MB
+        assert!(result.contains("MB"));
+        assert!(result.contains("10"));
+    }
+
+    #[test]
+    fn test_format_size_gb() {
+        let result = format_size(2_147_483_648); // 2 GB
+        assert!(result.contains("GB"));
+        assert!(result.contains("2"));
     }
 }

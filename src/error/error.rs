@@ -17,6 +17,7 @@ pub enum BallError {
     DependencyCycle(String),
     VersionConflict(String),
     PackageFrozen(String),
+    PackageManagerError(String),
 }
 
 impl fmt::Display for BallError {
@@ -63,6 +64,8 @@ impl fmt::Display for BallError {
             BallError::PackageFrozen(name) => {
                 write!(f, "package '{}' is frozen and cannot be modified", name)
             }
+
+            BallError::PackageManagerError(msg) => write!(f, "package manager error: {}", msg),
         }
     }
 }

@@ -1,6 +1,7 @@
 pub mod chocolatey;
 pub mod github;
 pub mod registry_api;
+pub mod system;
 
 use std::time::Duration;
 

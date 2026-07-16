@@ -21,6 +21,7 @@ pub struct RegistryConfig {
     pub github_enabled: bool,
     pub baller_enabled: bool,
     pub chocolatey_enabled: bool,
+    pub system_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +79,7 @@ impl BallerConfig {
                 github_enabled: true,
                 baller_enabled: true,
                 chocolatey_enabled: true,
+                system_enabled: true,
             },
             hooks: HooksConfig {
                 pre_install: true,
@@ -176,6 +178,9 @@ impl BallerConfig {
                 }
                 "chocolatey_enabled" => {
                     config.registry.chocolatey_enabled = parse_bool(value, line)?;
+                }
+                "system_enabled" => {
+                    config.registry.system_enabled = parse_bool(value, line)?;
                 }
                 "pre_install" => {
                     config.hooks.pre_install = parse_bool(value, line)?;
@@ -423,6 +428,7 @@ post_update = off
             github_enabled: true,
             baller_enabled: false,
             chocolatey_enabled: false,
+            system_enabled: true,
         };
         let debug = format!("{:?}", cfg);
         assert!(debug.contains("RegistryConfig"));
@@ -461,5 +467,50 @@ post_update = off
             "/opt/baller with spaces"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_system_enabled_default_true() {
+        let cfg = BallerConfig::default();
+        assert!(cfg.registry.system_enabled);
+    }
+
+    #[test]
+    fn test_parse_config_system_enabled_false() {
+        let content = "[registry]\nsystem_enabled = false\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(!config.registry.system_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_system_enabled_true() {
+        let content = "[registry]\nsystem_enabled = true\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(config.registry.system_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_source_order_with_system() {
+        let content = "[registry]\nsource_order = github,baller,chocolatey,system\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(config.registry.source_order.contains(&"system".to_string()));
+        assert_eq!(config.registry.source_order.len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_system_enabled_aliases() {
+        for (val, expected) in &[("yes", true), ("0", false), ("1", true), ("off", false), ("ON", true)] {
+            let content = format!("[registry]\nsystem_enabled = {}\n", val);
+            let (path, dir) = write_config(&content);
+            let config = BallerConfig::parse_config(&path).unwrap();
+            assert_eq!(config.registry.system_enabled, *expected, "system_enabled={}", val);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

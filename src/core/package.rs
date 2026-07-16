@@ -5,6 +5,7 @@ pub enum PackageSource {
     GitHub { owner: String, repo: String },
     BallerRegistry { url: String },
     Chocolatey { feed_url: String },
+    System { manager: String },
 }
 
 impl Default for PackageSource {

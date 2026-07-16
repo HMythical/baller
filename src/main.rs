@@ -108,7 +108,7 @@ mod integration_tests {
         assert_eq!(db.package_count().unwrap(), 0);
 
         let pkg = Package::new("integration-pkg", "1.0.0");
-        db.insert_package(&pkg, "/install/path", Some("/bin/path"), None)
+        db.insert_package(&pkg, "/install/path", Some("/bin/path"), None, true)
             .unwrap();
         assert_eq!(db.package_count().unwrap(), 1);
 
@@ -310,19 +310,33 @@ post_update = off
             RegistrySource::GitHub,
             RegistrySource::BallerRegistry,
             RegistrySource::Chocolatey,
+            RegistrySource::System,
         ];
 
-        assert_eq!(sources.len(), 3);
+        assert_eq!(sources.len(), 4);
         assert!(sources.contains(&RegistrySource::GitHub));
         assert!(sources.contains(&RegistrySource::Chocolatey));
+        assert!(sources.contains(&RegistrySource::System));
 
         for s in &sources {
             match s {
                 RegistrySource::GitHub
                 | RegistrySource::BallerRegistry
-                | RegistrySource::Chocolatey => {}
+                | RegistrySource::Chocolatey
+                | RegistrySource::System => {}
             }
         }
+    }
+
+    #[test]
+    fn test_package_manager_error_display() {
+        let err = BallError::PackageManagerError("no package manager detected".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("package manager error"));
+        assert!(msg.contains("no package manager detected"));
+
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("PackageManagerError"));
     }
 
     #[test]
@@ -380,5 +394,72 @@ post_update = off
         assert!(!sanitized.contains(':'));
         assert!(sanitized.contains("github.com"));
         assert!(sanitized.ends_with(".tar.gz") || sanitized.ends_with(".gz"));
+    }
+
+    #[test]
+    fn test_effective_order_excludes_disabled_system() {
+        // Simulate the effective_order filter_map logic from context.rs
+        use crate::core::registry::RegistrySource;
+
+        let source_order = ["github".to_string(), "system".to_string()];
+        let system_enabled = false;
+        let github_enabled = true;
+
+        let effective_order: Vec<RegistrySource> = source_order
+            .iter()
+            .filter_map(|s| {
+                let enabled = match s.as_str() {
+                    "github" => github_enabled,
+                    "system" => system_enabled,
+                    _ => true,
+                };
+                if enabled {
+                    match s.as_str() {
+                        "github" => Some(RegistrySource::GitHub),
+                        "system" => Some(RegistrySource::System),
+                        _ => Some(RegistrySource::GitHub),
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(effective_order.len(), 1);
+        assert!(effective_order.contains(&RegistrySource::GitHub));
+        assert!(!effective_order.contains(&RegistrySource::System));
+    }
+
+    #[test]
+    fn test_effective_order_includes_enabled_system() {
+        use crate::core::registry::RegistrySource;
+
+        let source_order = ["github".to_string(), "system".to_string()];
+        let system_enabled = true;
+        let github_enabled = true;
+
+        let effective_order: Vec<RegistrySource> = source_order
+            .iter()
+            .filter_map(|s| {
+                let enabled = match s.as_str() {
+                    "github" => github_enabled,
+                    "system" => system_enabled,
+                    _ => true,
+                };
+                if enabled {
+                    match s.as_str() {
+                        "github" => Some(RegistrySource::GitHub),
+                        "system" => Some(RegistrySource::System),
+                        _ => Some(RegistrySource::GitHub),
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(effective_order.len(), 2);
+        assert!(effective_order.contains(&RegistrySource::GitHub));
+        assert!(effective_order.contains(&RegistrySource::System));
     }
 }

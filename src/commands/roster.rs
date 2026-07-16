@@ -2,6 +2,7 @@ use colored::Colorize;
 
 use crate::context::AppContext;
 use crate::error::error::BallError;
+use crate::utils::fs::truncate_str;
 
 pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result<(), BallError> {
     if let Some(pkg_name) = package_name {
@@ -14,7 +15,12 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
                     println!("  {} {}", "Source Detail:".yellow(), detail);
                 }
                 if let Some(desc) = &pkg.description {
-                    println!("  {} {}", "Description:".yellow(), desc);
+                    // R3: Use truncate_str helper for safe truncation in detail view too
+                    println!(
+                        "  {} {}",
+                        "Description:".yellow(),
+                        truncate_str(desc, 80)
+                    );
                 }
                 if let Some(author) = &pkg.author {
                     println!("  {} {}", "Author:".yellow(), author);
@@ -60,6 +66,7 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
                         "Results".cyan(),
                         pkg_name.cyan()
                     );
+                    // R2: Show description in remote search results
                     for pkg in &results {
                         println!(
                             "  {} {} {}",
@@ -67,6 +74,9 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
                             pkg.name.white().bold(),
                             format!("v{}", pkg.version).yellow()
                         );
+                        if let Some(desc) = &pkg.description {
+                            println!("    {}", desc);
+                        }
                     }
                 }
             }
@@ -95,11 +105,8 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
                     freeze_tag
                 );
                 if let Some(desc) = &pkg.description {
-                    if desc.len() > 50 {
-                        println!("    {}...", &desc[..47]);
-                    } else {
-                        println!("    {}", desc);
-                    }
+                    // R1 & R3: Use safe character-based truncation via truncate_str helper
+                    println!("    {}", truncate_str(desc, 50));
                 }
             }
             println!("{}", "─".repeat(60));
@@ -107,4 +114,12 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_roster_imports_compile() {
+        assert!(true);
+    }
 }

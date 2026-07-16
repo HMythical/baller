@@ -40,14 +40,35 @@ Done ripgrep v14.1.0 drafted!
 ## eject — Uninstall a Package
 
 ```
-baller eject <package_name>
+baller eject [--yes/-y] <package_name>
 ```
 
-Removes a package's binary symlink, deletes its database record, and runs hooks.
+Removes a package's binary symlink, runs hooks, cleans the cache directory,
+deletes its database record, and removes any orphaned dependencies.
+
+When ejecting a package, BALLER checks for orphaned dependencies — packages
+installed as transitive dependencies that are no longer required by any other
+installed package. Orphans are automatically removed.
+
+The cache directory (`~/.baller/cache/<package>-<version>`) is cleaned after
+the database entry is removed.
+
+The post-eject hook runs before the database entry is removed, so a hook
+failure leaves the package record intact for retry.
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--yes`, `-y` | Skip the confirmation prompt |
 
 **Example:**
 ```
 $ baller eject ripgrep
+Are you sure you want to eject ripgrep? [y/N] y
+Removing unused dependency regex-automata...
+Ejected ripgrep
+
+$ baller eject --yes ripgrep
 Ejected ripgrep
 ```
 
@@ -63,6 +84,7 @@ baller roster [package_name]
 ```
 
 **Without arguments:** Lists all installed packages with versions.
+Descriptions are safely truncated — no multi-byte character panics.
 
 ```
 $ baller roster
@@ -77,7 +99,8 @@ Active Roster (2 players):
 ```
 
 **With a package name:** Shows detailed info for a locally installed package,
-or falls back to searching remote registries.
+or falls back to searching remote registries. Remote search results include
+descriptions when available.
 
 ```
 $ baller roster ripgrep
@@ -119,8 +142,10 @@ Thawed fd (unfrozen)
 baller substitute <old_package> <new_package>
 ```
 
-Installs the new package, then removes the old one. If the old package is not
-in the roster, it is skipped with a warning.
+Installs the new package (including all resolved dependencies), then removes
+the old one. If the old package is not in the roster, it is skipped with a
+warning. Hooks run for both the install (pre-install / post-install for each
+resolved package) and the removal (post-eject for the old package).
 
 **Example:**
 ```
@@ -136,15 +161,26 @@ Done Substitution complete: ripgrep -> hound
 ## sweep — Clean Cache
 
 ```
-baller sweep
+baller sweep [--yes/-y]
 ```
 
 Removes all cached archive downloads from `~/.baller/cache/` and recreates the
-directory.
+directory. Shows the cache size in human-readable format (e.g. `45.2 MB`) before
+prompting.
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--yes`, `-y` | Skip the confirmation prompt |
 
 **Example:**
 ```
 $ baller sweep
+Are you sure you want to clear 45.2 MB of cached packages? [y/N] y
+Sweeping cache (45.2 MB)...
+Done Cache cleaned
+
+$ baller sweep --yes
 Sweeping cache (45.2 MB)...
 Done Cache cleaned
 ```
@@ -158,12 +194,21 @@ baller update
 ```
 
 Iterates all installed packages, skips frozen ones, checks the registry for
-newer versions, and upgrades each one.
+newer versions, and upgrades each one. Version comparison uses semantic
+versioning (`semver::Version`) when both versions parse as valid semver; falls
+back to string comparison otherwise.
+
+New dependencies introduced by the updated version are automatically installed.
+Old extracted cache directories are cleaned before the new version is installed.
+
+Both `BALLER_OLD_VERSION` and `BALLER_NEW_VERSION` environment variables are
+available in pre-update and post-update hooks.
 
 **Example:**
 ```
 $ baller update
 OK ripgrep is up-to-date
+Fetching new dependency: libz-sys
 Updating fd: v8.7.0 -> v8.8.0
   Downloading fd [===========>] ...
 Done Update complete: 1 updated, 0 failed
@@ -178,4 +223,20 @@ baller build <path>
 ```
 
 Parses a `baller.toml` or `baller.json` manifest and builds the package.
-Not yet implemented — prints an informational message.
+Not yet implemented — returns an error with a clear message and non-zero exit code.
+
+---
+
+## Confirmation Prompts
+
+Destructive commands (`eject`, `sweep`) prompt for confirmation unless the
+`--yes` or `-y` flag is passed:
+
+```
+$ baller eject myapp
+Are you sure you want to eject myapp? [y/N] y
+Ejected myapp
+
+$ baller eject --yes myapp
+Ejected myapp
+```

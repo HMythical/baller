@@ -29,6 +29,27 @@ Queries a NuGet OData v2 feed (default `https://community.chocolatey.org/api/v2`
 - Normalizes NuGet version schemes to semver
 - Parses dependency strings from NuGet package metadata
 
+### 4. System Package Manager (`src/http/system.rs`) — NEW
+
+Wraps the system's native Linux package manager (apt, dnf, or pacman) via CLI commands.
+Only active on Linux systems; auto-detects distro from `/etc/os-release`.
+
+- **Distro detection**: Reads `ID` field from `/etc/os-release`, maps to apt/dnf/pacman
+- **Detection table**:
+  - Ubuntu, Debian, Linux Mint, Pop!_OS, Elementary OS, Zorin, Kali, Raspbian → `apt`
+  - Fedora, RHEL, CentOS, Rocky Linux, AlmaLinux, Oracle Linux, Nobara → `dnf`
+  - Arch Linux, Manjaro, EndeavourOS, Garuda Linux, Arco Linux → `pacman`
+- **Fetch**: Shells to `apt-cache show`, `dnf info`, or `pacman -Si` for package metadata
+- **Search**: Shells to `apt-cache search`, `dnf search`, or `pacman -Ss` for package listings
+- **Dependencies**: Parses native dependency lists (comma-separated for apt, space-separated for dnf/pacman)
+- **No HTTP client needed** — operates entirely via local CLI
+
+```rust
+// Package source metadata includes the detected manager
+PackageSource::System { manager: "apt" }  // or "dnf" or "pacman"
+RegistrySource::System                     // registry-level source enum
+```
+
 ## Fallback Chain
 
 Sources are tried in the order specified by `source_order` in the config.
@@ -55,6 +76,7 @@ chocolatey_feed_url = https://community.chocolatey.org/api/v2
 github_enabled = true
 baller_enabled = true
 chocolatey_enabled = true
+system_enabled = true
 ```
 
 ### Per-Source Enable/Disable
@@ -67,7 +89,7 @@ silently dropped from the resolved list.
 
 ```ini
 # Use only the baller registry, skip GitHub and Chocolatey
-source_order = github,baller,chocolatey
+source_order = github,baller,chocolatey,system
 github_enabled = false
 chocolatey_enabled = false
 ```
@@ -96,3 +118,17 @@ To add a new registry source:
 5. Wire it into `RegistryClient` in `src/core/registry.rs`
 6. Add config keys for the new source in `src/config/config.rs`
 7. Add the enabled flag filter in `AppContext::new()` in `src/context.rs`
+
+### Local CLI Source Pattern (System Registry)
+
+The System registry (`src/http/system.rs`) demonstrates a non-HTTP registry source.
+Key differences from HTTP-based sources:
+
+- No `HttpClient` dependency — use `std::process::Command` for CLI calls
+- Auto-detects capability at construction time via `detect()` (returns `None` if no PM found)
+- Gracefully returns `BallError::PackageManagerError` when no manager is available
+- Stores detected manager in `PackageSource::System { manager: "apt" }` for provenance
+
+## System Registry Details
+
+See [docs/system-registry.md](system-registry.md) for the complete reference.

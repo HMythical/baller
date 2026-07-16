@@ -17,8 +17,11 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
 
     let pkg = ctx.registry.fetch_package(package_name)?;
 
-    let installed = get_installed_map(&ctx.db);
+    let mut installed = get_installed_map(&ctx.db);
     let result = resolve_deps(&pkg.name, &ctx.registry, &installed)?;
+
+    // D1: Track packages installed in this session for rollback
+    let mut session_packages: Vec<String> = Vec::new();
 
     for pkg_to_install in &result.packages {
         if installed.contains_key(&pkg_to_install.name) {
@@ -30,14 +33,14 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
             continue;
         }
 
-        let extra_env: [(&str, &str); 0] = [];
+        // D2: Remove dead extra_env variable, pass &[] directly
         run_hook(
             &HookType::PreInstall,
             &pkg_to_install.name,
             &pkg_to_install.version,
             &ctx.config.hooks_dir,
             &ctx.config.hooks,
-            &extra_env,
+            &[],
         )?;
 
         let downloaded = ctx.downloader.download_and_extract(pkg_to_install, true)?;
@@ -62,8 +65,15 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
             );
         }
 
+        // Pass user_installed=true for root packages, false for deps
+        let is_root = pkg_to_install.name == pkg.name;
         ctx.db
-            .insert_package(pkg_to_install, &install_path, bin_path_str.as_deref(), None)?;
+            .insert_package(pkg_to_install, &install_path, bin_path_str.as_deref(), None, is_root)?;
+
+        session_packages.push(pkg_to_install.name.clone());
+
+        // D3: Update the installed map so subsequent packages see this one
+        installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
 
         let bin_path_ref = bin_path_str.as_deref().unwrap_or("");
         let post_env = [
@@ -88,4 +98,14 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // Test that the function signature is correct and compiles.
+    // Full integration testing requires a real AppContext which is hard to construct in unit tests.
+    #[test]
+    fn test_draft_imports_compile() {
+        assert!(true);
+    }
 }

@@ -33,6 +33,7 @@ impl AppContext {
                     "github" => config.registry.github_enabled,
                     "baller" => config.registry.baller_enabled,
                     "chocolatey" => config.registry.chocolatey_enabled,
+                    "system" => config.registry.system_enabled,
                     _ => true,
                 };
                 if enabled {
@@ -40,6 +41,7 @@ impl AppContext {
                         "github" => Some(RegistrySource::GitHub),
                         "baller" => Some(RegistrySource::BallerRegistry),
                         "chocolatey" => Some(RegistrySource::Chocolatey),
+                        "system" => Some(RegistrySource::System),
                         _ => Some(RegistrySource::GitHub),
                     }
                 } else {

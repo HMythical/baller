@@ -3,6 +3,7 @@ use crate::error::error::BallError;
 use crate::http::chocolatey::ChocolateyRegistry;
 use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
+use crate::http::system::SystemRegistry;
 use crate::http::HttpClient;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -10,6 +11,7 @@ pub enum RegistrySource {
     GitHub,
     BallerRegistry,
     Chocolatey,
+    System,
 }
 
 #[allow(dead_code)]
@@ -22,6 +24,7 @@ pub struct RegistryClient {
     github: GitHubRegistry,
     baller_api: BallerRegistryApi,
     chocolatey: ChocolateyRegistry,
+    system: SystemRegistry,
     source_order: Vec<RegistrySource>,
 }
 
@@ -34,11 +37,13 @@ impl RegistryClient {
             "https://registry.baller.dev/api".to_string(),
         );
         let chocolatey = ChocolateyRegistry::new(client);
+        let system = SystemRegistry::detect();
 
         Self {
             github,
             baller_api,
             chocolatey,
+            system,
             source_order: vec![
                 RegistrySource::GitHub,
                 RegistrySource::BallerRegistry,
@@ -56,11 +61,13 @@ impl RegistryClient {
         let github = GitHubRegistry::new(client.clone());
         let baller_api = BallerRegistryApi::new(client.clone(), baller_registry_url);
         let chocolatey = ChocolateyRegistry::with_feed_url(client, chocolatey_feed_url);
+        let system = SystemRegistry::detect();
 
         Self {
             github,
             baller_api,
             chocolatey,
+            system,
             source_order,
         }
     }
@@ -99,6 +106,7 @@ impl RegistryClient {
                 RegistrySource::GitHub => self.github.search(query),
                 RegistrySource::BallerRegistry => self.baller_api.search(query),
                 RegistrySource::Chocolatey => self.chocolatey.search(query),
+                RegistrySource::System => self.system.search(query),
             };
 
             match results {
@@ -119,6 +127,7 @@ impl RegistryClient {
             RegistrySource::GitHub => self.github.fetch_package(name),
             RegistrySource::BallerRegistry => self.baller_api.fetch_package(name),
             RegistrySource::Chocolatey => self.chocolatey.fetch_package(name),
+            RegistrySource::System => self.system.fetch_package(name),
         }
     }
 }

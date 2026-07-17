@@ -24,6 +24,7 @@ tar = "0.4"
 bzip2 = "0.5"
 xz2 = "0.1"
 hex = "0.4"
+base64 = "0.22"
 semver = "1.0"
 url = "2.5"
 criterion = { version = "0.5", features = ["html_reports"] }

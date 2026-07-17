@@ -3,6 +3,42 @@ use std::process::Command;
 use crate::core::package::{Package, PackageSource};
 use crate::error::error::BallError;
 
+/// Install a system package using the native package manager.
+///
+/// Invokes the appropriate CLI (`apt-get`, `dnf`, or `pacman`) under `sudo`.
+/// Returns an error for unknown managers.
+pub fn install_system_package(manager: &str, name: &str) -> Result<(), BallError> {
+    let status = match manager {
+        "apt" => Command::new("sudo")
+            .args(["apt-get", "install", "-y", name])
+            .status()
+            .map_err(|e| BallError::PackageManagerError(format!("failed to run apt-get: {}", e)))?,
+        "dnf" => Command::new("sudo")
+            .args(["dnf", "install", "-y", name])
+            .status()
+            .map_err(|e| BallError::PackageManagerError(format!("failed to run dnf: {}", e)))?,
+        "pacman" => Command::new("sudo")
+            .args(["pacman", "-S", "--noconfirm", name])
+            .status()
+            .map_err(|e| BallError::PackageManagerError(format!("failed to run pacman: {}", e)))?,
+        _ => {
+            return Err(BallError::PackageManagerError(format!(
+                "unsupported system package manager: {}",
+                manager
+            )));
+        }
+    };
+
+    if !status.success() {
+        return Err(BallError::PackageManagerError(format!(
+            "{} install of '{}' exited with status {}",
+            manager, name, status
+        )));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum SystemManager {
     Apt,
@@ -22,10 +58,9 @@ impl SystemRegistry {
     }
 
     pub fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| BallError::PackageManagerError("no system package manager detected".to_string()))?;
+        let manager = self.manager.as_ref().ok_or_else(|| {
+            BallError::PackageManagerError("no system package manager detected".to_string())
+        })?;
 
         match manager {
             SystemManager::Apt => self.fetch_apt(name),
@@ -35,10 +70,9 @@ impl SystemRegistry {
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<Package>, BallError> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| BallError::PackageManagerError("no system package manager detected".to_string()))?;
+        let manager = self.manager.as_ref().ok_or_else(|| {
+            BallError::PackageManagerError("no system package manager detected".to_string())
+        })?;
 
         match manager {
             SystemManager::Apt => self.search_apt(query),
@@ -80,7 +114,8 @@ impl SystemRegistry {
             if let Some(val) = line.strip_prefix("Version:") {
                 in_description = false;
                 version = val.trim().to_string();
-            } else if let Some(val) = line.strip_prefix("Description-en:")
+            } else if let Some(val) = line
+                .strip_prefix("Description-en:")
                 .or_else(|| line.strip_prefix("Description:"))
             {
                 in_description = true;
@@ -109,7 +144,13 @@ impl SystemRegistry {
                 } else if let Some(val) = line.strip_prefix("Depends:") {
                     let deps_str = val.trim();
                     for dep in deps_str.split(',') {
-                        let dep_pkg = dep.trim().split('(').next().unwrap_or(dep.trim()).trim().to_string();
+                        let dep_pkg = dep
+                            .trim()
+                            .split('(')
+                            .next()
+                            .unwrap_or(dep.trim())
+                            .trim()
+                            .to_string();
                         if !dep_pkg.is_empty() && !dependencies.contains(&dep_pkg) {
                             dependencies.push(dep_pkg);
                         }
@@ -125,12 +166,25 @@ impl SystemRegistry {
         Ok(Package {
             name: name.to_string(),
             version,
-            description: if description.is_empty() { None } else { Some(description) },
-            author: if author.is_empty() { None } else { Some(author) },
+            description: if description.is_empty() {
+                None
+            } else {
+                Some(description)
+            },
+            author: if author.is_empty() {
+                None
+            } else {
+                Some(author)
+            },
             repository: None,
             architectures: None,
-            dependencies: if dependencies.is_empty() { None } else { Some(dependencies) },
+            dependencies: if dependencies.is_empty() {
+                None
+            } else {
+                Some(dependencies)
+            },
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::System {
                 manager: "apt".to_string(),
@@ -139,9 +193,8 @@ impl SystemRegistry {
     }
 
     fn fetch_dnf(&self, name: &str) -> Result<Package, BallError> {
-        let output = Self::run_cmd("dnf", &["info", "--installed", name]).or_else(|_|{
-            Self::run_cmd("dnf", &["info", name])
-        });
+        let output = Self::run_cmd("dnf", &["info", "--installed", name])
+            .or_else(|_| Self::run_cmd("dnf", &["info", name]));
 
         let output = match output {
             Ok(o) => o,
@@ -161,7 +214,9 @@ impl SystemRegistry {
             if line.starts_with("Version") {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
-                    version = parts[1].trim().replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-', "");
+                    version = parts[1]
+                        .trim()
+                        .replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-', "");
                 }
             } else if line.starts_with("Packag") {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
@@ -178,7 +233,10 @@ impl SystemRegistry {
                 if !deps_part.is_empty() {
                     for dep in deps_part.split(' ') {
                         let dep = dep.trim();
-                        if !dep.is_empty() && !dep.contains('(') && !dependencies.contains(&dep.to_string()) {
+                        if !dep.is_empty()
+                            && !dep.contains('(')
+                            && !dependencies.contains(&dep.to_string())
+                        {
                             dependencies.push(dep.to_string());
                         }
                     }
@@ -188,13 +246,30 @@ impl SystemRegistry {
 
         Ok(Package {
             name: name.to_string(),
-            version: if version.is_empty() { "unknown".to_string() } else { version },
-            description: if summary.is_empty() { None } else { Some(summary) },
-            author: if author.is_empty() { None } else { Some(author) },
+            version: if version.is_empty() {
+                "unknown".to_string()
+            } else {
+                version
+            },
+            description: if summary.is_empty() {
+                None
+            } else {
+                Some(summary)
+            },
+            author: if author.is_empty() {
+                None
+            } else {
+                Some(author)
+            },
             repository: None,
             architectures: None,
-            dependencies: if dependencies.is_empty() { None } else { Some(dependencies) },
+            dependencies: if dependencies.is_empty() {
+                None
+            } else {
+                Some(dependencies)
+            },
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::System {
                 manager: "dnf".to_string(),
@@ -244,13 +319,26 @@ impl SystemRegistry {
 
         Ok(Package {
             name: name.to_string(),
-            version: if version.is_empty() { "unknown".to_string() } else { version },
-            description: if description.is_empty() { None } else { Some(description) },
+            version: if version.is_empty() {
+                "unknown".to_string()
+            } else {
+                version
+            },
+            description: if description.is_empty() {
+                None
+            } else {
+                Some(description)
+            },
             author: None,
             repository: None,
             architectures: None,
-            dependencies: if dependencies.is_empty() { None } else { Some(dependencies) },
+            dependencies: if dependencies.is_empty() {
+                None
+            } else {
+                Some(dependencies)
+            },
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::System {
                 manager: "pacman".to_string(),
@@ -275,6 +363,7 @@ impl SystemRegistry {
                         architectures: None,
                         dependencies: None,
                         sha256: None,
+                        hash_algorithm: None,
                         download_url: None,
                         source: PackageSource::System {
                             manager: "apt".to_string(),
@@ -302,15 +391,20 @@ impl SystemRegistry {
                     results.push(Package {
                         name: name.to_string(),
                         version: String::new(),
-                        description: if summary.is_empty() { None } else { Some(summary.to_string()) },
+                        description: if summary.is_empty() {
+                            None
+                        } else {
+                            Some(summary.to_string())
+                        },
                         author: None,
                         repository: None,
                         architectures: None,
                         dependencies: None,
                         sha256: None,
+                        hash_algorithm: None,
                         download_url: None,
                         source: PackageSource::System {
-                            manager: "dnf".to_string(),
+                            manager: "apt".to_string(),
                         },
                     });
                 }
@@ -358,9 +452,10 @@ impl SystemRegistry {
                         architectures: None,
                         dependencies: None,
                         sha256: None,
+                        hash_algorithm: None,
                         download_url: None,
                         source: PackageSource::System {
-                            manager: "pacman".to_string(),
+                            manager: "dnf".to_string(),
                         },
                     });
                 }
@@ -378,9 +473,14 @@ fn detect_system_manager(path: &str) -> Option<SystemManager> {
         if let Some(id_value) = line.strip_prefix("ID=") {
             let id = id_value.trim_matches('"');
             return match id {
-                "ubuntu" | "debian" | "linuxmint" | "pop" | "elementary" | "zorin" | "kali" | "raspbian" => Some(SystemManager::Apt),
-                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "nobara" => Some(SystemManager::Dnf),
-                "arch" | "manjaro" | "endeavouros" | "garuda" | "arco" => Some(SystemManager::Pacman),
+                "ubuntu" | "debian" | "linuxmint" | "pop" | "elementary" | "zorin" | "kali"
+                | "raspbian" => Some(SystemManager::Apt),
+                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "nobara" => {
+                    Some(SystemManager::Dnf)
+                }
+                "arch" | "manjaro" | "endeavouros" | "garuda" | "arco" => {
+                    Some(SystemManager::Pacman)
+                }
                 _ => None,
             };
         }
@@ -455,14 +555,30 @@ mod tests {
 
     #[test]
     fn test_detect_id_mapping_debian() {
-        let ids = vec!["ubuntu", "debian", "linuxmint", "pop", "elementary", "zorin", "kali", "raspbian"];
+        let ids = vec![
+            "ubuntu",
+            "debian",
+            "linuxmint",
+            "pop",
+            "elementary",
+            "zorin",
+            "kali",
+            "raspbian",
+        ];
         for id in ids {
             let line = format!("ID={}", id);
             if let Some(val) = line.strip_prefix("ID=") {
                 let v = val.trim_matches('"');
                 assert!(matches!(
                     v,
-                    "ubuntu" | "debian" | "linuxmint" | "pop" | "elementary" | "zorin" | "kali" | "raspbian"
+                    "ubuntu"
+                        | "debian"
+                        | "linuxmint"
+                        | "pop"
+                        | "elementary"
+                        | "zorin"
+                        | "kali"
+                        | "raspbian"
                 ));
             }
         }
@@ -470,12 +586,23 @@ mod tests {
 
     #[test]
     fn test_detect_id_mapping_fedora() {
-        let ids = vec!["fedora", "rhel", "centos", "rocky", "almalinux", "ol", "nobara"];
+        let ids = vec![
+            "fedora",
+            "rhel",
+            "centos",
+            "rocky",
+            "almalinux",
+            "ol",
+            "nobara",
+        ];
         for id in ids {
             let line = format!("ID={}", id);
             if let Some(val) = line.strip_prefix("ID=") {
                 let v = val.trim_matches('"');
-                assert!(matches!(v, "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "nobara"));
+                assert!(matches!(
+                    v,
+                    "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "nobara"
+                ));
             }
         }
     }
@@ -487,7 +614,10 @@ mod tests {
             let line = format!("ID={}", id);
             if let Some(val) = line.strip_prefix("ID=") {
                 let v = val.trim_matches('"');
-                assert!(matches!(v, "arch" | "manjaro" | "endeavouros" | "garuda" | "arco"));
+                assert!(matches!(
+                    v,
+                    "arch" | "manjaro" | "endeavouros" | "garuda" | "arco"
+                ));
             }
         }
     }
@@ -498,7 +628,29 @@ mod tests {
         if let Some(val) = line.strip_prefix("ID=") {
             let v = val.trim_matches('"');
             // unknown_distro_xyz should NOT match any known distro
-            assert!(!matches!(v, "ubuntu" | "debian" | "linuxmint" | "pop" | "elementary" | "zorin" | "kali" | "raspbian" | "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "nobara" | "arch" | "manjaro" | "endeavouros" | "garuda" | "arco"));
+            assert!(!matches!(
+                v,
+                "ubuntu"
+                    | "debian"
+                    | "linuxmint"
+                    | "pop"
+                    | "elementary"
+                    | "zorin"
+                    | "kali"
+                    | "raspbian"
+                    | "fedora"
+                    | "rhel"
+                    | "centos"
+                    | "rocky"
+                    | "almalinux"
+                    | "ol"
+                    | "nobara"
+                    | "arch"
+                    | "manjaro"
+                    | "endeavouros"
+                    | "garuda"
+                    | "arco"
+            ));
         }
     }
 
@@ -535,7 +687,8 @@ Depends: vim-common (= 2:8.1.0875-5ubuntu2), vim-runtime (= 2:8.1.0875-5ubuntu2)
             if let Some(val) = line.strip_prefix("Version:") {
                 in_description = false;
                 version = val.trim().to_string();
-            } else if let Some(val) = line.strip_prefix("Description-en:")
+            } else if let Some(val) = line
+                .strip_prefix("Description-en:")
                 .or_else(|| line.strip_prefix("Description:"))
             {
                 in_description = true;
@@ -564,7 +717,13 @@ Depends: vim-common (= 2:8.1.0875-5ubuntu2), vim-runtime (= 2:8.1.0875-5ubuntu2)
                 } else if let Some(val) = line.strip_prefix("Depends:") {
                     let deps_str = val.trim();
                     for dep in deps_str.split(',') {
-                        let dep_pkg = dep.trim().split('(').next().unwrap_or(dep.trim()).trim().to_string();
+                        let dep_pkg = dep
+                            .trim()
+                            .split('(')
+                            .next()
+                            .unwrap_or(dep.trim())
+                            .trim()
+                            .to_string();
                         if !dep_pkg.is_empty() && !dependencies.contains(&dep_pkg) {
                             dependencies.push(dep_pkg);
                         }
@@ -617,7 +776,8 @@ Summary         : The common files needed by any version of the VIM editor
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     summary = format!("{} {}", summary.trim(), parts[1].trim())
-                        .trim().to_string();
+                        .trim()
+                        .to_string();
                 }
             }
         }
@@ -655,13 +815,15 @@ Conflicts       : vim-runtime
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     version = format!("{} {}", version.trim(), parts[1].trim())
-                        .trim().to_string();
+                        .trim()
+                        .to_string();
                 }
             } else if line.starts_with("Description") {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     description = format!("{} {}", description.trim(), parts[1].trim())
-                        .trim().to_string();
+                        .trim()
+                        .to_string();
                 }
             }
         }
@@ -745,7 +907,13 @@ extra/git 2.40.1-1
         let deps_str = "vim-common (= 1.0), vim-common (>= 2.0), vim-runtime (= 1.0)";
         let mut dependencies = Vec::new();
         for dep in deps_str.split(',') {
-            let dep_pkg = dep.trim().split('(').next().unwrap_or(dep.trim()).trim().to_string();
+            let dep_pkg = dep
+                .trim()
+                .split('(')
+                .next()
+                .unwrap_or(dep.trim())
+                .trim()
+                .to_string();
             if !dep_pkg.is_empty() && !dependencies.contains(&dep_pkg) {
                 dependencies.push(dep_pkg);
             }
@@ -773,8 +941,11 @@ extra/git 2.40.1-1
                         architectures: None,
                         dependencies: None,
                         sha256: None,
+                        hash_algorithm: None,
                         download_url: None,
-                        source: PackageSource::System { manager: "apt".to_string() },
+                        source: PackageSource::System {
+                            manager: "apt".to_string(),
+                        },
                     };
                     assert_eq!(pkg.version, "unknown");
                     assert!(!pkg.name.is_empty());
@@ -806,7 +977,9 @@ Packager        : Fedora Project
             if line.starts_with("Version") {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
-                    version = parts[1].trim().replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-', "");
+                    version = parts[1]
+                        .trim()
+                        .replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-', "");
                 }
             }
         }
@@ -841,10 +1014,22 @@ Packager        : Fedora Project
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        for id in ["ubuntu", "debian", "linuxmint", "pop", "elementary", "zorin", "kali", "raspbian"] {
+        for id in [
+            "ubuntu",
+            "debian",
+            "linuxmint",
+            "pop",
+            "elementary",
+            "zorin",
+            "kali",
+            "raspbian",
+        ] {
             let path = temp_dir.join(format!("os-release-{}", id));
             std::fs::write(&path, format!("ID={}\n", id)).unwrap();
-            assert_eq!(detect_system_manager(path.to_str().unwrap()), Some(SystemManager::Apt));
+            assert_eq!(
+                detect_system_manager(path.to_str().unwrap()),
+                Some(SystemManager::Apt)
+            );
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -856,10 +1041,21 @@ Packager        : Fedora Project
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        for id in ["fedora", "rhel", "centos", "rocky", "almalinux", "ol", "nobara"] {
+        for id in [
+            "fedora",
+            "rhel",
+            "centos",
+            "rocky",
+            "almalinux",
+            "ol",
+            "nobara",
+        ] {
             let path = temp_dir.join(format!("os-release-{}", id));
             std::fs::write(&path, format!("ID={}\n", id)).unwrap();
-            assert_eq!(detect_system_manager(path.to_str().unwrap()), Some(SystemManager::Dnf));
+            assert_eq!(
+                detect_system_manager(path.to_str().unwrap()),
+                Some(SystemManager::Dnf)
+            );
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -874,7 +1070,10 @@ Packager        : Fedora Project
         for id in ["arch", "manjaro", "endeavouros", "garuda", "arco"] {
             let path = temp_dir.join(format!("os-release-{}", id));
             std::fs::write(&path, format!("ID={}\n", id)).unwrap();
-            assert_eq!(detect_system_manager(path.to_str().unwrap()), Some(SystemManager::Pacman));
+            assert_eq!(
+                detect_system_manager(path.to_str().unwrap()),
+                Some(SystemManager::Pacman)
+            );
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);

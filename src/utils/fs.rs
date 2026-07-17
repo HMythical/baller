@@ -145,7 +145,12 @@ fn is_executable(path: &Path) -> bool {
 /// Adds "..." if truncated.
 pub fn truncate_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() > max_chars {
-        format!("{}...", s.chars().take(max_chars.saturating_sub(3)).collect::<String>())
+        format!(
+            "{}...",
+            s.chars()
+                .take(max_chars.saturating_sub(3))
+                .collect::<String>()
+        )
     } else {
         s.to_string()
     }

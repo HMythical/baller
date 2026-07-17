@@ -73,6 +73,7 @@ impl BallerConfig {
                     "github".to_string(),
                     "baller".to_string(),
                     "chocolatey".to_string(),
+                    "system".to_string(),
                 ],
                 baller_registry_url: "https://registry.baller.dev/api".to_string(),
                 chocolatey_feed_url: "https://community.chocolatey.org/api/v2".to_string(),
@@ -505,11 +506,21 @@ post_update = off
 
     #[test]
     fn test_parse_config_system_enabled_aliases() {
-        for (val, expected) in &[("yes", true), ("0", false), ("1", true), ("off", false), ("ON", true)] {
+        for (val, expected) in &[
+            ("yes", true),
+            ("0", false),
+            ("1", true),
+            ("off", false),
+            ("ON", true),
+        ] {
             let content = format!("[registry]\nsystem_enabled = {}\n", val);
             let (path, dir) = write_config(&content);
             let config = BallerConfig::parse_config(&path).unwrap();
-            assert_eq!(config.registry.system_enabled, *expected, "system_enabled={}", val);
+            assert_eq!(
+                config.registry.system_enabled, *expected,
+                "system_enabled={}",
+                val
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

@@ -76,6 +76,13 @@ B.A.L.L.E.R is a general-purpose package manager for casual users and serious de
 
 The goal is to complement existing package managers (Chocolatey, apt, npm, NuGet, etc.) by providing access to both popular packages and more obscure ones that other managers don't distribute — all through a single, consistent CLI.
 
+### Supported Sources
+
+- **GitHub Releases** — download from GitHub release assets
+- **Baller Registry** — custom registry API
+- **Chocolatey/NuGet** — install from the Chocolatey community feed (SHA-512 verified)
+- **System Package Manager** — wraps apt, dnf, or pacman for native Linux packages
+
 ---
 
 ## Building

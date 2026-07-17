@@ -77,6 +77,7 @@ impl GitHubRegistry {
             architectures: None,
             dependencies: None,
             sha256,
+            hash_algorithm: None,
             download_url,
             source: PackageSource::GitHub {
                 owner: owner.clone(),
@@ -133,6 +134,7 @@ impl GitHubRegistry {
             architectures: None,
             dependencies: None,
             sha256,
+            hash_algorithm: None,
             download_url,
             source: PackageSource::GitHub {
                 owner: owner.clone(),
@@ -162,6 +164,7 @@ impl GitHubRegistry {
                     architectures: None,
                     dependencies: None,
                     sha256: None,
+                    hash_algorithm: None,
                     download_url: None,
                     source: PackageSource::GitHub {
                         owner: item.owner.login,

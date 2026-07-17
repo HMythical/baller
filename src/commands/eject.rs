@@ -14,7 +14,12 @@ use crate::platform::windows::WindowsManager as ActiveManager;
 
 pub fn execute_eject(ctx: &AppContext, package_name: &str, force: bool) -> Result<(), BallError> {
     // E4: Confirmation prompt (unless --yes/-y)
-    if !force && !confirm(&format!("Are you sure you want to eject {}? [y/N]", package_name.cyan())) {
+    if !force
+        && !confirm(&format!(
+            "Are you sure you want to eject {}? [y/N]",
+            package_name.cyan()
+        ))
+    {
         println!("Aborted.");
         return Ok(());
     }
@@ -55,10 +60,7 @@ pub fn execute_eject(ctx: &AppContext, package_name: &str, force: bool) -> Resul
         if !other_pkg.user_installed && *other_pkg.name != installed.name {
             let depended_on = ctx.db.is_depended_on(&other_pkg.name).unwrap_or(false);
             if !depended_on {
-                println!(
-                    "Removing unused dependency {}...",
-                    other_pkg.name.cyan()
-                );
+                println!("Removing unused dependency {}...", other_pkg.name.cyan());
                 // Remove symlink if it exists
                 let _ = ActiveManager::remove_symlink(&other_pkg.name);
                 // Remove from DB
@@ -74,11 +76,7 @@ pub fn execute_eject(ctx: &AppContext, package_name: &str, force: bool) -> Resul
         .join(format!("{}-{}", installed.name, installed.version));
     let _ = std::fs::remove_dir_all(&extract_dir);
 
-    println!(
-        "{} {} ejected",
-        "Ejected".red().bold(),
-        package_name.cyan()
-    );
+    println!("{} {} ejected", "Ejected".red().bold(), package_name.cyan());
     Ok(())
 }
 

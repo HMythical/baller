@@ -83,7 +83,13 @@ to every command function and sub-operation.
 The universal package metadata struct used across the entire system:
 - `name`, `version`, `description`, `author`
 - `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`, `System { manager }`)
-- `download_url`, `sha256`, `dependencies`
+- `download_url`, `sha256`, `hash_algorithm`, `dependencies`
+
+The `hash_algorithm` field (e.g., `"SHA256"`, `"SHA512"`) is set by the
+Chocolatey source to indicate which hash algorithm was used. When present,
+the downloader decodes the base64 hash and verifies using the specified
+algorithm. For GitHub/Baller sources, `hash_algorithm` is `None` and the
+downloader defaults to SHA-256 hex verification.
 
 ## Platform Abstraction
 
@@ -102,10 +108,15 @@ The `RegistryClient` iterates sources in configurable order (`source_order`),
 trying each until one returns successfully. The per-source `_enabled` booleans
 act as a filter — disabled sources are skipped entirely.
 
+The default `source_order` is `github, baller, chocolatey, system`, so
+system packages (apt/dnf/pacman) are tried as a last resort. When all
+sources fail, the returned error lists every source that was tried and the
+reason it failed.
+
 ```
 request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed] ?→ [System PM]
               ↓ failure           ↓ failure               ↓ failure            ↓ failure
-          try next             try next              return error         return error
+          try next             try next              try next              return error
 ```
 
 ## Dependency Resolution
@@ -115,9 +126,54 @@ request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed] ?→
 2. Fetches metadata for each dependency from the registry
 3. Builds a dependency graph
 4. Validates version constraints (using `semver::VersionReq`)
-5. Detects cycles (DFS with White/Gray/Black coloring)
+5. Detects cycles (DFS with White/Gray/Black coloring) — skipped for system packages
 6. Topological sort (DFS post-order) for install order
 7. Returns packages in dependency-first order
+
+**System package resilience**: The resolver tolerates common characteristics
+of system packages:
+- **Virtual packages** (e.g., `default-dbus-session-bus`): `PackageNotFound`
+  errors for individual dependencies are skipped rather than failing the
+  entire resolution.
+- **Dependency cycles** (e.g., `libc6 ↔ libgcc-s1`): Cycle detection is
+  skipped and the topological sort returns the best available ordering.
+- **Unparseable versions**: If `parse_version_flexible()` cannot normalize
+  a version to semver, a `PackageManagerError` is returned.
+
+### Version Format Flexibility
+
+Versions from the system package manager (e.g. `2:1.21-76`, `8.2.2637-20.fc36`)
+are **not** strict semver. `parse_version_flexible()` in `dep_solver.rs` handles:
+
+1. **Epoch prefix stripping** (`2:1.21` → `1.21`)
+2. **Revision suffix stripping** (`1.21-76` → `1.21`, `8.2.2637-20.fc36` → `8.2.2637`)
+3. **Embedded tag stripping** (`1.3.dfsg+really1.3.1` → `1.3`)
+4. **Build metadata stripping** (`1.0+build` → `1.0`)
+5. **Normalization to 3 segments** (`1.4.309.0` → `1.4.309`, `20240118` → `20240118.0.0`, `1.21` → `1.21.0`)
+6. **Pre-release handling**: Versions with semver pre-release tags (e.g., `1.21.76-2`) are
+   treated as revision-stripped (`-2` is a Debian revision, not a semver pre-release)
+
+## Installation Paths
+
+BALLER supports three installation paths, selected automatically based on
+`PackageSource`:
+
+- **Archive path** (GitHub / BallerRegistry): download archive →
+  SHA-256 hex verify → extract → symlink binary → record in DB.
+- **Chocolatey path** (Chocolatey/NuGet): download `.nupkg` archive →
+  SHA-512 base64 decode and verify → extract as zip → record in DB.
+  NuGet `.nupkg` files are zip archives and are extracted with the zip handler.
+  Archives without a recognized extension (e.g., cached from API URLs) fall
+  back to zip extraction.
+- **System path** (`PackageSource::System`): delegate to native package
+  manager via `install_system_package()` in `http/system.rs`, which runs
+  `sudo apt-get install -y <name>` (or dnf/pacman equivalent) and records
+  the package in the DB. No archive is downloaded, no symlink is created.
+
+The downloader (`Downloader::download_and_extract`) refuses to handle
+system packages, returning a `PackageManagerError` if invoked on one — this
+is a defensive check, since the `draft` command should always dispatch
+system packages to the system path.
 
 ## Error Handling and Rollback
 
@@ -139,6 +195,7 @@ Destructive commands (`eject`, `sweep`) prompt for confirmation unless the
 `--yes` / `-y` flag is passed.
 
 ### Version Comparison
-The `update` command uses semantic versioning (`semver::Version`) for version
-comparison. If versions cannot be parsed as valid semver, falls back to
-string comparison.
+The `update` command uses `parse_version_flexible()` for version comparison,
+which handles Debian epoch prefixes, revision suffixes, embedded tags,
+date-based versions, and multi-segment versions — not just strict semver.
+Falls back to string comparison when both versions cannot be parsed.

@@ -3,7 +3,9 @@ use colored::Colorize;
 use crate::context::AppContext;
 use crate::core::dep_solver::{get_installed_map, resolve_deps};
 use crate::core::hooks::{run_hook, HookType};
+use crate::core::package::PackageSource;
 use crate::error::error::BallError;
+use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
 
 #[cfg(target_os = "linux")]
@@ -43,6 +45,40 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
             &[],
         )?;
 
+        // System packages are installed via the native package manager,
+        // not downloaded/archived. Record them in the DB and continue.
+        match &pkg_to_install.source {
+            PackageSource::System { manager } => {
+                println!("{} installing via {}...", "System".green(), manager.cyan());
+                install_system_package(manager, &pkg_to_install.name)?;
+
+                let is_root = pkg_to_install.name == pkg.name;
+                ctx.db
+                    .insert_package(pkg_to_install, "", None, None, is_root)?;
+                session_packages.push(pkg_to_install.name.clone());
+                installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
+
+                run_hook(
+                    &HookType::PostInstall,
+                    &pkg_to_install.name,
+                    &pkg_to_install.version,
+                    &ctx.config.hooks_dir,
+                    &ctx.config.hooks,
+                    &[],
+                )?;
+
+                println!(
+                    "{} {} v{} installed via {}!",
+                    "Done".green().bold(),
+                    pkg_to_install.name.cyan(),
+                    pkg_to_install.version.yellow(),
+                    manager.cyan()
+                );
+                continue;
+            }
+            _ => {}
+        }
+
         let downloaded = ctx.downloader.download_and_extract(pkg_to_install, true)?;
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
@@ -67,8 +103,13 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
 
         // Pass user_installed=true for root packages, false for deps
         let is_root = pkg_to_install.name == pkg.name;
-        ctx.db
-            .insert_package(pkg_to_install, &install_path, bin_path_str.as_deref(), None, is_root)?;
+        ctx.db.insert_package(
+            pkg_to_install,
+            &install_path,
+            bin_path_str.as_deref(),
+            None,
+            is_root,
+        )?;
 
         session_packages.push(pkg_to_install.name.clone());
 

@@ -31,6 +31,8 @@ pub struct Package {
 
     pub sha256: Option<String>,
 
+    pub hash_algorithm: Option<String>,
+
     pub download_url: Option<String>,
 
     #[serde(default)]
@@ -49,6 +51,7 @@ impl Package {
             architectures: None,
             dependencies: None,
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::GitHub {
                 owner: String::new(),
@@ -122,6 +125,7 @@ mod tests {
             architectures: Some(vec!["x86_64".to_string()]),
             dependencies: Some(vec!["dep1".to_string(), "dep2 >=1.0".to_string()]),
             sha256: Some("abc123".to_string()),
+            hash_algorithm: None,
             download_url: Some("https://example.com/pkg.tar.gz".to_string()),
             source: PackageSource::BallerRegistry {
                 url: "https://reg.example.com".to_string(),

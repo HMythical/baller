@@ -17,10 +17,28 @@ baller draft <package_name>
 ```
 
 Fetches the package and all its transitive dependencies from the registry chain,
-downloads, verifies SHA-256, extracts, symlinks the binary, and records in the
-SQLite database.
+downloads, verifies the package hash (SHA-256 for GitHub/Baller, SHA-512 for
+Chocolatey), extracts, symlinks the binary, and records in the SQLite database.
 
-**Example:**
+### Installation Modes
+
+The `draft` command follows one of three code paths depending on the package
+source:
+
+**Archive mode** (GitHub, Baller Registry): download archive →
+SHA-256 verify → extract → symlink binary → record in DB.
+
+**Chocolatey mode** (Chocolatey/NuGet): download `.nupkg` archive →
+SHA-512 verify (base64 hash decoded from Chocolatey API) → extract as zip →
+record in DB. NuGet `.nupkg` files are treated as zip archives.
+
+**System mode** (`PackageSource::System`, i.e. `apt` / `dnf` / `pacman`):
+the package is installed in place by the native package manager under `sudo`.
+No archive is downloaded, no extraction happens, no symlink is created —
+BALLER only records the package in its database for tracking. The pre-install
+and post-install hooks still run.
+
+**Example — archive mode:**
 ```
 $ baller draft ripgrep
 Drafting ripgrep...
@@ -29,10 +47,31 @@ Drafting ripgrep...
 Done ripgrep v14.1.0 drafted!
 ```
 
+**Example — Chocolatey mode:**
+```
+$ baller draft python
+Drafting python...
+  Downloading python [=============>] 2.9 kB / 2.9 kB (1s)
+  SHA-512 verified
+Done python v3.15.0-b3 drafted!
+```
+
+**Example — system mode:**
+```
+$ baller draft default-jdk
+Drafting default-jdk...
+  System installing via apt...
+[sudo] password for user:
+Done default-jdk v2:1.21-76 installed via apt!
+```
+
 **What happens:**
 1. Fetch package metadata from registry chain
 2. Resolve all transitive dependencies
-3. For each dependency (in order): pre-install hook → download → hash verify → extract → symlink → DB insert → post-install hook
+3. For each dependency (in order): pre-install hook →
+   - **System source**: `sudo <pm> install -y <name>` → DB insert → post-install hook
+   - **Archive source**: download → hash verify → extract → symlink → DB insert → post-install hook
+   - **Chocolatey source**: download `.nupkg` → SHA-512 base64 verify → extract as zip → DB insert → post-install hook
 4. Install root package last
 
 ---
@@ -194,9 +233,11 @@ baller update
 ```
 
 Iterates all installed packages, skips frozen ones, checks the registry for
-newer versions, and upgrades each one. Version comparison uses semantic
-versioning (`semver::Version`) when both versions parse as valid semver; falls
-back to string comparison otherwise.
+newer versions, and upgrades each one. Version comparison uses
+`parse_version_flexible()` which handles Debian epoch prefixes, revision
+suffixes, embedded tags, date-based versions, and multi-segment versions —
+not just strict semver. Falls back to string comparison when both versions
+cannot be parsed.
 
 New dependencies introduced by the updated version are automatically installed.
 Old extracted cache directories are cleaned before the new version is installed.

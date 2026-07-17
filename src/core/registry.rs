@@ -73,20 +73,26 @@ impl RegistryClient {
     }
 
     pub fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
-        let mut last_error = None;
+        let mut errors: Vec<String> = Vec::new();
 
         for source in &self.source_order {
             match self.try_fetch(source, name) {
                 Ok(pkg) => return Ok(pkg),
                 Err(e) => {
-                    last_error = Some(e);
+                    errors.push(format!("{:?}: {}", source, e));
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
+        Err(if errors.is_empty() {
             BallError::PackageNotFound(format!("{} not found in any configured registry", name))
-        }))
+        } else {
+            BallError::PackageNotFound(format!(
+                "{} not found. Sources tried:\n  {}",
+                name,
+                errors.join("\n  ")
+            ))
+        })
     }
 
     #[allow(dead_code)]

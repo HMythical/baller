@@ -135,6 +135,7 @@ mod integration_tests {
             architectures: None,
             dependencies: Some(vec!["dep1".to_string(), "dep2 >=2.0".to_string()]),
             sha256: Some("abc".to_string()),
+            hash_algorithm: None,
             download_url: Some("https://example.com/pkg.tar.gz".to_string()),
             source: PackageSource::GitHub {
                 owner: "owner".to_string(),

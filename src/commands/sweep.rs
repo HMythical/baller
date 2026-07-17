@@ -3,7 +3,7 @@ use colored::Colorize;
 use crate::context::AppContext;
 use crate::error::error::BallError;
 use crate::utils::fs as util_fs;
-use crate::utils::fs::{format_size, confirm};
+use crate::utils::fs::{confirm, format_size};
 
 pub fn execute_sweep(ctx: &AppContext, force: bool) -> Result<(), BallError> {
     let cache_dir = &ctx.config.cache_dir;
@@ -13,7 +13,12 @@ pub fn execute_sweep(ctx: &AppContext, force: bool) -> Result<(), BallError> {
         let formatted = format_size(size);
 
         // SW2: Confirmation prompt unless --yes/-y
-        if !force && !confirm(&format!("Are you sure you want to clear {} of cached packages? [y/N]", formatted.green())) {
+        if !force
+            && !confirm(&format!(
+                "Are you sure you want to clear {} of cached packages? [y/N]",
+                formatted.green()
+            ))
+        {
             println!("Aborted.");
             return Ok(());
         } else {
@@ -24,7 +29,10 @@ pub fn execute_sweep(ctx: &AppContext, force: bool) -> Result<(), BallError> {
             );
         }
     } else {
-        println!("{} Cache directory does not exist or is empty", "Sweeping".cyan());
+        println!(
+            "{} Cache directory does not exist or is empty",
+            "Sweeping".cyan()
+        );
     }
 
     ctx.downloader.cleanup_cache()?;

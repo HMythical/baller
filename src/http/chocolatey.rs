@@ -18,6 +18,12 @@ struct ODataD {
 }
 
 #[derive(Debug, Deserialize)]
+struct ODataMetadata {
+    #[serde(default, rename = "media_src")]
+    media_src: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ODataPackage {
     id: String,
@@ -26,6 +32,7 @@ struct ODataPackage {
     description: Option<String>,
     #[serde(default)]
     authors: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     download_url: Option<String>,
     #[serde(default)]
@@ -37,6 +44,9 @@ struct ODataPackage {
     dependencies: Option<String>,
     #[serde(default)]
     project_url: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "__metadata")]
+    metadata: Option<ODataMetadata>,
 }
 
 pub struct ChocolateyRegistry {
@@ -59,12 +69,14 @@ impl ChocolateyRegistry {
 
     pub fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
         let url = format!(
-            "{}/Packages()?$filter=Id eq '{}'&$orderby=Version desc&$top=1&$select=Id,Version,Description,Authors,DownloadUrl,PackageHash,PackageHashAlgorithm,ProjectUrl",
+            "{}/Packages()?$filter=Id eq '{}'&$orderby=Version desc&$top=1&$select=Id,Version,Description,Authors,PackageHash,PackageHashAlgorithm,ProjectUrl",
             self.feed_url.trim_end_matches('/'),
             name
         );
 
-        let resp: ODataResponse = self.client.get_json_with_accept(&url, "application/json")?;
+        let resp: ODataResponse = self
+            .client
+            .get_json_with_accept(&url, "application/json;odata=verbose")?;
         let entry = resp
             .d
             .results
@@ -73,8 +85,8 @@ impl ChocolateyRegistry {
             .ok_or_else(|| BallError::PackageNotFound(name.to_string()))?;
 
         let version = normalize_nuget_version(&entry.version);
-        let download_url = entry.download_url;
-        let sha256 = entry.package_hash.map(|h| h.to_lowercase());
+        let download_url = derive_download_url(&entry);
+        let sha256 = entry.package_hash;
 
         Ok(Package {
             name: entry.id,
@@ -85,6 +97,7 @@ impl ChocolateyRegistry {
             architectures: None,
             dependencies: parse_nuget_dependencies(&entry.dependencies),
             sha256,
+            hash_algorithm: entry.package_hash_algorithm.map(|a| a.to_uppercase()),
             download_url,
             source: PackageSource::Chocolatey {
                 feed_url: self.feed_url.clone(),
@@ -99,7 +112,9 @@ impl ChocolateyRegistry {
             query
         );
 
-        let resp: ODataResponse = self.client.get_json_with_accept(&url, "application/json")?;
+        let resp: ODataResponse = self
+            .client
+            .get_json_with_accept(&url, "application/json;odata=verbose")?;
         let packages: Vec<Package> = resp
             .d
             .results
@@ -113,6 +128,7 @@ impl ChocolateyRegistry {
                 architectures: None,
                 dependencies: None,
                 sha256: None,
+                hash_algorithm: None,
                 download_url: None,
                 source: PackageSource::Chocolatey {
                     feed_url: self.feed_url.clone(),
@@ -162,4 +178,24 @@ fn parse_nuget_dependencies(raw: &Option<String>) -> Option<Vec<String>> {
     } else {
         Some(entries)
     }
+}
+
+/// Derive a Chocolatey download URL from an OData entry.
+///
+/// Prefers `__metadata.media_src` (the canonical download endpoint on the
+/// Chocolatey OData v2 feed). Falls back to the structured
+/// `https://community.chocolatey.org/api/package/{id}/{version}` URL, which
+/// the API redirects to the same `media_src`.
+fn derive_download_url(entry: &ODataPackage) -> Option<String> {
+    if let Some(meta) = &entry.metadata {
+        if let Some(media_src) = &meta.media_src {
+            if !media_src.is_empty() {
+                return Some(media_src.clone());
+            }
+        }
+    }
+    Some(format!(
+        "https://community.chocolatey.org/api/package/{}/{}",
+        entry.id, entry.version
+    ))
 }

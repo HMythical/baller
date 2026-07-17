@@ -15,13 +15,48 @@ the process exits with a non-zero status code.
 | `FileIoErr` | File system I/O error |
 | `InvalidConfig` | Configuration or database error |
 | `NetworkError` | HTTP/network failure |
-| `PackageNotFound` | Package not in database or registry |
-| `HashMismatch` | SHA-256 verification failed |
+| `PackageNotFound` | Package not in database or registry. For registry lookups, may include an aggregated list of every source that was tried and why it failed (e.g. `python not found. Sources tried:\n  GitHub: ...\n  Chocolatey: ...`) |
+| `HashMismatch` | Hash verification failed (SHA-256 for GitHub/Baller, SHA-512 for Chocolatey). For Chocolatey packages, the base64-encoded hash from the API is decoded and compared against the file's hex digest. |
 | `ExtractionFailed` | Archive extraction error |
 | `DependencyCycle` | Circular dependency detected |
 | `VersionConflict` | Version constraint not satisfiable |
 | `PackageFrozen` | Cannot modify a frozen package |
-| `PackageManagerError` | System package manager error |
+| `PackageManagerError` | System package manager error (no PM detected, command failed, unsupported manager, wrong code path tried to download a system package, or version unparseable as semver) |
+
+## Registry Source Aggregation
+
+When `RegistryClient::fetch_package` falls through every source in
+`source_order` without a hit, the resulting `PackageNotFound` error message
+contains the per-source failure details:
+
+```
+python not found. Sources tried:
+  GitHub: package not found: https://api.github.com/...
+  BallerRegistry: network error: HTTP 404
+  Chocolatey: network error: HTTP 406
+  System: package not found: python
+```
+
+This makes it much easier to diagnose why a particular package is not
+resolvable — earlier errors are no longer silently swallowed.
+
+## System Package Errors
+
+System package installation (`install_system_package`) and the
+`PackageSource::System` path of `draft` use `BallError::PackageManagerError`
+exclusively. Common messages:
+
+- `"'foo' is a system package — use native package manager"` — when
+  `Downloader::download_and_extract` is called on a system package
+- `"apt install of 'foo' exited with status exit code: 1"` — when the
+  native PM fails
+- `"unsupported system package manager: <name>"` — for managers other
+  than apt/dnf/pacman
+- `"unparseable version '2:1.21-76' for 'foo' (system package format not
+  supported by semver)"` — when `parse_version_flexible` cannot normalize
+  a system package version
+- `"invalid base64 hash: ..."` — when a Chocolatey package's base64-encoded
+  hash cannot be decoded
 
 ## Rollback on Partial Failure
 

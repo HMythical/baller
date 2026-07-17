@@ -434,11 +434,16 @@ impl DbManager {
 
     /// Check if a package is listed as a dependency by any other installed package.
     pub fn is_depended_on(&self, pkg_name: &str) -> Result<bool, BallError> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM package_dependencies WHERE dep_name = ?1",
-            params![pkg_name],
-            |row| row.get(0),
-        ).map_err(|e| BallError::InvalidConfig(format!("failed to query deps for '{}': {}", pkg_name, e)))?;
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM package_dependencies WHERE dep_name = ?1",
+                params![pkg_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to query deps for '{}': {}", pkg_name, e))
+            })?;
         Ok(count > 0)
     }
 
@@ -557,9 +562,7 @@ fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
         PackageSource::Chocolatey { feed_url } => {
             ("chocolatey".to_string(), Some(feed_url.clone()))
         }
-        PackageSource::System { manager } => {
-            ("system".to_string(), Some(manager.clone()))
-        }
+        PackageSource::System { manager } => ("system".to_string(), Some(manager.clone())),
     }
 }
 
@@ -586,6 +589,7 @@ mod tests {
             architectures: None,
             dependencies: Some(vec!["dep1".to_string(), "dep2 >=1.0".to_string()]),
             sha256: Some("abc123".to_string()),
+            hash_algorithm: None,
             download_url: Some("https://example.com/pkg.tar.gz".to_string()),
             source: PackageSource::GitHub {
                 owner: "owner".to_string(),
@@ -613,8 +617,14 @@ mod tests {
         let db = init_db(&path);
         let pkg = make_pkg("test-pkg", "1.0.0");
 
-        db.insert_package(&pkg, "/install/path", Some("/bin/path"), Some("/manifest"), true)
-            .unwrap();
+        db.insert_package(
+            &pkg,
+            "/install/path",
+            Some("/bin/path"),
+            Some("/manifest"),
+            true,
+        )
+        .unwrap();
 
         let retrieved = db.get_package("test-pkg").unwrap();
         assert_eq!(retrieved.name, "test-pkg");
@@ -635,10 +645,12 @@ mod tests {
         let path = test_db_path();
         let db = init_db(&path);
         let pkg1 = make_pkg("test-pkg", "1.0.0");
-        db.insert_package(&pkg1, "/path1", None, None, true).unwrap();
+        db.insert_package(&pkg1, "/path1", None, None, true)
+            .unwrap();
 
         let pkg2 = make_pkg("test-pkg", "2.0.0");
-        db.insert_package(&pkg2, "/path2", None, None, true).unwrap();
+        db.insert_package(&pkg2, "/path2", None, None, true)
+            .unwrap();
 
         let retrieved = db.get_package("test-pkg").unwrap();
         assert_eq!(retrieved.version, "2.0.0");
@@ -924,13 +936,15 @@ mod tests {
             architectures: None,
             dependencies: Some(vec!["libc6".to_string()]),
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::System {
                 manager: "apt".to_string(),
             },
         };
 
-        db.insert_package(&pkg, "/usr/lib", None, None, true).unwrap();
+        db.insert_package(&pkg, "/usr/lib", None, None, true)
+            .unwrap();
 
         let retrieved = db.get_package("system-pkg").unwrap();
         assert_eq!(retrieved.name, "system-pkg");

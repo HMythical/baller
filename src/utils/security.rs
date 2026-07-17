@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::error::error::BallError;
 
@@ -29,6 +29,46 @@ pub fn verify_checksum(path: &Path, expected_hex: &str) -> Result<(), BallError>
         return Err(BallError::HashMismatch(format!(
             "expected {}, got {}",
             expected_hex, actual_hex
+        )));
+    }
+    Ok(())
+}
+
+pub fn sha512_file(path: &Path) -> Result<String, BallError> {
+    let mut file = std::fs::File::open(path).map_err(BallError::FileIoErr)?;
+    let mut hasher = Sha512::new();
+    let mut buf = [0u8; HASH_READ_BUF_SIZE];
+
+    loop {
+        let n = file.read(&mut buf).map_err(BallError::FileIoErr)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub fn verify_checksum_with_algorithm(
+    path: &Path,
+    expected_hash: &str,
+    algorithm: &str,
+) -> Result<(), BallError> {
+    let actual_hex = match algorithm.to_uppercase().as_str() {
+        "SHA256" | "SHA-256" => sha256_file(path)?,
+        "SHA512" | "SHA-512" => sha512_file(path)?,
+        _ => {
+            return Err(BallError::HashMismatch(format!(
+                "unsupported hash algorithm: {}",
+                algorithm
+            )));
+        }
+    };
+    if !actual_hex.eq_ignore_ascii_case(expected_hash) {
+        return Err(BallError::HashMismatch(format!(
+            "expected {}, got {}",
+            expected_hash, actual_hex
         )));
     }
     Ok(())

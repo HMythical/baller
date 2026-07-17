@@ -1,11 +1,10 @@
 use colored::Colorize;
-use semver::Version;
 
 use crate::context::AppContext;
-use crate::core::dep_solver::{get_installed_map, resolve_deps};
+use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
 use crate::core::hooks::{run_hook, HookType};
-use crate::error::error::BallError;
 use crate::core::package::Package;
+use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 
 #[cfg(target_os = "linux")]
@@ -32,8 +31,8 @@ pub fn execute_update(ctx: &AppContext) -> Result<(), BallError> {
         match ctx.registry.fetch_package(&pkg.name) {
             Ok(remote_pkg) => {
                 // U1: Use semver-aware version comparison with fallback to string
-                let current = Version::parse(&pkg.version).ok();
-                let remote = Version::parse(&remote_pkg.version).ok();
+                let current = parse_version_flexible(&pkg.version);
+                let remote = parse_version_flexible(&remote_pkg.version);
                 let needs_update = match (current, remote) {
                     (Some(cur), Some(rem)) => rem > cur,
                     _ => remote_pkg.version != pkg.version, // fallback to string comparison
@@ -50,19 +49,12 @@ pub fn execute_update(ctx: &AppContext) -> Result<(), BallError> {
 
                     // U2: Resolve dependencies for the updated package
                     let installed = get_installed_map(&ctx.db);
-                    let resolve_result = resolve_deps(
-                        &remote_pkg.name,
-                        &ctx.registry,
-                        &installed,
-                    )?;
+                    let resolve_result = resolve_deps(&remote_pkg.name, &ctx.registry, &installed)?;
 
                     let missing_deps: Vec<&Package> = resolve_result
                         .packages
                         .iter()
-                        .filter(|dep| {
-                            dep.name != pkg.name
-                                && !installed.contains_key(&dep.name)
-                        })
+                        .filter(|dep| dep.name != pkg.name && !installed.contains_key(&dep.name))
                         .collect();
 
                     // Install any missing dependencies first

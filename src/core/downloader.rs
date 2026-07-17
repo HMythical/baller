@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::core::package::Package;
+use crate::core::package::{Package, PackageSource};
 use crate::error::error::BallError;
 use crate::http::HttpClient;
 use crate::utils::{fs as util_fs, security};
@@ -35,14 +35,40 @@ impl Downloader {
         pkg: &Package,
         show_progress: bool,
     ) -> Result<DownloadedPackage, BallError> {
+        // System packages don't have download URLs
+        if pkg.download_url.is_none() {
+            if matches!(pkg.source, PackageSource::System { .. }) {
+                return Err(BallError::PackageManagerError(format!(
+                    "'{}' is a system package — use native package manager",
+                    pkg.name
+                )));
+            }
+            return Err(BallError::NetworkError(format!(
+                "no download URL for package '{}'",
+                pkg.name
+            )));
+        }
+
         let url = pkg.download_url.as_ref().ok_or_else(|| {
             BallError::NetworkError(format!("no download URL for package '{}'", pkg.name))
         })?;
 
         let archive_path = self.cached_download(url, show_progress)?;
 
-        if let Some(expected_hash) = &pkg.sha256 {
-            security::verify_checksum(&archive_path, expected_hash)?;
+        if let Some(ref expected_hash) = pkg.sha256 {
+            let algorithm = pkg.hash_algorithm.as_deref().unwrap_or("SHA256");
+
+            if algorithm.eq_ignore_ascii_case("SHA512") || algorithm.eq_ignore_ascii_case("SHA-512")
+            {
+                use base64::Engine;
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(expected_hash)
+                    .map_err(|e| BallError::HashMismatch(format!("invalid base64 hash: {}", e)))?;
+                let hex_hash = hex::encode(decoded);
+                security::verify_checksum_with_algorithm(&archive_path, &hex_hash, "SHA512")?;
+            } else {
+                security::verify_checksum(&archive_path, expected_hash)?;
+            }
         }
 
         let extract_dir = self.cache_dir.join(format!("{}-{}", pkg.name, pkg.version));
@@ -167,15 +193,19 @@ impl Downloader {
             extract_tar_xz(archive_path, dest)?;
         } else if filename.ends_with(".tar") {
             extract_tar(archive_path, dest)?;
-        } else if filename.ends_with(".zip") {
+        } else if filename.ends_with(".zip") || filename.ends_with(".nupkg") {
             extract_zip(archive_path, dest)?;
         } else if filename.ends_with(".gz") {
             extract_gz_single(archive_path, dest)?;
         } else {
-            return Err(BallError::ExtractionFailed(format!(
-                "unsupported archive format: {}",
-                filename
-            )));
+            // Fallback: try zip extraction for archives without a recognized extension
+            // (e.g., Chocolatey nupkg files cached from API URLs)
+            extract_zip(archive_path, dest).map_err(|e| {
+                BallError::ExtractionFailed(format!(
+                    "unsupported archive format ({}): {}",
+                    filename, e
+                ))
+            })?;
         }
 
         Ok(())

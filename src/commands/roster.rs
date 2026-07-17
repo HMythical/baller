@@ -16,11 +16,7 @@ pub fn execute_roster(ctx: &AppContext, package_name: &Option<String>) -> Result
                 }
                 if let Some(desc) = &pkg.description {
                     // R3: Use truncate_str helper for safe truncation in detail view too
-                    println!(
-                        "  {} {}",
-                        "Description:".yellow(),
-                        truncate_str(desc, 80)
-                    );
+                    println!("  {} {}", "Description:".yellow(), truncate_str(desc, 80));
                 }
                 if let Some(author) = &pkg.author {
                     println!("  {} {}", "Author:".yellow(), author);

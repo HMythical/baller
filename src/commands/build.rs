@@ -17,7 +17,8 @@ mod tests {
         // execute_build ignores its ctx argument, so we just need any valid reference.
         // Since AppContext doesn't implement Default and requires a full config to construct,
         // we test the error variant directly.
-        let err = BallError::UnsupportedCommand("build from 'foo' is not yet implemented".to_string());
+        let err =
+            BallError::UnsupportedCommand("build from 'foo' is not yet implemented".to_string());
         assert!(format!("{}", err).contains("not yet implemented"));
     }
 }

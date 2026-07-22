@@ -2,9 +2,19 @@ name: CI - Windows
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ rootdev ]
+    paths:
+      - 'src/**'
+      - 'build/winbuild/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
-    branches: [ main, develop ]
+    branches: [ rootdev ]
+    paths:
+      - 'src/**'
+      - 'build/winbuild/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 jobs:
   build:
@@ -19,5 +29,5 @@ jobs:
           toolchain: stable
 
       - name: Run build test (test command)
-        shell: bash
+        shell: pwsh
         run: ./build/winbuild/build.ps1 test

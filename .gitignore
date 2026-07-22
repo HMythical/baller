@@ -3,9 +3,6 @@
 /target/
 **/*.rs.bk
 
-#Cargo files
-Cargo.lock
-
 #IDE
 .idea/
 .vscode/
@@ -16,5 +13,32 @@ Cargo.lock
 #OS Files
 .DS_Store
 Thumbs.db
-EOF
+desktop.ini
 
+#Local tools
+/.claude
+
+#Build output / distribution
+build/linux/dist/
+build/winbuild/dist/
+
+#Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+#Debug symbols
+*.pdb
+*.dSYM/
+
+#Logs and temp files
+*.log
+*.tmp
+
+#Secrets
+.env
+.env.*
+*.key
+*.pem
+credentials

@@ -30,6 +30,14 @@ function Invoke-Test {
     Write-Host "Running tests..." -ForegroundColor Green
     cargo test
     if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
+
+    Write-Host "Running clippy..." -ForegroundColor Green
+    cargo clippy -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "Clippy failed" }
+
+    Write-Host "Checking formatting..." -ForegroundColor Green
+    cargo fmt --check
+    if ($LASTEXITCODE -ne 0) { throw "Formatting check failed" }
 }
 
 function Invoke-Clean {

@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_path_exists() {
-        assert!(path_exists(Path::new("/tmp")));
+        assert!(path_exists(&std::env::temp_dir()));
         assert!(!path_exists(Path::new("/nonexistent_path_xyz123")));
     }
 

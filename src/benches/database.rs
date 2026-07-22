@@ -28,6 +28,7 @@ pub fn bench_db_operations(c: &mut Criterion) {
                 architectures: None,
                 dependencies: None,
                 sha256: None,
+                hash_algorithm: None,
                 download_url: None,
                 source: PackageSource::GitHub {
                     owner: "test".to_string(),
@@ -35,7 +36,7 @@ pub fn bench_db_operations(c: &mut Criterion) {
                 },
             };
 
-            let _ = db.insert_package(&package, "/install/path", None, None);
+            let _ = db.insert_package(&package, "/install/path", None, None, true);
             let _ = black_box(db.get_package(&name));
         });
 

@@ -5,7 +5,26 @@ on:
     tags: [ 'v*' ]
 
 jobs:
+  validate:
+    name: Validate Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate required directories exist
+        run: python scripts/validate_structure.py
+
+      - name: Check for forbidden files and directories
+        run: python scripts/detect_artifacts.py
+
   build-linux:
+    needs: [validate]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -41,6 +60,7 @@ jobs:
           retention-days: 7
 
   build-windows:
+    needs: [validate]
     runs-on: windows-latest
     steps:
       - name: Checkout repository

@@ -1,0 +1,78 @@
+name: Directory Validation
+
+on:
+  push:
+    branches: [ rootdev ]
+  pull_request:
+    branches: [ rootdev ]
+
+jobs:
+  structure-compliance:
+    name: Structure Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate required directories exist
+        run: python scripts/validate_structure.py
+
+  artifact-detection:
+    name: Artifact Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Check for forbidden files and directories
+        run: python scripts/detect_artifacts.py
+
+  change-detection:
+    name: Change Detection
+    runs-on: ubuntu-latest
+    outputs:
+      linux_changed: ${{ steps.changes.outputs.linux }}
+      windows_changed: ${{ steps.changes.outputs.windows }}
+      docs_changed: ${{ steps.changes.outputs.docs }}
+      workflows_changed: ${{ steps.changes.outputs.workflows }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v45
+        with:
+          separator: "\n"
+
+      - name: Detect changes
+        id: changes
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+        run: python scripts/detect_changes.py
+
+      - name: Display changes
+        run: |
+          echo "Change Detection Results:"
+          echo "-------------------------"
+          echo "Linux CI needed: ${{ steps.changes.outputs.linux }}"
+          echo "Windows CI needed: ${{ steps.changes.outputs.windows }}"
+          echo "Docs changed: ${{ steps.changes.outputs.docs }}"
+          echo "Workflows changed: ${{ steps.changes.outputs.workflows }}"

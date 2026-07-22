@@ -121,7 +121,7 @@ Reports timing for database operations, dependency resolution, download/extracti
 
 ## Contributing
 
-Read the [contributing guide](CONTRIBUTING.md) before submitting code.
+We welcome contributions! Please read the [contributing guide](CONTRIBUTING.md) before submitting code. For security issues, contact us via Discord (HMythical).
 
 ---
 

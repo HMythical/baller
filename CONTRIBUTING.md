@@ -1,210 +1,486 @@
-# Contributing
+# Contributing to B.A.L.L.E.R.
 
-Baller is a brand new CLI package-manager that will potentially be able to be installed in Linux **AND** Windows.
-We've just barely started, it's completely bare bones right now, and has a TON of potential to be a great piece
-of sofware. Similarly, there is **alot** that can go wrong with this kind of software, especially given the goal of dual-os capabilities.
-The main inspiration for this project is [Chocolatey](https://github.com/chocolatey/choco/tree/develop),
-so this project will follow their guidelines on **pull requests**, **code contributions**, **documentation**, and most importantly....**TESTING**
+Thank you for your interest in contributing to B.A.L.L.E.R. (**B**inary **A**llocation & **L**ibrary **L**aunch **E**nvironment in **R**ust), a cross-platform package manager for Linux and Windows.
 
-Because this project is very new, potentially dangerous, and has insane potential to one of the greatest package managers for windows, besides chocolatey.
-I will explicitly be a pain in the butt when it comes to exactly how much testing you do AND how you write committ messages (I'm not kidding).
-A great example of great docuentation on a Pull Request can be found [here](https://github.com/chocolatey/choco/pull/3011).
+This guide covers everything you need to submit a contribution: environment setup, branch and commit conventions, testing expectations, and the review process.
 
-In addition to that, I ask that you upload pictures/videos/visuals/wtv of your changes running with **NO UNINTENDED EXECUTION BEHAVIOR**... **WHATSOEVER**
-Whatever contributuons that you decide to add to baller, you need to 110% sure that it's secure,safe, and easy to understand for other contributors.
+**Quick links**
 
-Ultimately, all I ask is that you document everything. Code, Tests, Runtime, etc. Anything you want to add, write understandable documentation for it.
+| Resource | Location |
+|---|---|
+| Technical setup reference | [`docs/contributing.md`](docs/contributing.md) |
+| Architecture overview | [`docs/architecture.md`](docs/architecture.md) |
+| Command reference | [`docs/commands.md`](docs/commands.md) |
+| Pull request template | [`.github/pull_request_template.md`](.github/pull_request_template.md) |
+| License | [`LICENSE`](LICENSE) |
+| Security contact | Discord: **HMythical** |
 
+---
 
+## Table of Contents
 
-## What are you here for?
+1. [Getting Started](#1-getting-started)
+2. [Branch Strategy](#2-branch-strategy)
+3. [Code Contributions](#3-code-contributions)
+4. [Commit Style](#4-commit-style)
+5. [Documentation](#5-documentation)
+6. [Security Issues](#6-security-issues)
+7. [Pull Request Process](#7-pull-request-process)
+8. [Code of Conduct](#8-code-of-conduct)
+9. [License](#9-license)
+10. [Getting Help](#10-getting-help)
 
-Baller (or Binary Allocation & Library Launch Environment in Rust if you want to be a nerd about it...), is going to have many components in its codebase,
-two seperate operating-system environments, and so much more. You need to know exactly what you are contributing to, and exactly how you're code works when you PR.
+---
 
-### Submitting an Enhancement / Feature Request or Optimizing a function within Baller
+## 1. Getting Started
 
-If you're looking to improve Baller, then you're in the right place! Welcome! Make sure to familiarize yourself with Chocolatey's practices on PRs and Contributions as baller will implement
-several of their practices during development of Baller. Please read the note at the bottom of the section.
+### Prerequisites
 
+| Requirement | Notes |
+|---|---|
+| Rust (stable toolchain) | 2021 edition, installed via [rustup](https://rustup.rs) |
+| Git | Any recent version |
+| Linux tooling | A C toolchain and `pkg-config` for bundled dependencies |
+| Windows tooling | PowerShell 5.1 or later and the MSVC build tools |
 
-### Linux or Windows? Which one?
+Verify your toolchain before starting:
 
-Baller is a dual-os package-manager. That by-itself is a complex thing to think about. I ask that if you DO contribute to this project. Choose one envrionment and stick t it.
-You might have experience in the Linux Kernel, or you might be a certified Windows pro, or you might just be the king of low-level software. That doesnt matter in this project.
-The goal is to create a beautiful piece of software. I do not care about how long the development cycle takes. And you shouldn't either. High quality and secure code is the expectation,
-and I'd rather you stick to one environment and PR solid code, than write below-decent code but get alot done. 
-
-Essentialy, choose one. If you want to develop Baller in linux, then your contributions, even the ones aftr your initial contribution, should stay in Linux. Same for windows. Security > Speed.
-
-If your PR has changes for both environments, your contribution may not be accepted. So please stick to one operating system environment! Trust me, you will hate it, but I'm adding this rule for a reason.
-
-### **PLEASE NOTE: YOU NEED TO LOG A GITHUB ISSUE IF YOU ARE SUBMITTING AN ENHANCEMENT**...
-Its because there are less constraints, rather than reporting an issue. 
-
-
-
-### Pre-requisites
-
-- Fork the repo
-- Sign the Contributor License Agreement (CLA) - I'm not trying to get in legal trouble. I checked the CLA, it should not have predatory legal language in any way, shape, or form.
-I will not accept any contributions without it.
-- Sign it for each Baller project that required it. Simple.
-- Why am I having you sign this? Julien Ponge. Specifically section 5.1 of his blog post. Reference his post [here](https://julien.ponge.org/blog/in-defense-of-contributor-license-agreements/).
-- [Sign the CLA Here](https://cla-assistant.io/HMythical/baller)
-
-#### Do I really have to sign the CLA?
-Yes. End of discussion.
-
-
-
-
-# Sooo...How do I... you know...contribute? 
-## Choose an environment
-
-As previously stated before, If you want to contribute to baller, you will need to contribute to ONE operating-system environment. Windows OR Linux, one or the other. The only exception to this rule will be for the OS-detection service. That will be just rust with libraries and stuff. 
-
-
-
-### Rust
-Rust will be the **main** language used for this project. Rust was chosen because of it's memory saftey compared to C and C++ as well as its compatibility with both Linux and Windows (I chose rust primarily because of this reason). However, rust isnt just the only language we will have to use to make this package manager work!
-
-### Powershell
-Windows is weird and doesnt use bash normally. We all know about cmd and PowerShell... All contributitions that relate to powershell, rust or something else, must be able to work with Powershell v3 (v2 we can get to eventually). 
-
-### C?? C#?? .NET?? What about those?
-Honestly, I am not opposed to using those languages, however, I do not know exactly how C and Rust would interact if we used them bot. Same thing with C# and the .NET Framework. I am not opposed to contributions with those languages, but you the contributor as well as I need to know how they will interact under the hood. If you do use these languages, make sure to document,compare, and summarize how different the assembly instructions are and make sure the instructions that come out of compilation do not cause memory errors.
-
-Additionally... **please write memory safe code**... I'm going to leave it at that....
-
-
-### Should I use other languages like Go or Ruby or something else?
-
-No. I only allow languages I understand under the hood, or I can easily learn how they work under the hood.
-
-## Code Formatting / Design
-
-Until contributions start to pile in in **different** languages, the rust files will have configuration files to enforce certain formatting standards.
-
-SOME naming conventions will be listed here for youre reference. It will also be in the Baller Docs (when I get around to creating them) as well as an '.editorconfig' file when I make that:
-
-- Non-OS specific Structs must all be PascalCase, with context included. [Context][Purpose][TypeSuffix]
-- All variables must have explicit declaration
-- Unless you require OS-specific behavior, use Rust primitives DIRECTLY
-- Non-OS specific variables must be in snake_case and explicitly declared
-- Operating System specific variables must be prefixed with "os_"
-- Collections and Tuples must be plural
-- Booleans must be prefixed with is_,has_,can_,should_ and their grammatical opposites when dealing with false Boolean values (isnt_,hasnt_,cant_,etc)
-- OS-specific Structs must be prefixed with their respective OS. (E.g LinuxPackageInfo)
-- Configuration structs must be suffixed with Config (E.g InstallConfig)
-- Builders must be suffixed with Builder (E.g PackageQueryBuilder)
-- Data Transfer Objects must be suffixed with DTO
-- Errors must be suffixed with their OS
-  e.g
-
-  pub enum InstallError{
-    Linux(LinuxError),
-    Windows(WindowsError),
-    Common(CommonError),
-
-  }
-- please, always always propagate errors until the main function using the question mark operator
-- make your variable, struct, enum and function names unambiguous, avoid conflicts with names from external librairies (E.g BallerConfig instead of Config)
-
-  The rest will be present in the sources previously mentioned
-
-### Setting your Environment Up
-
-- Git Specific information
-    1. Create a fork of HMythical/baller under your Github Account
-    2. Clone YOUR fork locally
-    3. Open a command line and navigate to that directory
-    4. Add the upstream fork - ' git remote add upstream git@github.com:HMythical/baller.git'
-    5. Run ' git fetch upstream
-    6. Ensure you have your user name and your email set up correctly to atribute your contributions
-    7. Create a branch named specifically to what you are contributing
-    8. Do your work for the specifc branch
-    9. When you are done and want to commit, reference the [**Commit Survival Guide**](#The-Survival-Guide-for-Commits-(I'm-"stealing"-chocolatey's-framework-for-commits...-please-dont-sue-me) )
-
-## Documenting,Debugging and Testing
-
-
-
-
-### How should I document my code?
-Please make sure you document the code you write. Leave meaningful and useful comments, inline comments can be used to explain certain variables incase other contributors decide to join in.
-
-Also document how you tested your changes, what the outputs were, what you expected, and the constraints you had. Documented tests are one of the most important that need to be inside your commit message.
-
-Essentially, write down everything you change.
-
-### How should I test it?
-
-Honestly, since the project has just started, there is no concrete way to test what you created. For now, whatever changes you make, put them in a separate project and run them using your IDE's debug features. I would also make sure you know exactly what your change is supposed to do so you can write the tests separate. Make sure you test for normal cases and edge cases as well.
-
-## So... about my IDE... which one should I use?!
-
-I have no preference for what IDE you should use. Chocolatey uses Visual Studio 2019+, but I have no clue why they chose that one specifically. I would reccomend a decent JetBrains IDE if you are working on the Linux environment, if not, you can just use NeoVim or some other IDE. If you're working in the Windows environment... honestly have no clue. That'll be hashed out eventually.
-
-## The Survival Guide for Commits (Directly from Chocolatey's guide on commit messages.)
-
-.... Go read [this](https://github.com/chocolatey/choco/edit/develop/CONTRIBUTING.md#prepare-commits)
-
-Chocolatey has an insanely good guide on commits. So use theirs. Thats it. Only difference is that commit messages for baller should (and will be) way longer. It should be a detailed message.
-
-Example of a commit message that I'd be okay with:
-
-```
-(#7) Refactor Libraries in /linux/src/lib.rs and Entry-Point Logic
-
-Previous versions of the entry-point logic in main.rs work for certain
-windows and linux kernels. It does not work on Debian 11 and Windows
-10 due to the absenceof key OS system calls and other nessecary APIs
-within both operating systems. Additionally, certain libraries inside
-of the linux environment will update to accomodate for older versions
-of the two operating systems.
-
-
-Documentation & Tests:
-
-[Insert Documentation here]
-
-[Insert More Documentation here]
-
-[Insert tests here]
-
-If this change does not go through, key systems such as the
-DependencyManager will fail, leading to unsafe execution and possible
-memory corruption.
-
+```bash
+rustc --version
+cargo --version
 ```
 
+### Fork and Clone
 
-### The Pull Request
+1. Fork `HMythical/baller` under your own GitHub account.
+2. Clone your fork locally:
 
-Generally, just follow what Chocolatey does [here](https://github.com/chocolatey/choco/edit/develop/CONTRIBUTING.md#submit-pull-request-pr)
+   ```bash
+   git clone https://github.com/<your-username>/baller.git
+   cd baller
+   ```
 
-### Feedback?
+3. Add the upstream remote so you can stay in sync:
 
-If your commit message and Pull Request are genuinely unreadable and I cant understand it, then I'll send it back and have you explain more clearly. The key is that you explain what you added so I/Other contributors (You see what I did there?) can add onto what you contributed and build more efficiently.
+   ```bash
+   git remote add upstream https://github.com/HMythical/baller.git
+   git fetch upstream
+   ```
 
-## I like how Chocolatey does "x" thing... Can we "implement" it like they do?
-No. Dont copy-paste code. If you contributed to Chocolatey and now you're contributing here... Hi, Im a big fan, would love to have your contributions... But if you just copy paste their code here. Absolutely not. 
+4. Confirm your commit identity is set correctly so your work is attributed to you:
 
-Additionally, if you copy-paste code from any other repo without their permission, I am both legally, and morally obligated to report you to them directly. So please dont.
+   ```bash
+   git config user.name "Your Name"
+   git config user.email "you@example.com"
+   ```
 
+5. Create a branch off `rootdev` for your work (see [Branch Strategy](#2-branch-strategy)).
 
+### Development Setup
 
+**Linux**
 
-# Other important general information
+```bash
+./build/linux/build.sh dev      # Debug build
+./build/linux/build.sh release  # Release build (stripped)
+./build/linux/build.sh test     # Tests + clippy + fmt check
+./build/linux/build.sh clean    # Clean artifacts
+```
 
-This contributions file is definetly going to change as Baller gains contributrs and development time. This file is meant to lay down the framework for how Baller will want to grow in order to be a reliable piece of software. 
+**Windows (PowerShell)**
 
+```powershell
+.\build\winbuild\build.ps1 -Command dev      # Debug build
+.\build\winbuild\build.ps1 -Command release  # Release build
+.\build\winbuild\build.ps1 -Command test     # Run tests
+.\build\winbuild\build.ps1 -Command clean    # Clean artifacts
+```
 
+You can also use `cargo` directly. See [`docs/contributing.md`](docs/contributing.md) for the full project layout, configuration file format, and dependency list.
 
-# Conclusion
+---
 
-**Your contributions will never be forgotten! Thank you for putting your time, energy, and you passion into this project. I am eternally grateful for any who decide to help make Baller come to life! You're work will pave the way for this software to grow exponentially!**
+## 2. Branch Strategy
 
+### Branch Naming Conventions
 
+Branch names use a type prefix followed by a short, hyphenated description.
 
+| Prefix | Use for | Example |
+|---|---|---|
+| `feature/` | New functionality | `feature/parallel-downloads` |
+| `fix/` | Bug fixes | `fix/manifest-path-resolution` |
+| `docs/` | Documentation changes | `docs/registry-configuration` |
+| `refactor/` | Restructuring without behaviour change | `refactor/dep-solver-traits` |
+| `test/` | Test additions or changes | `test/downloader-edge-cases` |
+| `chore/` | Build, CI, and maintenance work | `chore/bump-clap-version` |
+
+> **Note:** Keep descriptions lowercase and hyphen-separated. Avoid branch names that only reference an issue number.
+
+### Workflow
+
+| Branch | Purpose |
+|---|---|
+| `rootdev` | Main development branch. All contributions target this branch. |
+| `deploy` | Release branch. Maintained by the project maintainer. |
+
+The flow is:
+
+```
+your-fork/feature/<description>  ->  HMythical/baller:rootdev  ->  deploy (releases)
+```
+
+Contributors open pull requests against `rootdev`. Only the maintainer promotes `rootdev` to `deploy` for a release.
+
+Keep your branch current before opening a pull request:
+
+```bash
+git fetch upstream
+git rebase upstream/rootdev
+```
+
+### Pull Request Requirements
+
+- CI must pass on both Linux and Windows.
+- The description must explain what changed and why.
+- New functionality must include test coverage.
+- Changes should stay within a single platform where practical (see [Platform-Specific Rules](#platform-specific-rules)).
+
+---
+
+## 3. Code Contributions
+
+### Language Requirements
+
+| Language | Scope |
+|---|---|
+| Rust | Primary implementation language for all application code |
+| PowerShell | Windows build, install, and packaging scripts |
+| Bash | Linux build, install, and packaging scripts |
+| Python | CI helper and validation scripts under `scripts/` |
+
+New languages and runtimes are not accepted without prior discussion in a GitHub issue. Every dependency added to the project increases the surface area a package manager must be trusted with, so additions need justification.
+
+### Code Style and Conventions
+
+Formatting is enforced by `rustfmt` and linting by `clippy`. Run both before committing:
+
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+```
+
+Naming and structural conventions:
+
+- Non-OS structs use PascalCase with context included: `BallerConfig`, not `Config`.
+- Variables use snake_case with explicit types where inference is not obvious.
+- OS-specific structs are prefixed with the OS: `LinuxPackageInfo`, `WindowsPackageInfo`.
+- OS-specific variables are prefixed with `os_`.
+- Configuration structs are suffixed with `Config`; builders with `Builder`; data transfer objects with `DTO`.
+- Booleans are prefixed with `is_`, `has_`, `can_`, or `should_`.
+- Collections and tuples use plural names.
+- Errors are propagated with the `?` operator up to `main()`. Avoid `unwrap()` and `expect()` outside tests.
+- Names must be unambiguous and must not collide with names from external crates.
+
+The full convention list, including the project structure and config file format, is in [`docs/contributing.md`](docs/contributing.md).
+
+### Testing Requirements
+
+Every behavioural change needs a test that would fail without it.
+
+```bash
+cargo test                  # Run all tests
+cargo test -- --nocapture   # Run with output
+cargo test test_name        # Run a specific test
+```
+
+- Cover the normal path and the edge cases, including malformed input and failure modes.
+- Tests must not depend on network access, a specific machine, or a pre-existing package database.
+- Record what you tested, what you expected, and what you observed in the pull request description.
+
+> **Warning:** B.A.L.L.E.R. installs and removes software on a user's machine. Code paths that write to the filesystem, elevate privileges, execute hooks, or verify checksums receive additional scrutiny. Do not submit changes to these paths without tests.
+
+### Platform-Specific Rules
+
+- All OS-specific code lives behind `#[cfg(target_os = "...")]` guards, with implementations under `src/platform/`.
+- Shared behaviour is defined by the `PlatformManager` trait in `src/platform/common.rs`. Add to the trait rather than branching on the OS at call sites.
+- Prefer keeping a single pull request to a single platform. A change that touches both Linux and Windows is harder to review and harder to test, and may be sent back to be split.
+- Cross-platform changes to shared modules (OS detection, dependency resolution, the CLI layer) are expected to touch both and are exempt from the rule above.
+
+---
+
+## 4. Commit Style
+
+### Format
+
+```
+(<type>) <description>
+
+<body>
+
+<footer>
+```
+
+### Types
+
+| Type | Use for |
+|---|---|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `docs` | Documentation only |
+| `style` | Formatting, no behaviour change |
+| `refactor` | Restructuring without behaviour change |
+| `test` | Tests |
+| `chore` | Build, CI, and maintenance |
+
+### Rules
+
+- Use the imperative mood: "Add resolver", not "Added resolver".
+- Keep the subject line under 72 characters.
+- Leave a blank line between the subject, body, and footer.
+- Explain *what* changed and *why* in the body. The diff already shows *how*.
+- Reference related issues in the footer with `Closes #<n>` or `Refs #<n>`.
+- Note test coverage and any limitations or trade-offs.
+
+### Examples
+
+A feature commit:
+
+```
+(feat) Add topological dependency resolver
+
+Replace the naive recursive walk in dep_solver.rs with a topological
+sort that detects cycles before installation begins. The previous
+implementation could recurse indefinitely on a circular dependency
+graph and left the package database in a partially written state.
+
+Tested with a three-package cycle, a diamond dependency, and a
+1,000-node synthetic graph. Cycle detection reports the full path
+rather than only the repeated node.
+
+Closes #42
+```
+
+A fix commit:
+
+```
+(fix) Reject archive entries that escape the extraction root
+
+Archive extraction did not validate entry paths, so an archive
+containing "../" components could write outside the cache directory.
+Entries are now canonicalised and rejected if they resolve outside
+the target root.
+
+Refs #58
+```
+
+### Common Mistakes
+
+| Avoid | Use instead |
+|---|---|
+| `fixed stuff` | `(fix) Correct cache path on Windows` |
+| `(feat): Add resolver` | `(feat) Add resolver` |
+| `Update main.rs` | A subject describing the behaviour that changed |
+| A subject line with no body | A body explaining the motivation and testing |
+| Bundling unrelated changes | One logical change per commit |
+
+---
+
+## 5. Documentation
+
+### Code Documentation
+
+- Document every public item with `///` doc comments, including what it returns and the conditions under which it errors.
+- Use module-level `//!` comments to explain a module's responsibility.
+- Add inline comments only where the reasoning is not obvious from the code. Explain why, not what.
+- Update existing comments when you change the behaviour they describe. A stale comment is worse than none.
+- Add a doc example for public APIs where a caller would benefit from seeing usage.
+
+### Project Documentation
+
+- User-facing changes require an update to the relevant file under `docs/`.
+- New commands or flags require an update to [`docs/commands.md`](docs/commands.md).
+- Changes to the manifest, registry, or hook systems require updates to their respective documents in `docs/`.
+- Update [`README.md`](README.md) only when installation or build instructions change.
+
+### Pull Request Documentation
+
+Your pull request should stand on its own for a reviewer who has not seen the code before:
+
+- A clear description of the change and the problem it solves.
+- Test results, including what you ran and on which platform.
+- Terminal output, screenshots, or a recording for changes to user-visible behaviour.
+- Any breaking changes, called out explicitly.
+- Known limitations or follow-up work.
+
+---
+
+## 6. Security Issues
+
+### Reporting Process
+
+> **Warning:** Do not open a public GitHub issue for a security vulnerability. Public disclosure before a fix is available puts users at risk.
+
+Report vulnerabilities privately via Discord to **HMythical**.
+
+Include the following in your report:
+
+| Field | Description |
+|---|---|
+| Description | What the vulnerability is and which component is affected |
+| Steps to reproduce | A minimal, reliable reproduction |
+| Impact | What an attacker could achieve, and under what preconditions |
+| Affected versions | Commit, tag, or release where you observed the issue |
+| Suggested fix | Optional, but appreciated |
+
+Please give the maintainer a reasonable opportunity to release a fix before disclosing the issue publicly.
+
+### What Not to Report Here
+
+| Type | Where it belongs |
+|---|---|
+| General bugs and crashes | GitHub Issues |
+| Feature requests | GitHub Issues |
+| Usage questions | GitHub Discussions |
+| Build or setup problems | GitHub Discussions |
+
+### Response Timeline
+
+| Stage | Target |
+|---|---|
+| Initial acknowledgment | Within 48 hours |
+| Assessment and severity triage | Within 1 week |
+| Fix and release | Depends on severity and complexity |
+
+---
+
+## 7. Pull Request Process
+
+### Before Submitting
+
+Run the full local check suite and confirm every item passes:
+
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
+```
+
+Then confirm the following:
+
+- [ ] Your branch is rebased on the latest `upstream/rootdev`.
+- [ ] New functionality has tests, and all tests pass.
+- [ ] Documentation is updated for any public API or user-facing change.
+- [ ] Commit messages follow the format in [Commit Style](#4-commit-style).
+- [ ] The change contains no unrelated edits, commented-out code, or debug output.
+- [ ] No secrets, credentials, or absolute local paths are committed.
+
+### Opening the Pull Request
+
+Open the pull request against `rootdev`. The [pull request template](.github/pull_request_template.md) is applied automatically. Fill in every section, including:
+
+- Description
+- Type of change
+- Platform tested
+- Testing performed
+- Checklist
+- Related issues
+- Screenshots or recordings, where applicable
+
+Mark the pull request as a draft if you want early feedback on work that is not finished.
+
+### Review Process
+
+| Stage | Detail |
+|---|---|
+| CI | Linux and Windows workflows must pass before review begins |
+| Approval | At least one maintainer approval is required to merge |
+| Changes requested | Push additional commits to the same branch; do not force-push mid-review unless asked |
+| Merge | Squash and merge, so `rootdev` keeps a linear history |
+
+If a pull request or commit message is unclear, the maintainer will ask you to explain the change rather than guess at it. The goal is that the next contributor can read the history and understand why the code is the way it is.
+
+### Code Provenance
+
+Do not copy code from other projects into this repository, including from Chocolatey or any other package manager. Contribute code you wrote or that you have an unambiguous right to relicense under Apache 2.0. If a change is derived from another project, say so explicitly in the pull request so the license can be reviewed.
+
+---
+
+## 8. Code of Conduct
+
+This project adopts the [Contributor Covenant Code of Conduct, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+
+### Our Pledge
+
+We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
+
+We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community.
+
+### Our Standards
+
+Examples of behavior that contributes to a positive environment:
+
+- Demonstrating empathy and kindness toward other people
+- Being respectful of differing opinions, viewpoints, and experiences
+- Giving and gracefully accepting constructive feedback
+- Accepting responsibility, apologizing to those affected by our mistakes, and learning from the experience
+- Focusing on what is best for the overall community, not just for us as individuals
+
+Examples of unacceptable behavior:
+
+- The use of sexualized language or imagery, and sexual attention or advances of any kind
+- Trolling, insulting or derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information, such as a physical or email address, without their explicit permission
+- Other conduct which could reasonably be considered inappropriate in a professional setting
+
+### Enforcement Responsibilities
+
+Project maintainers are responsible for clarifying and enforcing these standards of acceptable behavior and will take appropriate and fair corrective action in response to any behavior they deem inappropriate, threatening, offensive, or harmful.
+
+Maintainers have the right and responsibility to remove, edit, or reject comments, commits, code, issues, and other contributions that are not aligned with this Code of Conduct, and will communicate reasons for moderation decisions when appropriate.
+
+### Scope
+
+This Code of Conduct applies within all community spaces, including the GitHub repository, issues, discussions, pull requests, and the project Discord. It also applies when an individual is officially representing the project in public spaces.
+
+### Enforcement
+
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainer via Discord to **HMythical**. All complaints will be reviewed and investigated promptly and fairly.
+
+Maintainers are obligated to respect the privacy and security of the reporter of any incident. Consequences for violations follow the enforcement guidelines described in the [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/), ranging from a private warning to a permanent ban from the community.
+
+### Attribution
+
+This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1, available at https://www.contributor-covenant.org/version/2/1/code_of_conduct.html.
+
+---
+
+## 9. License
+
+All contributions to B.A.L.L.E.R. are licensed under the **Apache License 2.0**.
+
+By submitting a pull request, you agree that your contributions will be licensed under the same terms as the project, and you confirm that you have the right to license them that way.
+
+> **Note:** No Contributor License Agreement is required. The CLA that previously applied to this project has been removed. Contributing requires nothing beyond opening a pull request.
+
+For the full terms, see the [LICENSE](LICENSE) file.
+
+---
+
+## 10. Getting Help
+
+| Need | Where to go |
+|---|---|
+| Report a bug | [GitHub Issues](https://github.com/HMythical/baller/issues) |
+| Request a feature | [GitHub Issues](https://github.com/HMythical/baller/issues) |
+| Ask a usage or design question | GitHub Discussions |
+| Report a security vulnerability | Discord: **HMythical** |
+| Report a Code of Conduct violation | Discord: **HMythical** |
+| Read technical documentation | The [`docs/`](docs/) directory |
+
+Before opening an issue, search existing issues to see whether it has already been reported.
+
+---
+
+B.A.L.L.E.R. is early in its life and there is a great deal still to build. Thank you for taking the time to contribute.

@@ -22,6 +22,7 @@ pub fn bench_download_performance(c: &mut Criterion) {
             architectures: None,
             dependencies: None,
             sha256: None,
+            hash_algorithm: None,
             download_url: None,
             source: PackageSource::GitHub {
                 owner: "test".to_string(),

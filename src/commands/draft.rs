@@ -47,36 +47,33 @@ pub fn execute_draft(ctx: &AppContext, package_name: &str) -> Result<(), BallErr
 
         // System packages are installed via the native package manager,
         // not downloaded/archived. Record them in the DB and continue.
-        match &pkg_to_install.source {
-            PackageSource::System { manager } => {
-                println!("{} installing via {}...", "System".green(), manager.cyan());
-                install_system_package(manager, &pkg_to_install.name)?;
+        if let PackageSource::System { manager } = &pkg_to_install.source {
+            println!("{} installing via {}...", "System".green(), manager.cyan());
+            install_system_package(manager, &pkg_to_install.name)?;
 
-                let is_root = pkg_to_install.name == pkg.name;
-                ctx.db
-                    .insert_package(pkg_to_install, "", None, None, is_root)?;
-                session_packages.push(pkg_to_install.name.clone());
-                installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
+            let is_root = pkg_to_install.name == pkg.name;
+            ctx.db
+                .insert_package(pkg_to_install, "", None, None, is_root)?;
+            session_packages.push(pkg_to_install.name.clone());
+            installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
 
-                run_hook(
-                    &HookType::PostInstall,
-                    &pkg_to_install.name,
-                    &pkg_to_install.version,
-                    &ctx.config.hooks_dir,
-                    &ctx.config.hooks,
-                    &[],
-                )?;
+            run_hook(
+                &HookType::PostInstall,
+                &pkg_to_install.name,
+                &pkg_to_install.version,
+                &ctx.config.hooks_dir,
+                &ctx.config.hooks,
+                &[],
+            )?;
 
-                println!(
-                    "{} {} v{} installed via {}!",
-                    "Done".green().bold(),
-                    pkg_to_install.name.cyan(),
-                    pkg_to_install.version.yellow(),
-                    manager.cyan()
-                );
-                continue;
-            }
-            _ => {}
+            println!(
+                "{} {} v{} installed via {}!",
+                "Done".green().bold(),
+                pkg_to_install.name.cyan(),
+                pkg_to_install.version.yellow(),
+                manager.cyan()
+            );
+            continue;
         }
 
         let downloaded = ctx.downloader.download_and_extract(pkg_to_install, true)?;

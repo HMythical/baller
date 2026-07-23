@@ -576,7 +576,9 @@ mod tests {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join("baller_test_db");
         let _ = std::fs::create_dir_all(&dir);
-        dir.join(format!("test_{}.db", n))
+        // Include the process id so concurrent/repeated test binaries (common on
+        // Windows CI) never collide on the same on-disk file name.
+        dir.join(format!("test_{}_{}.db", std::process::id(), n))
     }
 
     fn make_pkg(name: &str, version: &str) -> Package {
@@ -602,12 +604,18 @@ mod tests {
         DbManager::init_at_path(db_path).unwrap()
     }
 
+    // NOTE ON TEST TEARDOWN: every test ends with `drop(db);` before
+    // `remove_file`. The DbManager owns an open sqlite Connection (holding an OS
+    // file handle); on Windows a file cannot be deleted while a handle is open,
+    // so dropping the connection first is required to avoid leaking .db files.
+
     #[test]
     fn test_db_init_creates_schema() {
         let path = test_db_path();
         let db = init_db(&path);
         let count = db.package_count().unwrap();
         assert_eq!(count, 0);
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -637,6 +645,7 @@ mod tests {
         assert_eq!(retrieved.bin_path.unwrap(), "/bin/path");
         assert!(!retrieved.frozen);
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -656,6 +665,7 @@ mod tests {
         assert_eq!(retrieved.version, "2.0.0");
         assert_eq!(retrieved.install_path, "/path2");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -673,6 +683,7 @@ mod tests {
         let result = db.remove_package("remove-me");
         assert!(result.is_err());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -687,6 +698,7 @@ mod tests {
             _ => panic!("expected PackageNotFound"),
         }
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -705,6 +717,7 @@ mod tests {
         assert_eq!(pkgs[0].name, "alpha");
         assert_eq!(pkgs[1].name, "beta");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -715,6 +728,7 @@ mod tests {
         let pkgs = db.list_packages().unwrap();
         assert!(pkgs.is_empty());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -732,6 +746,7 @@ mod tests {
         let results = db.search_installed("nonexistent").unwrap();
         assert!(results.is_empty());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -751,6 +766,7 @@ mod tests {
         db.set_frozen("freeze-me", false).unwrap();
         assert!(!db.is_frozen("freeze-me").unwrap());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -761,6 +777,7 @@ mod tests {
         let result = db.set_frozen("nonexistent", true);
         assert!(result.is_err());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -770,6 +787,7 @@ mod tests {
         let db = init_db(&path);
         assert!(!db.is_frozen("nonexistent").unwrap()); // returns false default
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -783,6 +801,7 @@ mod tests {
         db.insert_package(&pkg, "/p", None, None, true).unwrap();
         assert_eq!(db.package_count().unwrap(), 1);
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -802,6 +821,7 @@ mod tests {
         assert_eq!(frozen.len(), 1);
         assert_eq!(frozen[0].name, "frozen-pkg");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -818,6 +838,7 @@ mod tests {
         assert_eq!(deps[0].0, "dep1");
         assert_eq!(deps[1].0, "dep2");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -832,6 +853,7 @@ mod tests {
         let deps = db.get_dependencies("no-deps").unwrap();
         assert!(deps.is_empty());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -852,6 +874,7 @@ mod tests {
         let result = db.get_lock_entry("lock-pkg");
         assert!(result.is_err());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -867,6 +890,7 @@ mod tests {
         let entries = db.get_all_lock_entries().unwrap();
         assert_eq!(entries.len(), 2);
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -883,6 +907,7 @@ mod tests {
         let entry = db.get_lock_entry("sync-pkg").unwrap();
         assert_eq!(entry.0, "1.0.0");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -899,6 +924,7 @@ mod tests {
         assert_eq!(retrieved.install_path, "/install/path");
         assert_eq!(retrieved.bin_path.unwrap(), "/bin/path");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -919,6 +945,7 @@ mod tests {
         let deps_after = db.get_dependencies("dep-clear").unwrap();
         assert!(deps_after.is_empty());
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -953,6 +980,7 @@ mod tests {
         assert_eq!(retrieved.source_detail, Some("apt".to_string()));
         assert_eq!(retrieved.description.unwrap(), "From system PM");
 
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 }

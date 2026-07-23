@@ -2,7 +2,6 @@ use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use std::env;
 use std::fs;
-use std::os::windows::fs::symlink_file;
 use std::path::PathBuf;
 
 pub struct WindowsManager;

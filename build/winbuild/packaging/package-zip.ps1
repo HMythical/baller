@@ -60,6 +60,3 @@ if (Test-Path $packageDir) {
 }
 
 Write-Host "Created ZIP package: $zipPath" -ForegroundColor Green
-
-Compress-Archive -Path "$packageDir\*" -DestinationPath "$PSScriptRoot\dist\baller.zip" -Force
-Remove-Item $packageDir -Recurse -Force

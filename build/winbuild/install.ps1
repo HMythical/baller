@@ -1,5 +1,6 @@
 #!/usr/bin/env pwsh
 [CmdletBinding()]
+param()
 
 . "$PSScriptRoot\config.ps1"
 

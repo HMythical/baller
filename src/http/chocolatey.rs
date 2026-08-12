@@ -105,6 +105,66 @@ impl ChocolateyRegistry {
         })
     }
 
+    /// Fetch one exact version from the feed.
+    ///
+    /// NuGet stores four-part versions (`1.2.3.0`), so a three-part request is
+    /// retried with the `.0` suffix before giving up.
+    pub fn fetch_package_at_version(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Package, BallError> {
+        let candidates = version_candidates(version);
+
+        let mut last_err = None;
+        for candidate in &candidates {
+            match self.fetch_exact_version(name, candidate) {
+                Ok(pkg) => return Ok(pkg),
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            BallError::PackageNotFound(format!("{} version {} not found", name, version))
+        }))
+    }
+
+    fn fetch_exact_version(&self, name: &str, version: &str) -> Result<Package, BallError> {
+        let url = format!(
+            "{}/Packages()?$filter=Id eq '{}' and Version eq '{}'&$top=1&$select=Id,Version,Description,Authors,PackageHash,PackageHashAlgorithm,ProjectUrl",
+            self.feed_url.trim_end_matches('/'),
+            name,
+            version
+        );
+
+        let resp: ODataResponse = self
+            .client
+            .get_json_with_accept(&url, "application/json;odata=verbose")?;
+        let entry = resp.d.results.into_iter().next().ok_or_else(|| {
+            BallError::PackageNotFound(format!("{} version {} not found", name, version))
+        })?;
+
+        let normalized = normalize_nuget_version(&entry.version);
+        let download_url = derive_download_url(&entry);
+        let sha256 = entry.package_hash;
+
+        Ok(Package {
+            name: entry.id,
+            version: normalized,
+            description: entry.description,
+            author: entry.authors,
+            repository: entry.project_url,
+            architectures: None,
+            dependencies: parse_nuget_dependencies(&entry.dependencies),
+            sha256,
+            hash_algorithm: entry.package_hash_algorithm.map(|a| a.to_uppercase()),
+            download_url,
+            source: PackageSource::Chocolatey {
+                feed_url: self.feed_url.clone(),
+            },
+        })
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<Package>, BallError> {
         let url = format!(
             "{}/Packages()?$filter=substringof('{}',Id)&$orderby=DownloadCount desc&$top=20&$select=Id,Version,Description",
@@ -138,6 +198,19 @@ impl ChocolateyRegistry {
 
         Ok(packages)
     }
+}
+
+/// The version strings to try against the feed, in order.
+///
+/// NuGet stores some versions with a fourth `.0` segment that
+/// [`normalize_nuget_version`] strips on the way out, so a three-part request
+/// gets a four-part retry.
+fn version_candidates(version: &str) -> Vec<String> {
+    let mut candidates = vec![version.to_string()];
+    if version.split('.').count() == 3 {
+        candidates.push(format!("{}.0", version));
+    }
+    candidates
 }
 
 fn normalize_nuget_version(raw: &str) -> String {
@@ -198,4 +271,37 @@ fn derive_download_url(entry: &ODataPackage) -> Option<String> {
         "https://community.chocolatey.org/api/package/{}/{}",
         entry.id, entry.version
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_candidates_three_part_gets_nuget_retry() {
+        assert_eq!(
+            version_candidates("14.1.0"),
+            vec!["14.1.0".to_string(), "14.1.0.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_version_candidates_four_part_used_as_is() {
+        assert_eq!(version_candidates("14.1.0.0"), vec!["14.1.0.0".to_string()]);
+    }
+
+    #[test]
+    fn test_version_candidates_prerelease_used_as_is() {
+        assert_eq!(
+            version_candidates("1.0.0-beta"),
+            vec!["1.0.0-beta".to_string(), "1.0.0-beta.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_normalize_nuget_version_strips_trailing_zero() {
+        assert_eq!(normalize_nuget_version("14.1.0.0"), "14.1.0");
+        assert_eq!(normalize_nuget_version("14.1.0"), "14.1.0");
+        assert_eq!(normalize_nuget_version("14.1.0.3"), "14.1.0.3");
+    }
 }

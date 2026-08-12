@@ -51,9 +51,25 @@ pub struct SystemRegistry {
 }
 
 impl SystemRegistry {
+    #[cfg(target_os = "linux")]
     pub fn detect() -> Self {
         Self {
             manager: detect_system_manager("/etc/os-release"),
+        }
+    }
+
+    /// Non-Linux hosts have no native package manager to detect
+    #[cfg(not(target_os = "linux"))]
+    pub fn unavailable() -> Self {
+        Self { manager: None }
+    }
+
+    /// The detected native package manager's CLI name, if there is one
+    pub fn manager_name(&self) -> Option<&'static str> {
+        match self.manager.as_ref()? {
+            SystemManager::Apt => Some("apt"),
+            SystemManager::Dnf => Some("dnf"),
+            SystemManager::Pacman => Some("pacman"),
         }
     }
 
@@ -466,6 +482,7 @@ impl SystemRegistry {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn detect_system_manager(path: &str) -> Option<SystemManager> {
     let os_release = std::fs::read_to_string(path).ok()?;
 
@@ -654,6 +671,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_system_registry_detect_returns_some_on_linux() {
         let registry = SystemRegistry::detect();
@@ -663,6 +681,14 @@ mod tests {
             Some(SystemManager::Apt) | Some(SystemManager::Dnf) | Some(SystemManager::Pacman) => {}
             None => {} // expected on unknown/non-debian systems
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_system_registry_unavailable_off_linux() {
+        let registry = SystemRegistry::unavailable();
+        assert!(registry.manager.is_none());
+        assert!(registry.fetch_package("vim").is_err());
     }
 
     #[test]

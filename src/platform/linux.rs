@@ -33,10 +33,13 @@ impl PlatformManager for LinuxManager {
         Ok(path)
     }
 
-    fn create_symlink(source: &std::path::Path, executable_name: &str) -> Result<(), BallError> {
-        let install_dir = Self::get_install_dir()?;
+    fn create_symlink_in(
+        install_dir: &std::path::Path,
+        source: &std::path::Path,
+        executable_name: &str,
+    ) -> Result<(), BallError> {
         if !install_dir.exists() {
-            fs::create_dir_all(&install_dir).map_err(BallError::FileIoErr)?;
+            fs::create_dir_all(install_dir).map_err(BallError::FileIoErr)?;
         }
         let target = install_dir.join(executable_name);
 

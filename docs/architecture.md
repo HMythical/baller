@@ -21,7 +21,7 @@ baller/
 │   │   ├── substitute.rs    # Swap packages
 │   │   ├── update.rs        # Update non-frozen packages
 │   │   ├── sweep.rs         # Clean cache
-│   │   └── build.rs         # Build from manifest (stub)
+│   │   └── build.rs         # Assemble a package from a local manifest
 │   ├── config/
 │   │   ├── mod.rs
 │   │   └── config.rs        # BallerConfig, RegistryConfig, HooksConfig
@@ -33,7 +33,7 @@ baller/
 │   │   ├── db.rs            # SQLite state management
 │   │   ├── dep_solver.rs    # Dependency resolution, cycle detection
 │   │   ├── hooks.rs         # Pre/post hook execution
-│   │   └── manifest.rs      # baller.toml/json parser (stub)
+│   │   └── manifest.rs      # baller.toml/json parser (flat + nested)
 │   ├── http/                # HTTP registry clients
 │   │   ├── mod.rs           # HttpClient (reqwest wrapper, retries)
 │   │   ├── github.rs        # GitHub Releases API
@@ -191,8 +191,10 @@ packages installed as dependencies are marked `user_installed = false`, while
 packages explicitly installed via `draft` are marked `user_installed = true`.
 
 ### Confirmation Prompts
-Destructive commands (`eject`, `sweep`) prompt for confirmation unless the
-`--yes` / `-y` flag is passed.
+Destructive commands (`eject`, `sweep`, `substitute`) prompt for confirmation
+unless the global `--yes` / `-y` flag is passed. `--yes` is one of the global
+flags declared on `BallerCommand` and carried to commands via
+`AppContext::flags` (`src/context.rs`).
 
 ### Version Comparison
 The `update` command uses `parse_version_flexible()` for version comparison,

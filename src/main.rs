@@ -15,8 +15,11 @@ use std::{
 };
 
 use crate::{
-    cli::parse::BallerCommand, config::config::BallerConfig, context::AppContext,
-    error::error::BallError, utils::fs::ensure_dir,
+    cli::parse::BallerCommand,
+    config::config::{BallerConfig, HooksConfig},
+    context::AppContext,
+    error::error::BallError,
+    utils::fs::ensure_dir,
 };
 
 pub const CRATE_VERSION: &str = "v0.1";
@@ -33,16 +36,41 @@ fn entry() -> Result<(), BallError> {
         return Err(BallError::UnsupportedOs(env::consts::OS.to_string()));
     }
 
-    let baller_dir = create_baller_dir()?;
-    let baller_config: BallerConfig = BallerConfig::parse_config(&baller_dir)?;
-
-    let ctx = AppContext::new(baller_config)?;
-
     let command: BallerCommand = BallerCommand::parse_command()?;
+
+    if command.no_color {
+        colored::control::set_override(false);
+    }
+
+    let baller_dir = resolve_baller_dir(command.config.as_deref())?;
+
+    // A custom --config directory takes the db, cache and hooks with it.
+    let mut baller_config: BallerConfig = match command.config {
+        Some(_) => BallerConfig::parse_config_rooted(&baller_dir, true)?,
+        None => BallerConfig::parse_config(&baller_dir)?,
+    };
+
+    if command.no_hooks {
+        baller_config.hooks = HooksConfig::disabled();
+    }
+
+    let ctx = AppContext::new(baller_config, command.global_flags())?;
 
     command.execute(&ctx)?;
 
     Ok(())
+}
+
+/// The baller directory to work out of: `--config <dir>` when given, otherwise
+/// the platform default. Everything else (db, cache, hooks) derives from it.
+fn resolve_baller_dir(config_override: Option<&str>) -> Result<String, BallError> {
+    match config_override {
+        Some(dir) => {
+            ensure_dir(dir.as_ref())?;
+            Ok(dir.to_string())
+        }
+        None => create_baller_dir(),
+    }
 }
 
 fn create_baller_dir() -> Result<String, BallError> {
@@ -64,14 +92,18 @@ fn create_baller_dir() -> Result<String, BallError> {
 mod integration_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::config::config::BallerConfig;
+    use crate::config::config::{BallerConfig, RegistryConfig};
+    use crate::context::effective_source_order;
     use crate::core::db::DbManager;
     use crate::core::dep_solver::{
         detect_cycles, parse_dependency_line, topological_sort, Dependency,
     };
+    use crate::core::downloader::Downloader;
     use crate::core::manifest::ManifestParser;
     use crate::core::package::{Package, PackageSource};
+    use crate::core::registry::RegistrySource;
     use crate::error::error::BallError;
+    use crate::http::HttpClient;
     use crate::utils::fs;
     use crate::utils::security;
 
@@ -397,34 +429,24 @@ post_update = off
         assert!(sanitized.ends_with(".tar.gz") || sanitized.ends_with(".gz"));
     }
 
+    fn registry_config(source_order: &[&str]) -> RegistryConfig {
+        RegistryConfig {
+            source_order: source_order.iter().map(|s| s.to_string()).collect(),
+            baller_registry_url: "https://registry.baller.dev/api".to_string(),
+            chocolatey_feed_url: "https://community.chocolatey.org/api/v2".to_string(),
+            github_enabled: true,
+            baller_enabled: true,
+            chocolatey_enabled: true,
+            system_enabled: true,
+        }
+    }
+
     #[test]
     fn test_effective_order_excludes_disabled_system() {
-        // Simulate the effective_order filter_map logic from context.rs
-        use crate::core::registry::RegistrySource;
+        let mut config = registry_config(&["github", "system"]);
+        config.system_enabled = false;
 
-        let source_order = ["github".to_string(), "system".to_string()];
-        let system_enabled = false;
-        let github_enabled = true;
-
-        let effective_order: Vec<RegistrySource> = source_order
-            .iter()
-            .filter_map(|s| {
-                let enabled = match s.as_str() {
-                    "github" => github_enabled,
-                    "system" => system_enabled,
-                    _ => true,
-                };
-                if enabled {
-                    match s.as_str() {
-                        "github" => Some(RegistrySource::GitHub),
-                        "system" => Some(RegistrySource::System),
-                        _ => Some(RegistrySource::GitHub),
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let effective_order = effective_source_order(&config);
 
         assert_eq!(effective_order.len(), 1);
         assert!(effective_order.contains(&RegistrySource::GitHub));
@@ -433,34 +455,302 @@ post_update = off
 
     #[test]
     fn test_effective_order_includes_enabled_system() {
-        use crate::core::registry::RegistrySource;
+        let config = registry_config(&["github", "system"]);
 
-        let source_order = ["github".to_string(), "system".to_string()];
-        let system_enabled = true;
-        let github_enabled = true;
-
-        let effective_order: Vec<RegistrySource> = source_order
-            .iter()
-            .filter_map(|s| {
-                let enabled = match s.as_str() {
-                    "github" => github_enabled,
-                    "system" => system_enabled,
-                    _ => true,
-                };
-                if enabled {
-                    match s.as_str() {
-                        "github" => Some(RegistrySource::GitHub),
-                        "system" => Some(RegistrySource::System),
-                        _ => Some(RegistrySource::GitHub),
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let effective_order = effective_source_order(&config);
 
         assert_eq!(effective_order.len(), 2);
         assert!(effective_order.contains(&RegistrySource::GitHub));
         assert!(effective_order.contains(&RegistrySource::System));
+    }
+
+    #[test]
+    fn test_effective_order_preserves_configured_order() {
+        let config = registry_config(&["baller", "chocolatey", "github"]);
+
+        let effective_order = effective_source_order(&config);
+
+        assert_eq!(
+            effective_order,
+            vec![
+                RegistrySource::BallerRegistry,
+                RegistrySource::Chocolatey,
+                RegistrySource::GitHub
+            ]
+        );
+    }
+
+    #[test]
+    fn test_effective_order_drops_unknown_sources() {
+        let config = registry_config(&["npm", "baller", "github"]);
+
+        let effective_order = effective_source_order(&config);
+
+        assert_eq!(
+            effective_order,
+            vec![RegistrySource::BallerRegistry, RegistrySource::GitHub]
+        );
+    }
+
+    #[test]
+    fn test_effective_order_from_platform_defaults() {
+        let config = BallerConfig::default();
+
+        let effective_order = effective_source_order(&config.registry);
+
+        assert_eq!(
+            effective_order.first(),
+            Some(&RegistrySource::BallerRegistry)
+        );
+        assert_eq!(effective_order.last(), Some(&RegistrySource::GitHub));
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                effective_order,
+                vec![
+                    RegistrySource::BallerRegistry,
+                    RegistrySource::Chocolatey,
+                    RegistrySource::GitHub
+                ]
+            );
+        } else {
+            assert_eq!(
+                effective_order,
+                vec![
+                    RegistrySource::BallerRegistry,
+                    RegistrySource::System,
+                    RegistrySource::GitHub
+                ]
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_defaults_skip_system_source() {
+        let config = BallerConfig::default();
+        assert!(!config.registry.system_enabled);
+
+        let effective_order = effective_source_order(&config.registry);
+        assert!(!effective_order.contains(&RegistrySource::System));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_defaults_skip_chocolatey_source() {
+        let config = BallerConfig::default();
+        assert!(!config.registry.chocolatey_enabled);
+
+        let effective_order = effective_source_order(&config.registry);
+        assert!(!effective_order.contains(&RegistrySource::Chocolatey));
+    }
+
+    #[test]
+    fn test_github_stays_available_as_fallback() {
+        let config = BallerConfig::default();
+        let effective_order = effective_source_order(&config.registry);
+
+        assert!(config.registry.github_enabled);
+        assert!(effective_order.contains(&RegistrySource::GitHub));
+        assert_eq!(effective_order.last(), Some(&RegistrySource::GitHub));
+    }
+
+    #[test]
+    fn test_build_manifest_fixtures_parse_and_validate() {
+        let dir = test_dir();
+
+        let flat_toml = dir.join("flat.toml");
+        std::fs::write(
+            &flat_toml,
+            r#"name = "flat-pkg"
+version = "1.0.0"
+dependencies = ["libc >=0.2.0"]
+sha256 = "deadbeef"
+download_url = "https://example.com/flat-pkg.tar.gz"
+
+[source]
+GitHub = { owner = "owner", repo = "flat-pkg" }
+"#,
+        )
+        .unwrap();
+
+        let nested_toml = dir.join("baller.toml");
+        std::fs::write(
+            &nested_toml,
+            r#"name = "nested-pkg"
+version = "2.0.0"
+repository = "https://github.com/owner/nested-pkg"
+
+[source]
+type = "github"
+owner = "owner"
+repo = "nested-pkg"
+
+[dependencies]
+"libc" = ">=0.2.0"
+"?extra" = "*"
+
+[architectures]
+supported = ["x86_64"]
+
+[checksum]
+sha256 = "cafebabe"
+"#,
+        )
+        .unwrap();
+
+        let flat_json = dir.join("flat.json");
+        std::fs::write(
+            &flat_json,
+            r#"{"name": "flat-json-pkg", "version": "3.0.0", "sha256": "abc123"}"#,
+        )
+        .unwrap();
+
+        let nested_json = dir.join("baller.json");
+        std::fs::write(
+            &nested_json,
+            r#"{
+    "name": "nested-json-pkg",
+    "version": "4.0.0",
+    "source": { "type": "chocolatey", "feed_url": "https://feed.example.com/api/v2" },
+    "checksum": { "sha256": "beefcafe" }
+}"#,
+        )
+        .unwrap();
+
+        for path in [&flat_toml, &nested_toml, &flat_json, &nested_json] {
+            let pkg = ManifestParser::parse_auto(path).unwrap();
+            ManifestParser::validate(&pkg).unwrap();
+            assert!(!pkg.name.is_empty());
+            assert!(pkg.sha256.is_some());
+        }
+
+        let nested = ManifestParser::parse_auto(&nested_toml).unwrap();
+        assert_eq!(nested.version, "2.0.0");
+        assert_eq!(nested.architectures.unwrap(), vec!["x86_64".to_string()]);
+        assert_eq!(nested.dependencies.unwrap().len(), 2);
+        assert_eq!(
+            nested.source,
+            PackageSource::GitHub {
+                owner: "owner".to_string(),
+                repo: "nested-pkg".to_string()
+            }
+        );
+
+        let nested_json_pkg = ManifestParser::parse_auto(&nested_json).unwrap();
+        assert_eq!(
+            nested_json_pkg.source,
+            PackageSource::Chocolatey {
+                feed_url: "https://feed.example.com/api/v2".to_string()
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_manifest_error_paths() {
+        let dir = test_dir();
+
+        let missing = dir.join("nope.toml");
+        match ManifestParser::parse_auto(&missing) {
+            Err(BallError::InvalidConfig(msg)) => assert!(msg.contains("not found")),
+            other => panic!("expected InvalidConfig, got {:?}", other),
+        }
+
+        let no_version = dir.join("no-version.toml");
+        std::fs::write(&no_version, "name = \"pkg\"\n").unwrap();
+        assert!(ManifestParser::parse_auto(&no_version).is_err());
+
+        let empty_version = dir.join("empty-version.json");
+        std::fs::write(&empty_version, r#"{"name": "pkg", "version": ""}"#).unwrap();
+        let pkg = ManifestParser::parse_auto(&empty_version).unwrap();
+        match ManifestParser::validate(&pkg) {
+            Err(BallError::InvalidConfig(msg)) => assert!(msg.contains("version")),
+            other => panic!("expected InvalidConfig, got {:?}", other),
+        }
+
+        let bad_source = dir.join("bad-source.toml");
+        std::fs::write(
+            &bad_source,
+            "name = \"pkg\"\nversion = \"1.0.0\"\n\n[source]\ntype = \"npm\"\n",
+        )
+        .unwrap();
+        assert!(ManifestParser::parse_auto(&bad_source).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_assembles_from_local_archive() {
+        use std::io::Write;
+
+        let dir = test_dir();
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "local-pkg.exe"
+        } else {
+            "local-pkg"
+        };
+
+        let archive_path = dir.join("local-pkg.zip");
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            zip.start_file(binary_name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"binary contents").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let manifest_path = dir.join("baller.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"name = "local-pkg"
+version = "1.2.3"
+description = "assembled from a local archive"
+
+[source]
+type = "github"
+owner = "owner"
+repo = "local-pkg"
+"#,
+        )
+        .unwrap();
+
+        let pkg = ManifestParser::parse_auto(&manifest_path).unwrap();
+        ManifestParser::validate(&pkg).unwrap();
+
+        let downloader = Downloader::new(cache_dir.clone(), HttpClient::new().unwrap());
+        let extract_dir = cache_dir.join(format!("{}-{}", pkg.name, pkg.version));
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        downloader
+            .extract_archive(&archive_path, &extract_dir)
+            .unwrap();
+
+        let binary_path = fs::find_binary_in_dir(&extract_dir, &pkg.name).unwrap();
+        assert_eq!(binary_path.file_name().unwrap(), binary_name);
+
+        let db = DbManager::init_at_path(&dir.join("build.db")).unwrap();
+        let manifest_str = manifest_path.to_string_lossy().to_string();
+        db.insert_package(
+            &pkg,
+            &extract_dir.to_string_lossy(),
+            Some(&binary_path.to_string_lossy()),
+            Some(&manifest_str),
+            true,
+        )
+        .unwrap();
+
+        let recorded = db.get_package("local-pkg").unwrap();
+        assert_eq!(recorded.version, "1.2.3");
+        assert!(recorded.user_installed);
+        assert_eq!(recorded.manifest_path, Some(manifest_str));
+        assert_eq!(recorded.install_path, extract_dir.to_string_lossy());
+        assert_eq!(recorded.source, "github");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

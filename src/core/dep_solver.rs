@@ -23,6 +23,27 @@ pub fn resolve_deps(
     registry: &RegistryClient,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
+    resolve_from(root_name, None, registry, installed)
+}
+
+/// Resolve dependencies around an already-fetched root package.
+///
+/// Used when the root was pinned with `--version` or forced to one `--source`,
+/// so the resolver must not re-fetch (and re-resolve) it from the chain.
+pub fn resolve_deps_with_root(
+    root: &Package,
+    registry: &RegistryClient,
+    installed: &HashMap<String, String>,
+) -> Result<ResolveResult, BallError> {
+    resolve_from(&root.name, Some(root), registry, installed)
+}
+
+fn resolve_from(
+    root_name: &str,
+    pinned_root: Option<&Package>,
+    registry: &RegistryClient,
+    installed: &HashMap<String, String>,
+) -> Result<ResolveResult, BallError> {
     let mut resolved: HashMap<String, Package> = HashMap::new();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     let mut constraints: HashMap<String, Vec<(String, VersionReq)>> = HashMap::new();
@@ -33,6 +54,14 @@ pub fn resolve_deps(
     while let Some(name) = queue.pop_front() {
         if resolved.contains_key(&name) {
             continue;
+        }
+
+        if let Some(root) = pinned_root {
+            if name == root.name {
+                resolved.insert(name.clone(), root.clone());
+                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph);
+                continue;
+            }
         }
 
         if let Some(installed_ver) = installed.get(&name) {

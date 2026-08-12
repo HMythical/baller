@@ -211,12 +211,64 @@ impl Downloader {
         Ok(())
     }
 
-    pub fn cleanup_cache(&self) -> Result<(), BallError> {
+    /// Wipe the whole cache, including the extracted `<name>-<version>` trees
+    /// that installed binaries are linked against.
+    pub fn cleanup_all(&self) -> Result<(), BallError> {
         if self.cache_dir.exists() {
             fs::remove_dir_all(&self.cache_dir).map_err(BallError::FileIoErr)?;
         }
         fs::create_dir_all(&self.cache_dir).map_err(BallError::FileIoErr)?;
         Ok(())
+    }
+
+    /// Downloaded archives sitting at the top level of the cache directory.
+    ///
+    /// Extracted packages live in subdirectories, so listing plain files here
+    /// yields exactly the re-downloadable archives.
+    pub fn archive_paths(&self) -> Vec<PathBuf> {
+        let mut archives = Vec::new();
+        if let Ok(entries) = fs::read_dir(&self.cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    archives.push(path);
+                }
+            }
+        }
+        archives.sort();
+        archives
+    }
+
+    /// Delete cached archives while preserving extracted package directories.
+    ///
+    /// Returns the number of archives removed and the bytes reclaimed.
+    pub fn cleanup_archives(&self) -> Result<(u64, u64), BallError> {
+        let mut removed = 0u64;
+        let mut freed = 0u64;
+
+        for archive in self.archive_paths() {
+            let size = archive.metadata().map(|m| m.len()).unwrap_or(0);
+            fs::remove_file(&archive).map_err(BallError::FileIoErr)?;
+            removed += 1;
+            freed += size;
+        }
+
+        Ok((removed, freed))
+    }
+
+    /// Remove the cached archive a package was downloaded from.
+    ///
+    /// Returns whether an archive was actually present.
+    pub fn remove_archive(&self, download_url: &str) -> Result<bool, BallError> {
+        let archive = self
+            .cache_dir
+            .join(util_fs::sanitize_filename(download_url));
+        if !archive.is_file() {
+            return Ok(false);
+        }
+
+        fs::remove_file(&archive).map_err(BallError::FileIoErr)?;
+        Ok(true)
     }
 
     #[allow(dead_code)]

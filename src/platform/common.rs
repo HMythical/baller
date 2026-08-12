@@ -1,5 +1,5 @@
 use crate::error::error::BallError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub trait PlatformManager {
     /// Gets the global installation directory for placing binaries.
@@ -17,8 +17,17 @@ pub trait PlatformManager {
         Ok(path)
     }
 
+    /// Exposes a package binary inside a specific directory.
+    fn create_symlink_in(
+        install_dir: &Path,
+        source: &Path,
+        executable_name: &str,
+    ) -> Result<(), BallError>;
+
     /// Exposes a package binary by creating a system-appropriate symlink/wrapper.
-    fn create_symlink(source: &std::path::Path, executable_name: &str) -> Result<(), BallError>;
+    fn create_symlink(source: &Path, executable_name: &str) -> Result<(), BallError> {
+        Self::create_symlink_in(&Self::get_install_dir()?, source, executable_name)
+    }
 
     /// Removes an exposed package binary.
     fn remove_symlink(executable_name: &str) -> Result<(), BallError>;

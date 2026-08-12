@@ -14,6 +14,69 @@ pub enum RegistrySource {
     System,
 }
 
+impl RegistrySource {
+    /// The name this source is written as in `baller.conf`'s `source_order`
+    pub fn config_name(&self) -> &'static str {
+        match self {
+            RegistrySource::GitHub => "github",
+            RegistrySource::BallerRegistry => "baller",
+            RegistrySource::Chocolatey => "chocolatey",
+            RegistrySource::System => "system",
+        }
+    }
+
+    /// The value stored in the database's `source` column for this source
+    pub fn db_name(&self) -> &'static str {
+        match self {
+            RegistrySource::GitHub => "github",
+            RegistrySource::BallerRegistry => "baller_registry",
+            RegistrySource::Chocolatey => "chocolatey",
+            RegistrySource::System => "system",
+        }
+    }
+
+    /// Parse a `source_order` entry; unknown names are ignored by the caller
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "github" => Some(RegistrySource::GitHub),
+            "baller" => Some(RegistrySource::BallerRegistry),
+            "chocolatey" => Some(RegistrySource::Chocolatey),
+            "system" => Some(RegistrySource::System),
+            _ => None,
+        }
+    }
+}
+
+/// The source chain this platform prefers: the Baller registry first, then the
+/// native ecosystem (Chocolatey on Windows, the distro package manager on
+/// Linux), with GitHub as the last-resort fallback.
+pub fn default_source_order() -> Vec<RegistrySource> {
+    if cfg!(target_os = "windows") {
+        vec![
+            RegistrySource::BallerRegistry,
+            RegistrySource::Chocolatey,
+            RegistrySource::GitHub,
+        ]
+    } else {
+        vec![
+            RegistrySource::BallerRegistry,
+            RegistrySource::System,
+            RegistrySource::GitHub,
+        ]
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_registry() -> SystemRegistry {
+    SystemRegistry::detect()
+}
+
+/// Windows has no `/etc/os-release`, so detection is skipped entirely there
+#[cfg(not(target_os = "linux"))]
+fn system_registry() -> SystemRegistry {
+    SystemRegistry::unavailable()
+}
+
 #[allow(dead_code)]
 pub trait RegistryIndex {
     fn fetch_package(&self, name: &str) -> Result<Package, BallError>;
@@ -37,18 +100,14 @@ impl RegistryClient {
             "https://registry.baller.dev/api".to_string(),
         );
         let chocolatey = ChocolateyRegistry::new(client);
-        let system = SystemRegistry::detect();
+        let system = system_registry();
 
         Self {
             github,
             baller_api,
             chocolatey,
             system,
-            source_order: vec![
-                RegistrySource::GitHub,
-                RegistrySource::BallerRegistry,
-                RegistrySource::Chocolatey,
-            ],
+            source_order: default_source_order(),
         }
     }
 
@@ -61,7 +120,7 @@ impl RegistryClient {
         let github = GitHubRegistry::new(client.clone());
         let baller_api = BallerRegistryApi::new(client.clone(), baller_registry_url);
         let chocolatey = ChocolateyRegistry::with_feed_url(client, chocolatey_feed_url);
-        let system = SystemRegistry::detect();
+        let system = system_registry();
 
         Self {
             github,
@@ -84,24 +143,52 @@ impl RegistryClient {
             }
         }
 
-        Err(if errors.is_empty() {
-            BallError::PackageNotFound(format!("{} not found in any configured registry", name))
-        } else {
-            BallError::PackageNotFound(format!(
-                "{} not found. Sources tried:\n  {}",
-                name,
-                errors.join("\n  ")
-            ))
-        })
+        Err(not_found(name, errors))
     }
 
-    #[allow(dead_code)]
+    /// Fetch a specific version, walking the same source chain.
+    ///
+    /// Only GitHub and Chocolatey can pin; the other sources contribute a
+    /// clear reason to the aggregated error.
+    pub fn fetch_package_at_version(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Package, BallError> {
+        let mut errors: Vec<String> = Vec::new();
+
+        for source in &self.source_order {
+            match self.try_fetch_at_version(source, name, version) {
+                Ok(pkg) => return Ok(pkg),
+                Err(e) => {
+                    errors.push(format!("{:?}: {}", source, e));
+                }
+            }
+        }
+
+        Err(not_found(&format!("{}@{}", name, version), errors))
+    }
+
     pub fn fetch_package_from_source(
         &self,
         source: &RegistrySource,
         name: &str,
     ) -> Result<Package, BallError> {
         self.try_fetch(source, name)
+    }
+
+    pub fn fetch_package_at_version_from_source(
+        &self,
+        source: &RegistrySource,
+        name: &str,
+        version: &str,
+    ) -> Result<Package, BallError> {
+        self.try_fetch_at_version(source, name, version)
+    }
+
+    /// The native package manager detected for this host, if any
+    pub fn system_manager_name(&self) -> Option<&'static str> {
+        self.system.manager_name()
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<Package>, BallError> {
@@ -136,6 +223,37 @@ impl RegistryClient {
             RegistrySource::System => self.system.fetch_package(name),
         }
     }
+
+    fn try_fetch_at_version(
+        &self,
+        source: &RegistrySource,
+        name: &str,
+        version: &str,
+    ) -> Result<Package, BallError> {
+        match source {
+            RegistrySource::GitHub => self.github.fetch_package_at_version(name, version),
+            RegistrySource::Chocolatey => self.chocolatey.fetch_package_at_version(name, version),
+            RegistrySource::BallerRegistry => Err(BallError::UnsupportedCommand(
+                "version pinning against the Baller registry is not supported yet".to_string(),
+            )),
+            RegistrySource::System => Err(BallError::PackageManagerError(format!(
+                "system packages always install the latest available version — cannot pin '{}'",
+                name
+            ))),
+        }
+    }
+}
+
+fn not_found(name: &str, errors: Vec<String>) -> BallError {
+    if errors.is_empty() {
+        BallError::PackageNotFound(format!("{} not found in any configured registry", name))
+    } else {
+        BallError::PackageNotFound(format!(
+            "{} not found. Sources tried:\n  {}",
+            name,
+            errors.join("\n  ")
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +278,62 @@ mod tests {
     fn test_registry_source_equality() {
         assert_eq!(RegistrySource::GitHub, RegistrySource::GitHub);
         assert_ne!(RegistrySource::GitHub, RegistrySource::Chocolatey);
+    }
+
+    #[test]
+    fn test_default_source_order_prefers_platform_native() {
+        let order = default_source_order();
+
+        assert_eq!(order.first(), Some(&RegistrySource::BallerRegistry));
+        assert_eq!(order.last(), Some(&RegistrySource::GitHub));
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                order,
+                vec![
+                    RegistrySource::BallerRegistry,
+                    RegistrySource::Chocolatey,
+                    RegistrySource::GitHub
+                ]
+            );
+            assert!(!order.contains(&RegistrySource::System));
+        } else {
+            assert_eq!(
+                order,
+                vec![
+                    RegistrySource::BallerRegistry,
+                    RegistrySource::System,
+                    RegistrySource::GitHub
+                ]
+            );
+            assert!(!order.contains(&RegistrySource::Chocolatey));
+        }
+    }
+
+    #[test]
+    fn test_config_name_round_trip() {
+        for source in [
+            RegistrySource::GitHub,
+            RegistrySource::BallerRegistry,
+            RegistrySource::Chocolatey,
+            RegistrySource::System,
+        ] {
+            let name = source.config_name();
+            assert_eq!(RegistrySource::from_config_name(name), Some(source));
+        }
+    }
+
+    #[test]
+    fn test_from_config_name_is_case_insensitive() {
+        assert_eq!(
+            RegistrySource::from_config_name(" GitHub "),
+            Some(RegistrySource::GitHub)
+        );
+    }
+
+    #[test]
+    fn test_from_config_name_unknown() {
+        assert_eq!(RegistrySource::from_config_name("npm"), None);
     }
 
     #[test]

@@ -268,6 +268,109 @@ Not yet implemented — returns an error with a clear message and non-zero exit 
 
 ---
 
+## inject — Add a Custom Command
+
+```
+baller inject <path-to-.ball-file>
+```
+
+Parses a `.ball` manifest and registers the binary it names as a baller
+subcommand, stored in `injected_commands.json` under baller's config directory
+(`~/.baller` on Linux, `%LOCALAPPDATA%\baller` on Windows). Afterwards
+`baller <command-name>` runs that binary, forwarding every argument and the
+child's exit code.
+
+Injection is gated behind three separate confirmations, because the injected
+binary later runs with the user's privileges. Answering anything but `y`/`yes`
+at any prompt aborts without writing.
+
+Before writing, `inject` rejects manifests that name a built-in command
+(`draft`, `eject`, `freeze`, `roster`, `substitute`, `sweep`, `update`,
+`build`, `inject`, `help`, `version`), name a binary that does not exist, or
+whose command name contains whitespace. The stored path is canonicalized, so a
+relative `PATH` keeps working from any directory.
+
+At invocation time, `REQUIRE-ROOT` is enforced (running unprivileged is an
+error) and every entry in `DEPENDS` must resolve on `PATH`.
+
+### `.ball` File Format
+
+`[SECTION]` headers with `KEY = VALUE` entries. `[COMMAND-NAME]` and `[PATH]`
+are required; everything else is optional, and `VERSION` defaults to `0.1.0`.
+Values may be quoted or bare, `#`/`;` start a comment, and `FLAGS-LIST` /
+`DEPENDS` are comma-separated.
+
+```
+[COMMAND-NAME]
+COMMAND-NAME = "my-tool"
+
+[DESCRIPTION]
+DESCRIPTION = "A helpful tool that does X"
+
+[VERSION]
+VERSION = "1.0.0"
+
+[FLAGS]
+FLAGS-LIST = "-y, --yes, -n, --no"
+
+[AUTHOR]
+AUTHOR = "HMythical"
+
+[REQUIRE-ROOT]
+ROOTPERMS = false
+
+[DEPENDS]
+DEPENDS = "python3, ffmpeg"
+
+[PATH]
+PATH = /usr/local/bin/my-tool
+```
+
+`FLAGS-LIST` and `AUTHOR` are shown in help output only; baller does not
+validate the flags a binary actually accepts. See `example.ball` in the repo
+root for a working file.
+
+```
+$ baller inject ./my-tool.ball
+This will modify baller's runtime behavior by adding a new command. Continue? [yes/no] yes
+Only inject .ball files from sources you trust: the binary they name runs with your privileges. Continue? [yes/no] yes
+Final confirmation: inject 'my-tool' from /usr/local/bin/my-tool? [yes/no] yes
+Done Injected 'my-tool' -> /usr/local/bin/my-tool
+Run it with: baller my-tool
+```
+
+---
+
+## help — List Commands or Describe One
+
+```
+baller help [command]
+```
+
+With no argument, prints every built-in command followed by an `Injected
+commands:` section listing whatever `inject` has registered — which is why
+baller ships its own `help` rather than clap's built-in one, since clap only
+knows about compile-time subcommands.
+
+With an argument, prints the usage, arguments, and notes for that one command.
+Built-in names resolve first, then injected ones; an unrecognized name is an
+error. For an injected command the detail view shows its version, author,
+flags, dependencies, root requirement, and the binary it points at.
+
+`baller --help` and `-h` still print clap's own summary (stdout, exit 0) and
+point at `baller help` for the injected list.
+
+```
+$ baller help roster
+roster - Rosters (Lists) active players on your team or searches for one
+
+Usage: baller roster [PACKAGE_NAME]
+
+  [PACKAGE_NAME]  Package to look up; omit to list everything installed
+```
+
+---
+
 ## Confirmation Prompts
 
 Destructive commands (`eject`, `sweep`) prompt for confirmation unless the

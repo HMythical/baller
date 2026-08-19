@@ -1,20 +1,29 @@
+use crate::cli::help::execute_command_help;
 use crate::commands::build::{execute_build, BuildOptions};
 use crate::commands::draft::{execute_draft, DraftOptions};
 use crate::commands::eject::{execute_eject, EjectOptions};
+use crate::commands::external::execute_external;
 use crate::commands::freeze::{execute_freeze, FreezeMode, FreezeOptions};
+use crate::commands::inject::execute_inject;
 use crate::commands::roster::{execute_roster, RosterOptions};
 use crate::commands::substitute::{execute_substitute, SubstituteOptions};
 use crate::commands::sweep::{execute_sweep, SweepOptions};
 use crate::commands::update::{execute_update, UpdateOptions};
 use crate::context::{AppContext, GlobalFlags};
+use crate::core::injected::resolve_baller_dir;
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
+use clap::error::ErrorKind;
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "baller")]
 #[command(about = "B.A.L.L.E.R - The Binary Allocation & Library Launch Environment in Rust", long_about = None)]
 #[command(version)]
+#[command(after_help = "Run 'baller help' to also list injected commands.")]
+// Baller ships its own 'help' subcommand: clap's built-in one cannot see
+// injected commands.
+#[command(disable_help_subcommand = true)]
 pub struct BallerCommand {
     #[command(subcommand)]
     pub command: CommandTypes,
@@ -195,13 +204,27 @@ pub enum CommandTypes {
         #[arg(long, value_enum, value_name = "SOURCE")]
         source: Option<SourceArg>,
     },
+    /// Injects a custom command described by a .ball file
+    Inject { path: String },
+    /// Prints every available command, or details for one of them
+    Help {
+        /// Built-in or injected command to describe
+        command: Option<String>,
+    },
+    /// Any unknown subcommand: dispatched to an injected command, if one matches
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 impl BallerCommand {
     pub fn parse_command() -> Result<Self, BallError> {
-        let cmd = BallerCommand::try_parse()
-            .map_err(|e| BallError::InvalidConfig(format!("CLI Error: {}", e)))?;
-        Ok(cmd)
+        match BallerCommand::try_parse() {
+            Ok(cmd) => Ok(cmd),
+            // Help and version are requests, not failures: let clap print them
+            // on its own stream and exit the way it normally would.
+            Err(e) if is_display_request(e.kind()) => e.exit(),
+            Err(e) => Err(BallError::InvalidConfig(format!("CLI Error: {}", e))),
+        }
     }
 
     /// The flags every subcommand honors, lifted out for `AppContext`
@@ -339,8 +362,28 @@ impl BallerCommand {
                     source: source.map(SourceArg::to_registry_source),
                 },
             ),
+            CommandTypes::Inject { path } => execute_inject(ctx, path),
+            CommandTypes::Help { command } => {
+                execute_command_help(&resolve_baller_dir(&ctx.config), command.as_deref())
+            }
+            CommandTypes::External(args) => {
+                let (name, rest) = args
+                    .split_first()
+                    .ok_or_else(|| BallError::UnsupportedCommand("<empty>".to_string()))?;
+                execute_external(ctx, name, rest)
+            }
         }
     }
+}
+
+/// True when clap "failed" only because it was asked to print help or version.
+fn is_display_request(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    )
 }
 
 #[cfg(test)]

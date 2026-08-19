@@ -18,6 +18,7 @@ pub enum BallError {
     VersionConflict(String),
     PackageFrozen(String),
     PackageManagerError(String),
+    InjectedCommandError(String),
 }
 
 impl fmt::Display for BallError {
@@ -66,6 +67,8 @@ impl fmt::Display for BallError {
             }
 
             BallError::PackageManagerError(msg) => write!(f, "package manager error: {}", msg),
+
+            BallError::InjectedCommandError(msg) => write!(f, "injected command error: {}", msg),
         }
     }
 }
@@ -173,6 +176,14 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("myapp"));
         assert!(msg.contains("frozen"));
+    }
+
+    #[test]
+    fn test_injected_command_error_display() {
+        let err = BallError::InjectedCommandError("'my-tool' is not injected".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("injected command error"));
+        assert!(msg.contains("'my-tool' is not injected"));
     }
 
     #[test]

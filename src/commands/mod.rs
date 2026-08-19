@@ -1,7 +1,9 @@
 pub mod build;
 pub mod draft;
 pub mod eject;
+pub mod external;
 pub mod freeze;
+pub mod inject;
 pub mod roster;
 pub mod substitute;
 pub mod sweep;

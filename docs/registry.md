@@ -71,25 +71,43 @@ it failed (so you can see why GitHub returned "not found" *and* why
 Chocolatey returned 406, not just the last one).
 
 ```
-request → [GitHub] ?→ [Baller Registry] ?→ [Chocolatey] ?→ [System PM]
-              ↓ failure         ↓ failure            ↓ failure         ↓ failure
-          try next           try next           try next          return error
+Windows: request → [Baller Registry] ?→ [Chocolatey] ?→ [GitHub]
+Linux:   request → [Baller Registry] ?→ [System PM]  ?→ [GitHub]
+                          ↓ failure          ↓ failure       ↓ failure
+                          try next           try next        return error
 ```
 
-The default `source_order` is `github, baller, chocolatey, system`.
+The default `source_order` is platform-derived:
+
+| Platform | Default `source_order` |
+|---|---|
+| Windows | `baller, chocolatey, github` |
+| Linux | `baller, system, github` |
+
+The Baller registry comes first (it is not implemented yet, so it currently
+fails fast and falls through), the platform's native ecosystem comes next, and
+**GitHub is always the last-resort fallback** so GitHub-based installs keep
+working everywhere.
+
+A source that does not belong to the platform is disabled by default —
+`chocolatey_enabled` is `false` on Linux and `system_enabled` is `false` on
+Windows — and `SystemRegistry` detection is skipped entirely off Linux. Both
+remain available as an explicit opt-in via the `_enabled` flags below.
+
+Entries in `source_order` that match no known source are ignored.
 
 ## Configuration
 
 ```ini
 [registry]
-# Source resolution order (comma-separated)
-source_order = github,baller,chocolatey,system
+# Source resolution order (comma-separated), overrides the platform default
+source_order = baller,chocolatey,github
 
 # Custom registry URLs
 baller_registry_url = https://registry.baller.dev/api
 chocolatey_feed_url = https://community.chocolatey.org/api/v2
 
-# Per-source enable/disable flags
+# Per-source enable/disable flags (defaults follow the platform)
 github_enabled = true
 baller_enabled = true
 chocolatey_enabled = true
@@ -106,7 +124,7 @@ silently dropped from the resolved list.
 
 ```ini
 # Use only the baller registry, skip GitHub and Chocolatey
-source_order = github,baller,chocolatey,system
+source_order = baller,chocolatey,github
 github_enabled = false
 chocolatey_enabled = false
 ```

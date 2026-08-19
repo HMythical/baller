@@ -11,7 +11,7 @@ the process exits with a non-zero status code.
 | Variant | Meaning |
 |---------|---------|
 | `UnsupportedOs` | Running on an unsupported operating system |
-| `UnsupportedCommand` | Command not yet implemented (e.g., `build`) |
+| `UnsupportedCommand` | Command not yet implemented |
 | `FileIoErr` | File system I/O error |
 | `InvalidConfig` | Configuration or database error |
 | `NetworkError` | HTTP/network failure |
@@ -73,7 +73,8 @@ This ensures the system is never left in a partially-installed state.
 Destructive operations require user confirmation unless `--yes` / `-y` is provided:
 
 - **`eject`** — removes a package and its orphaned dependencies
-- **`sweep`** — clears the download cache
+- **`sweep`** — clears cached archives (and, with `--all`, extracted packages)
+- **`substitute`** — installs the replacement and removes the old package
 
 ## Orphan Dependency Cleanup
 

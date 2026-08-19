@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     fs::{File, OpenOptions},
     io::Read,
 };
 
+use crate::core::registry::default_source_order as platform_source_order;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 
@@ -34,6 +35,20 @@ pub struct HooksConfig {
     pub post_update: bool,
 }
 
+impl HooksConfig {
+    /// Every hook turned off, as `--no-hooks` requires
+    pub fn disabled() -> Self {
+        Self {
+            pre_install: false,
+            post_install: false,
+            pre_eject: false,
+            post_eject: false,
+            pre_update: false,
+            post_update: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BallerConfig {
     pub install_dir: PathBuf,
@@ -44,7 +59,7 @@ pub struct BallerConfig {
     pub hooks: HooksConfig,
 }
 
-impl BallerConfig {
+impl Default for BallerConfig {
     fn default() -> Self {
         let install_dir =
             ActiveManager::get_install_dir().unwrap_or_else(|_| PathBuf::from("/usr/local/bin"));
@@ -69,18 +84,13 @@ impl BallerConfig {
             cache_dir,
             hooks_dir,
             registry: RegistryConfig {
-                source_order: vec![
-                    "github".to_string(),
-                    "baller".to_string(),
-                    "chocolatey".to_string(),
-                    "system".to_string(),
-                ],
+                source_order: default_source_order(),
                 baller_registry_url: "https://registry.baller.dev/api".to_string(),
                 chocolatey_feed_url: "https://community.chocolatey.org/api/v2".to_string(),
                 github_enabled: true,
                 baller_enabled: true,
-                chocolatey_enabled: true,
-                system_enabled: true,
+                chocolatey_enabled: cfg!(target_os = "windows"),
+                system_enabled: cfg!(target_os = "linux"),
             },
             hooks: HooksConfig {
                 pre_install: true,
@@ -92,10 +102,34 @@ impl BallerConfig {
             },
         }
     }
+}
 
-    #[allow(clippy::suspicious_open_options)]
+impl BallerConfig {
+    /// Point the derived paths (db, cache, hooks) at a specific baller directory.
+    ///
+    /// `baller.conf` entries are applied afterwards, so an explicit `db_path`
+    /// or `cache_dir` still wins.
+    pub fn reroot(&mut self, dir: &Path) {
+        self.db_path = dir.join("db").join("baller.db");
+        self.cache_dir = dir.join("cache");
+        self.hooks_dir = dir.join("hooks");
+    }
+
     pub fn parse_config(baller_path: &str) -> Result<BallerConfig, BallError> {
+        Self::parse_config_rooted(baller_path, false)
+    }
+
+    /// Parse `baller.conf` out of `baller_path`.
+    ///
+    /// With `reroot`, the whole baller directory moves there too — that is what
+    /// `--config <dir>` needs. Without it the platform default locations are
+    /// kept, which is what an unflagged run expects.
+    #[allow(clippy::suspicious_open_options)]
+    pub fn parse_config_rooted(baller_path: &str, reroot: bool) -> Result<BallerConfig, BallError> {
         let mut config = BallerConfig::default();
+        if reroot {
+            config.reroot(Path::new(baller_path));
+        }
         let config_path = format!("{}/baller.conf", baller_path);
 
         let mut config_file: File = OpenOptions::new()
@@ -209,6 +243,16 @@ impl BallerConfig {
 
         Ok(config)
     }
+}
+
+/// The default `source_order` for this platform, as `baller.conf` spells it.
+///
+/// An explicit `source_order` in `baller.conf` overrides this.
+pub fn default_source_order() -> Vec<String> {
+    platform_source_order()
+        .iter()
+        .map(|source| source.config_name().to_string())
+        .collect()
 }
 
 fn parse_bool(value: &str, line: usize) -> Result<bool, BallError> {
@@ -459,6 +503,53 @@ post_update = off
     }
 
     #[test]
+    fn test_parse_config_rooted_moves_derived_paths() {
+        let (path, dir) = write_config("");
+        let config = BallerConfig::parse_config_rooted(&path, true).unwrap();
+
+        assert_eq!(config.db_path, dir.join("db").join("baller.db"));
+        assert_eq!(config.cache_dir, dir.join("cache"));
+        assert_eq!(config.hooks_dir, dir.join("hooks"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_without_reroot_keeps_platform_paths() {
+        let (path, dir) = write_config("");
+        let default_paths = BallerConfig::default();
+        let config = BallerConfig::parse_config(&path).unwrap();
+
+        assert_eq!(config.db_path, default_paths.db_path);
+        assert_eq!(config.cache_dir, default_paths.cache_dir);
+        assert_eq!(config.hooks_dir, default_paths.hooks_dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_explicit_paths_win_over_reroot() {
+        let (path, dir) = write_config("[baller]\ncache_dir = /explicit/cache\n");
+        let config = BallerConfig::parse_config_rooted(&path, true).unwrap();
+
+        assert_eq!(config.cache_dir.to_string_lossy(), "/explicit/cache");
+        assert_eq!(config.db_path, dir.join("db").join("baller.db"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hooks_config_disabled_turns_everything_off() {
+        let hooks = HooksConfig::disabled();
+        assert!(!hooks.pre_install);
+        assert!(!hooks.post_install);
+        assert!(!hooks.pre_eject);
+        assert!(!hooks.post_eject);
+        assert!(!hooks.pre_update);
+        assert!(!hooks.post_update);
+    }
+
+    #[test]
     fn test_parse_config_quoted_values() {
         let content = r#"install_dir = "/opt/baller with spaces""#;
         let (path, dir) = write_config(content);
@@ -471,9 +562,43 @@ post_update = off
     }
 
     #[test]
-    fn test_system_enabled_default_true() {
+    fn test_source_enable_defaults_follow_platform() {
         let cfg = BallerConfig::default();
-        assert!(cfg.registry.system_enabled);
+        assert_eq!(cfg.registry.system_enabled, cfg!(target_os = "linux"));
+        assert_eq!(cfg.registry.chocolatey_enabled, cfg!(target_os = "windows"));
+        assert!(cfg.registry.github_enabled);
+        assert!(cfg.registry.baller_enabled);
+    }
+
+    #[test]
+    fn test_default_source_order_is_platform_aware() {
+        let order = default_source_order();
+        assert_eq!(order.first().unwrap(), "baller");
+        assert_eq!(order.last().unwrap(), "github");
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(order, vec!["baller", "chocolatey", "github"]);
+        } else {
+            assert_eq!(order, vec!["baller", "system", "github"]);
+        }
+    }
+
+    #[test]
+    fn test_default_config_uses_platform_source_order() {
+        let cfg = BallerConfig::default();
+        assert_eq!(cfg.registry.source_order, default_source_order());
+    }
+
+    #[test]
+    fn test_explicit_source_order_overrides_platform_default() {
+        let content = "[registry]\nsource_order = github, baller\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(
+            config.registry.source_order,
+            vec!["github".to_string(), "baller".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

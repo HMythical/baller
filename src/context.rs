@@ -1,10 +1,45 @@
-use crate::config::config::BallerConfig;
+use crate::config::config::{BallerConfig, RegistryConfig};
 use crate::core::db::DbManager;
 use crate::core::downloader::Downloader;
 use crate::core::registry::{RegistryClient, RegistrySource};
 use crate::error::error::BallError;
 use crate::http::HttpClient;
 use crate::utils::fs::ensure_dir;
+
+/// Resolve the configured `source_order` into the chain the registry client
+/// actually queries: entries whose source is disabled — and names that match no
+/// known source — are dropped, and the configured order is preserved.
+pub fn effective_source_order(registry: &RegistryConfig) -> Vec<RegistrySource> {
+    registry
+        .source_order
+        .iter()
+        .filter_map(|name| RegistrySource::from_config_name(name))
+        .filter(|source| match source {
+            RegistrySource::GitHub => registry.github_enabled,
+            RegistrySource::BallerRegistry => registry.baller_enabled,
+            RegistrySource::Chocolatey => registry.chocolatey_enabled,
+            RegistrySource::System => registry.system_enabled,
+        })
+        .collect()
+}
+
+/// Flags accepted by every subcommand, resolved once from the CLI.
+#[derive(Debug, Clone, Default)]
+pub struct GlobalFlags {
+    pub yes: bool,
+    pub quiet: bool,
+    pub json: bool,
+    pub verbose: u8,
+}
+
+impl GlobalFlags {
+    /// Whether human-readable progress output should be withheld.
+    ///
+    /// `--json` implies quiet so stdout stays parseable.
+    pub fn is_quiet(&self) -> bool {
+        self.quiet || self.json
+    }
+}
 
 pub struct AppContext {
     pub config: BallerConfig,
@@ -13,10 +48,11 @@ pub struct AppContext {
     pub http_client: HttpClient,
     pub registry: RegistryClient,
     pub downloader: Downloader,
+    pub flags: GlobalFlags,
 }
 
 impl AppContext {
-    pub fn new(config: BallerConfig) -> Result<Self, BallError> {
+    pub fn new(config: BallerConfig, flags: GlobalFlags) -> Result<Self, BallError> {
         ensure_dir(&config.hooks_dir)?;
         ensure_dir(&config.cache_dir)?;
 
@@ -24,31 +60,7 @@ impl AppContext {
         let db = DbManager::init_at_path(&config.db_path)?;
         let downloader = Downloader::new(config.cache_dir.clone(), http_client.clone());
 
-        let effective_order: Vec<RegistrySource> = config
-            .registry
-            .source_order
-            .iter()
-            .filter_map(|s| {
-                let enabled = match s.as_str() {
-                    "github" => config.registry.github_enabled,
-                    "baller" => config.registry.baller_enabled,
-                    "chocolatey" => config.registry.chocolatey_enabled,
-                    "system" => config.registry.system_enabled,
-                    _ => true,
-                };
-                if enabled {
-                    match s.as_str() {
-                        "github" => Some(RegistrySource::GitHub),
-                        "baller" => Some(RegistrySource::BallerRegistry),
-                        "chocolatey" => Some(RegistrySource::Chocolatey),
-                        "system" => Some(RegistrySource::System),
-                        _ => Some(RegistrySource::GitHub),
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let effective_order = effective_source_order(&config.registry);
 
         let registry = RegistryClient::with_source_order(
             http_client.clone(),
@@ -63,6 +75,7 @@ impl AppContext {
             http_client,
             registry,
             downloader,
+            flags,
         })
     }
 }

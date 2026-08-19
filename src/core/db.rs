@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::core::package::{Package, PackageSource};
@@ -12,7 +13,7 @@ use crate::platform::linux::LinuxManager as ActiveManager;
 #[cfg(target_os = "windows")]
 use crate::platform::windows::WindowsManager as ActiveManager;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InstalledPackage {
     pub name: String,
     pub version: String,
@@ -569,7 +570,48 @@ fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::registry::RegistrySource;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn test_registry_source_db_names_match_stored_values() {
+        let cases = [
+            (
+                PackageSource::GitHub {
+                    owner: "o".to_string(),
+                    repo: "r".to_string(),
+                },
+                RegistrySource::GitHub,
+            ),
+            (
+                PackageSource::BallerRegistry {
+                    url: "u".to_string(),
+                },
+                RegistrySource::BallerRegistry,
+            ),
+            (
+                PackageSource::Chocolatey {
+                    feed_url: "f".to_string(),
+                },
+                RegistrySource::Chocolatey,
+            ),
+            (
+                PackageSource::System {
+                    manager: "apt".to_string(),
+                },
+                RegistrySource::System,
+            ),
+        ];
+
+        for (package_source, registry_source) in &cases {
+            let (stored, _) = serialize_source(package_source);
+            assert_eq!(
+                stored,
+                registry_source.db_name(),
+                "roster --source filter must match what the DB stores"
+            );
+        }
+    }
 
     fn test_db_path() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);

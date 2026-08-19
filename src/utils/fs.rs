@@ -156,6 +156,54 @@ pub fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Parse a human-written size into bytes (e.g. `"50MB"`, `"1.5 gb"`, `"1048576"`).
+///
+/// Bare numbers are treated as bytes. Suffixes are binary multiples (KB = 1024).
+pub fn parse_size(input: &str) -> Result<u64, BallError> {
+    let trimmed = input.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return Err(BallError::InvalidConfig(
+            "size cannot be empty (try 50MB or 1048576)".to_string(),
+        ));
+    }
+
+    let digits_end = trimmed
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(trimmed.len());
+    let (number, suffix) = trimmed.split_at(digits_end);
+    let suffix = suffix.trim();
+
+    let value: f64 = number.parse().map_err(|_| {
+        BallError::InvalidConfig(format!("invalid size '{}': expected a number", input))
+    })?;
+
+    if value < 0.0 || !value.is_finite() {
+        return Err(BallError::InvalidConfig(format!(
+            "invalid size '{}': must be a positive number",
+            input
+        )));
+    }
+
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let multiplier = match suffix {
+        "" | "b" => 1.0,
+        "k" | "kb" | "kib" => KB,
+        "m" | "mb" | "mib" => MB,
+        "g" | "gb" | "gib" => GB,
+        other => {
+            return Err(BallError::InvalidConfig(format!(
+                "unknown size unit '{}': expected B, KB, MB, or GB",
+                other
+            )))
+        }
+    };
+
+    Ok((value * multiplier) as u64)
+}
+
 /// Format bytes into a human-readable string (e.g., "45.2 MB").
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -202,6 +250,43 @@ pub fn find_binary_in_dir(dir: &Path, pkg_name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_size_bare_bytes() {
+        assert_eq!(parse_size("1048576").unwrap(), 1_048_576);
+        assert_eq!(parse_size("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_size_units() {
+        assert_eq!(parse_size("1KB").unwrap(), 1024);
+        assert_eq!(parse_size("1kib").unwrap(), 1024);
+        assert_eq!(parse_size("50MB").unwrap(), 50 * 1024 * 1024);
+        assert_eq!(parse_size("2g").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_size("512b").unwrap(), 512);
+    }
+
+    #[test]
+    fn test_parse_size_fractional_and_spacing() {
+        assert_eq!(parse_size("1.5MB").unwrap(), 1_572_864);
+        assert_eq!(parse_size("  10 mb  ").unwrap(), 10 * 1024 * 1024);
+        assert_eq!(parse_size("1.5 GB").unwrap(), 1_610_612_736);
+    }
+
+    #[test]
+    fn test_parse_size_rejects_bad_input() {
+        assert!(parse_size("").is_err());
+        assert!(parse_size("abc").is_err());
+        assert!(parse_size("10 tb").is_err());
+        assert!(parse_size("-5MB").is_err());
+    }
+
+    #[test]
+    fn test_parse_size_round_trips_with_format_size() {
+        let bytes = parse_size("50MB").unwrap();
+        assert!(format_size(bytes).contains("50"));
+        assert!(format_size(bytes).contains("MB"));
+    }
 
     #[test]
     fn test_sanitize_filename_basic() {

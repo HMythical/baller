@@ -200,10 +200,9 @@ struct GitHubOwner {
 fn parse_github_name(name: &str) -> Result<(String, String), BallError> {
     let parts: Vec<&str> = name.split('/').collect();
     match parts.len() {
-        1 => Ok(("HMythical".to_string(), parts[0].to_string())),
         2 => Ok((parts[0].to_string(), parts[1].to_string())),
         _ => Err(BallError::PackageNotFound(format!(
-            "invalid GitHub package name '{}' — expected 'repo' or 'owner/repo'",
+            "invalid GitHub package name '{}' — expected 'owner/repo'",
             name
         ))),
     }

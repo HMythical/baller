@@ -386,7 +386,7 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
                     format!("{}/{}", owner, repo).cyan()
                 ),
             );
-            GitHubRegistry::new(ctx.http_client.clone())
+            GitHubRegistry::new(ctx.http_client.clone(), None)
                 .fetch_package(&format!("{}/{}", owner, repo))?
         }
         PackageSource::Chocolatey { feed_url } => {

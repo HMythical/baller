@@ -67,6 +67,7 @@ impl AppContext {
             effective_order,
             config.registry.baller_registry_url.clone(),
             config.registry.chocolatey_feed_url.clone(),
+            config.registry.github_default_owner.clone(),
         );
 
         Ok(Self {

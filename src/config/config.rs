@@ -19,6 +19,7 @@ pub struct RegistryConfig {
     pub source_order: Vec<String>,
     pub baller_registry_url: String,
     pub chocolatey_feed_url: String,
+    pub github_default_owner: Option<String>,
     pub github_enabled: bool,
     pub baller_enabled: bool,
     pub chocolatey_enabled: bool,
@@ -87,6 +88,7 @@ impl Default for BallerConfig {
                 source_order: default_source_order(),
                 baller_registry_url: "https://registry.baller.dev/api".to_string(),
                 chocolatey_feed_url: "https://community.chocolatey.org/api/v2".to_string(),
+                github_default_owner: None,
                 github_enabled: true,
                 baller_enabled: true,
                 chocolatey_enabled: cfg!(target_os = "windows"),
@@ -204,6 +206,9 @@ impl BallerConfig {
                 }
                 "chocolatey_feed_url" => {
                     config.registry.chocolatey_feed_url = value.to_string();
+                }
+                "github_default_owner" => {
+                    config.registry.github_default_owner = Some(value.to_string());
                 }
                 "github_enabled" => {
                     config.registry.github_enabled = parse_bool(value, line)?;
@@ -470,6 +475,7 @@ post_update = off
             source_order: vec!["github".to_string()],
             baller_registry_url: "url".to_string(),
             chocolatey_feed_url: "feed".to_string(),
+            github_default_owner: None,
             github_enabled: true,
             baller_enabled: false,
             chocolatey_enabled: false,

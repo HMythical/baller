@@ -57,7 +57,7 @@ function run_clean() {
 }
 
 function run_release() {
-    BALLER_PROFILE="release"
+    export BALLER_PROFILE="release"
     CARGO_FLAGS=("--release")
     if [ -n "$BALLER_TARGET" ]; then
         CARGO_FLAGS+=("--target" "$BALLER_TARGET")
@@ -126,15 +126,14 @@ function run_dist() {
 
 function run_install() {
     local binary_name="baller"
-    local source_binary="$BALLER_SRC_DIR/target/$BALLER_TARGET/$BALLER_PROFILE/$binary_name"
+    local release_binary="$BALLER_SRC_DIR/target/$BALLER_TARGET/release/$binary_name"
     local install_binary="$BALLER_INSTALL_DIR/$binary_name"
     
     mkdir -p "$BALLER_INSTALL_DIR"
     
-    if [ ! -f "$source_binary" ]; then
-        echo "Error: Binary not found at $source_binary"
-        echo "Run './build.sh release' first"
-        exit 1
+    if [ ! -f "$release_binary" ]; then
+        echo "Binary not found. Running release build first..."
+        run_release
     fi
     
     if [ -f "$install_binary" ]; then
@@ -142,8 +141,8 @@ function run_install() {
         rm -f "$install_binary"
     fi
     
-    echo "Installing $source_binary to $install_binary"
-    cp "$source_binary" "$install_binary"
+    echo "Installing $release_binary to $install_binary"
+    cp "$release_binary" "$install_binary"
     
     if command -v ldconfig >/dev/null 2>&1; then
         echo "Running ldconfig..."

@@ -6,15 +6,14 @@ source "$SCRIPT_DIR/config.sh"
 
 function run_install() {
     local binary_name="baller"
-    local source_binary="$BALLER_SRC_DIR/target/$BALLER_TARGET/$BALLER_PROFILE/$binary_name"
+    local release_binary="$BALLER_SRC_DIR/target/$BALLER_TARGET/release/$binary_name"
     local install_binary="$BALLER_INSTALL_DIR/$binary_name"
     
     mkdir -p "$BALLER_INSTALL_DIR"
     
-    if [ ! -f "$source_binary" ]; then
-        echo "Error: Binary not found at $source_binary"
-        echo "Run './build.sh release' first"
-        exit 1
+    if [ ! -f "$release_binary" ]; then
+        echo "Binary not found. Running release build first..."
+        "$SCRIPT_DIR/build.sh" release
     fi
     
     if [ -f "$install_binary" ]; then
@@ -22,8 +21,8 @@ function run_install() {
         rm -f "$install_binary"
     fi
     
-    echo "Installing $source_binary to $install_binary"
-    cp "$source_binary" "$install_binary"
+    echo "Installing $release_binary to $install_binary"
+    cp "$release_binary" "$install_binary"
     
     if command -v ldconfig >/dev/null 2>&1; then
         echo "Running ldconfig..."

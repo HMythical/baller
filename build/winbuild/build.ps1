@@ -20,9 +20,11 @@ function Invoke-Dev {
 
 function Invoke-Release {
     Write-Host "Building (release)..." -ForegroundColor Green
-    cargo build --release
+    $targetFlag = if ($Target) { "--target $Target" } else { "" }
+    cargo build --release $targetFlag
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force }
-    Copy-Item "$ProjectRoot\target\release\baller.exe" "$OutputDir\baller.exe"
+    $binaryPath = if ($Target) { "$ProjectRoot\target\$Target\release\baller.exe" } else { "$ProjectRoot\target\release\baller.exe" }
+    Copy-Item $binaryPath "$OutputDir\baller.exe"
     Write-Host "Binary at: $OutputDir\baller.exe" -ForegroundColor Cyan
 }
 
@@ -54,7 +56,7 @@ function Invoke-Dist {
 }
 
 function Invoke-Install {
-    $releaseDir = "$ProjectRoot\target\release"
+    $releaseDir = if ($Target) { "$ProjectRoot\target\$Target\release" } else { "$ProjectRoot\target\release" }
     if (-not (Test-Path $releaseDir\baller.exe)) { Invoke-Release }
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force }
     Copy-Item "$releaseDir\baller.exe" "$InstallDir\baller.exe"

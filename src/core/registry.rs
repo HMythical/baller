@@ -94,7 +94,7 @@ pub struct RegistryClient {
 impl RegistryClient {
     #[allow(dead_code)]
     pub fn new(client: HttpClient) -> Self {
-        let github = GitHubRegistry::new(client.clone());
+        let github = GitHubRegistry::new(client.clone(), None);
         let baller_api = BallerRegistryApi::new(
             client.clone(),
             "https://registry.baller.dev/api".to_string(),
@@ -116,8 +116,9 @@ impl RegistryClient {
         source_order: Vec<RegistrySource>,
         baller_registry_url: String,
         chocolatey_feed_url: String,
+        github_default_owner: Option<String>,
     ) -> Self {
-        let github = GitHubRegistry::new(client.clone());
+        let github = GitHubRegistry::new(client.clone(), github_default_owner);
         let baller_api = BallerRegistryApi::new(client.clone(), baller_registry_url);
         let chocolatey = ChocolateyRegistry::with_feed_url(client, chocolatey_feed_url);
         let system = system_registry();

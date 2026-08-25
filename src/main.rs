@@ -434,6 +434,7 @@ post_update = off
             source_order: source_order.iter().map(|s| s.to_string()).collect(),
             baller_registry_url: "https://registry.baller.dev/api".to_string(),
             chocolatey_feed_url: "https://community.chocolatey.org/api/v2".to_string(),
+            github_default_owner: None,
             github_enabled: true,
             baller_enabled: true,
             chocolatey_enabled: true,

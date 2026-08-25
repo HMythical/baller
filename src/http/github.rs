@@ -32,15 +32,19 @@ struct GitHubAsset {
 
 pub struct GitHubRegistry {
     client: HttpClient,
+    default_owner: Option<String>,
 }
 
 impl GitHubRegistry {
-    pub fn new(client: HttpClient) -> Self {
-        Self { client }
+    pub fn new(client: HttpClient, default_owner: Option<String>) -> Self {
+        Self {
+            client,
+            default_owner,
+        }
     }
 
     pub fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
-        let (owner, repo) = parse_github_name(name)?;
+        let (owner, repo) = parse_github_name(name, &self.default_owner)?;
         let url = format!(
             "{}/repos/{}/{}/releases/latest",
             GITHUB_API_BASE, owner, repo
@@ -92,7 +96,7 @@ impl GitHubRegistry {
         name: &str,
         version: &str,
     ) -> Result<Package, BallError> {
-        let (owner, repo) = parse_github_name(name)?;
+        let (owner, repo) = parse_github_name(name, &self.default_owner)?;
         let tag = if version.starts_with('v') {
             version.to_string()
         } else {
@@ -197,10 +201,20 @@ struct GitHubOwner {
     login: String,
 }
 
-fn parse_github_name(name: &str) -> Result<(String, String), BallError> {
+fn parse_github_name(
+    name: &str,
+    default_owner: &Option<String>,
+) -> Result<(String, String), BallError> {
     let parts: Vec<&str> = name.split('/').collect();
     match parts.len() {
         2 => Ok((parts[0].to_string(), parts[1].to_string())),
+        1 => match default_owner {
+            None => Err(BallError::PackageNotFound(format!(
+                "invalid GitHub package name '{}' — expected 'owner/repo'",
+                name
+            ))),
+            Some(owner) => Ok((owner.to_string(), name.to_string())),
+        },
         _ => Err(BallError::PackageNotFound(format!(
             "invalid GitHub package name '{}' — expected 'owner/repo'",
             name

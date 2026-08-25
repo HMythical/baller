@@ -3,18 +3,8 @@ name: CI - Windows
 on:
   push:
     branches: [ rootdev ]
-    paths:
-      - 'src/**'
-      - 'build/winbuild/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   pull_request:
     branches: [ rootdev ]
-    paths:
-      - 'src/**'
-      - 'build/winbuild/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
 
 jobs:
   build:

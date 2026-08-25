@@ -1,5 +1,9 @@
 # B.A.L.L.E.R.
 
+<p align="center">
+  <img src="assets/baller-logo.png" alt="B.A.L.L.E.R. Logo" />
+</p>
+
 **B**inary **A**llocation & **L**ibrary **L**aunch **E**nvironment in **R**ust
 
 A cross-platform package manager for Linux & Windows — like Chocolatey, but with aviators.

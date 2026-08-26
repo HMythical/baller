@@ -183,6 +183,12 @@ impl BallerConfig {
                     line + 1
                 )));
             }
+            if value.is_empty() {
+                return Err(BallError::InvalidConfig(format!(
+                    "invalid config at line[{}]: empty value",
+                    line + 1
+                )));
+            }
 
             match key {
                 "install_dir" => {

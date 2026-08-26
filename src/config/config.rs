@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::Read,
 };
@@ -146,6 +147,79 @@ impl BallerConfig {
             .read_to_string(&mut config_content)
             .map_err(BallError::FileIoErr)?;
 
+        let key_value_map = Self::check_config_file(config_content)?;
+
+        for (line, (key, value)) in key_value_map {
+            match key.as_str() {
+                "install_dir" => {
+                    config.install_dir = PathBuf::from(&value);
+                }
+                "db_path" => {
+                    config.db_path = PathBuf::from(&value);
+                }
+                "cache_dir" => {
+                    config.cache_dir = PathBuf::from(&value);
+                }
+                "source_order" => {
+                    config.registry.source_order = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                "baller_registry_url" => {
+                    config.registry.baller_registry_url = value;
+                }
+                "chocolatey_feed_url" => {
+                    config.registry.chocolatey_feed_url = value;
+                }
+                "github_default_owner" => {
+                    config.registry.github_default_owner = Some(value);
+                }
+                "github_enabled" => {
+                    config.registry.github_enabled = parse_bool(&value, line)?;
+                }
+                "baller_enabled" => {
+                    config.registry.baller_enabled = parse_bool(&value, line)?;
+                }
+                "chocolatey_enabled" => {
+                    config.registry.chocolatey_enabled = parse_bool(&value, line)?;
+                }
+                "system_enabled" => {
+                    config.registry.system_enabled = parse_bool(&value, line)?;
+                }
+                "pre_install" => {
+                    config.hooks.pre_install = parse_bool(&value, line)?;
+                }
+                "post_install" => {
+                    config.hooks.post_install = parse_bool(&value, line)?;
+                }
+                "pre_eject" => {
+                    config.hooks.pre_eject = parse_bool(&value, line)?;
+                }
+                "post_eject" => {
+                    config.hooks.post_eject = parse_bool(&value, line)?;
+                }
+                "pre_update" => {
+                    config.hooks.pre_update = parse_bool(&value, line)?;
+                }
+                "post_update" => {
+                    config.hooks.post_update = parse_bool(&value, line)?;
+                }
+                _ => {
+                    return Err(BallError::UnknownConfigEntry((line + 1, key.to_string())));
+                }
+            }
+        }
+
+        Ok(config)
+    }
+
+    fn check_config_file(
+        config_content: String,
+    ) -> Result<HashMap<usize, (String, String)>, BallError> {
+        let mut errors: Vec<String> = Vec::new();
+        let mut key_value_map = HashMap::new();
         for (line, raw_line) in config_content.lines().enumerate() {
             let trimmed = raw_line.trim();
 
@@ -156,7 +230,7 @@ impl BallerConfig {
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let section = trimmed[1..trimmed.len() - 1].trim();
                 match section.to_lowercase().as_str() {
-                    "baller" | "registry" | "hooks" => {}
+                    "baller" | "registry" | "hooks" => continue,
                     _ => {
                         return Err(BallError::UnknownConfigEntry((
                             line + 1,
@@ -164,95 +238,40 @@ impl BallerConfig {
                         )));
                     }
                 }
-                continue;
             }
 
-            let eq_pos = trimmed.find('=').ok_or_else(|| {
-                BallError::InvalidConfig(format!(
-                    "invalid config at line[{}]: expected 'key = value'",
-                    line + 1
-                ))
-            })?;
+            let eq_pos = match trimmed.find('=') {
+                Some(i) => i,
+                None => {
+                    errors.push(format!(
+                        "invalid config at line[{}]: expected 'key = value'",
+                        line + 1
+                    ));
+                    continue;
+                }
+            };
 
             let key = trimmed[..eq_pos].trim();
             let value = trimmed[eq_pos + 1..].trim().trim_matches('"');
 
             if key.is_empty() {
-                return Err(BallError::InvalidConfig(format!(
-                    "invalid config at line[{}]: empty key",
-                    line + 1
-                )));
+                errors.push(format!("invalid config at line[{}]: empty key", line + 1));
             }
             if value.is_empty() {
-                return Err(BallError::InvalidConfig(format!(
-                    "invalid config at line[{}]: empty value",
-                    line + 1
-                )));
+                errors.push(format!("invalid config at line[{}]: empty value", line + 1));
             }
 
-            match key {
-                "install_dir" => {
-                    config.install_dir = PathBuf::from(value);
-                }
-                "db_path" => {
-                    config.db_path = PathBuf::from(value);
-                }
-                "cache_dir" => {
-                    config.cache_dir = PathBuf::from(value);
-                }
-                "source_order" => {
-                    config.registry.source_order = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-                "baller_registry_url" => {
-                    config.registry.baller_registry_url = value.to_string();
-                }
-                "chocolatey_feed_url" => {
-                    config.registry.chocolatey_feed_url = value.to_string();
-                }
-                "github_default_owner" => {
-                    config.registry.github_default_owner = Some(value.to_string());
-                }
-                "github_enabled" => {
-                    config.registry.github_enabled = parse_bool(value, line)?;
-                }
-                "baller_enabled" => {
-                    config.registry.baller_enabled = parse_bool(value, line)?;
-                }
-                "chocolatey_enabled" => {
-                    config.registry.chocolatey_enabled = parse_bool(value, line)?;
-                }
-                "system_enabled" => {
-                    config.registry.system_enabled = parse_bool(value, line)?;
-                }
-                "pre_install" => {
-                    config.hooks.pre_install = parse_bool(value, line)?;
-                }
-                "post_install" => {
-                    config.hooks.post_install = parse_bool(value, line)?;
-                }
-                "pre_eject" => {
-                    config.hooks.pre_eject = parse_bool(value, line)?;
-                }
-                "post_eject" => {
-                    config.hooks.post_eject = parse_bool(value, line)?;
-                }
-                "pre_update" => {
-                    config.hooks.pre_update = parse_bool(value, line)?;
-                }
-                "post_update" => {
-                    config.hooks.post_update = parse_bool(value, line)?;
-                }
-                _ => {
-                    return Err(BallError::UnknownConfigEntry((line + 1, key.to_string())));
-                }
-            }
+            key_value_map.insert(line, (key.to_string(), value.to_string()));
         }
 
-        Ok(config)
+        if !errors.is_empty() {
+            return Err(BallError::InvalidConfig(format!(
+                "Errors in the configuration file :\n - {}",
+                errors.join("\n - ")
+            )));
+        }
+
+        Ok(key_value_map)
     }
 }
 

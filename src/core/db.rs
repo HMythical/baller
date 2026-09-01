@@ -564,6 +564,7 @@ fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
             ("chocolatey".to_string(), Some(feed_url.clone()))
         }
         PackageSource::System { manager } => ("system".to_string(), Some(manager.clone())),
+        PackageSource::Cargo { crate_name } => ("cargo".to_string(), Some(crate_name.clone())),
     }
 }
 
@@ -600,6 +601,12 @@ mod tests {
                     manager: "apt".to_string(),
                 },
                 RegistrySource::System,
+            ),
+            (
+                PackageSource::Cargo {
+                    crate_name: "ripgrep".to_string(),
+                },
+                RegistrySource::Cargo,
             ),
         ];
 

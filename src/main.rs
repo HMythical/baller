@@ -344,19 +344,22 @@ post_update = off
             RegistrySource::BallerRegistry,
             RegistrySource::Chocolatey,
             RegistrySource::System,
+            RegistrySource::Cargo,
         ];
 
-        assert_eq!(sources.len(), 4);
+        assert_eq!(sources.len(), 5);
         assert!(sources.contains(&RegistrySource::GitHub));
         assert!(sources.contains(&RegistrySource::Chocolatey));
         assert!(sources.contains(&RegistrySource::System));
+        assert!(sources.contains(&RegistrySource::Cargo));
 
         for s in &sources {
             match s {
                 RegistrySource::GitHub
                 | RegistrySource::BallerRegistry
                 | RegistrySource::Chocolatey
-                | RegistrySource::System => {}
+                | RegistrySource::System
+                | RegistrySource::Cargo => {}
             }
         }
     }
@@ -439,6 +442,7 @@ post_update = off
             baller_enabled: true,
             chocolatey_enabled: true,
             system_enabled: true,
+            cargo_enabled: true,
         }
     }
 
@@ -463,6 +467,34 @@ post_update = off
         assert_eq!(effective_order.len(), 2);
         assert!(effective_order.contains(&RegistrySource::GitHub));
         assert!(effective_order.contains(&RegistrySource::System));
+    }
+
+    #[test]
+    fn test_effective_order_excludes_disabled_cargo() {
+        let mut config = registry_config(&["cargo", "github"]);
+        config.cargo_enabled = false;
+
+        let effective_order = effective_source_order(&config);
+
+        assert_eq!(effective_order, vec![RegistrySource::GitHub]);
+        assert!(!effective_order.contains(&RegistrySource::Cargo));
+    }
+
+    #[test]
+    fn test_effective_order_includes_enabled_cargo() {
+        let config = registry_config(&["baller", "system", "cargo", "github"]);
+
+        let effective_order = effective_source_order(&config);
+
+        assert_eq!(
+            effective_order,
+            vec![
+                RegistrySource::BallerRegistry,
+                RegistrySource::System,
+                RegistrySource::Cargo,
+                RegistrySource::GitHub
+            ]
+        );
     }
 
     #[test]
@@ -520,6 +552,7 @@ post_update = off
                 vec![
                     RegistrySource::BallerRegistry,
                     RegistrySource::System,
+                    RegistrySource::Cargo,
                     RegistrySource::GitHub
                 ]
             );

@@ -62,6 +62,32 @@ PackageSource::System { manager: "apt" }  // or "dnf" or "pacman"
 RegistrySource::System                     // registry-level source enum
 ```
 
+### 5. Cargo (`src/http/cargo.rs`)
+
+Wraps the locally installed cargo toolchain to resolve and install crates from
+crates.io. Enabled by default on Linux; available everywhere cargo is on `PATH`.
+
+- **Detection**: Probes `cargo --version`; an absent toolchain degrades to a
+  source that reports `PackageManagerError` instead of failing the build
+- **Command table**:
+
+  | Purpose | Command |
+  |---|---|
+  | Fetch | `cargo info <name>`, falling back to `cargo search <name> --limit 20` |
+  | Search | `cargo search <query> --limit 20` |
+  | Install | `cargo install <crate>` |
+
+- **No `sudo`** — cargo compiles into the user's `~/.cargo/bin`
+- **No version pinning**: `cargo install` always takes the latest release, so
+  `--version` against this source returns a `PackageManagerError`
+- **No HTTP client needed** — operates entirely via local CLI
+
+```rust
+// Package source metadata carries the crate name
+PackageSource::Cargo { crate_name: "ripgrep" }
+RegistrySource::Cargo                          // registry-level source enum
+```
+
 ## Fallback Chain
 
 Sources are tried in the order specified by `source_order` in the config.
@@ -72,9 +98,9 @@ Chocolatey returned 406, not just the last one).
 
 ```
 Windows: request → [Baller Registry] ?→ [Chocolatey] ?→ [GitHub]
-Linux:   request → [Baller Registry] ?→ [System PM]  ?→ [GitHub]
-                          ↓ failure          ↓ failure       ↓ failure
-                          try next           try next        return error
+Linux:   request → [Baller Registry] ?→ [System PM]  ?→ [Cargo] ?→ [GitHub]
+                          ↓ failure          ↓ failure     ↓ failure   ↓ failure
+                          try next           try next      try next    return error
 ```
 
 The default `source_order` is platform-derived:
@@ -82,7 +108,7 @@ The default `source_order` is platform-derived:
 | Platform | Default `source_order` |
 |---|---|
 | Windows | `baller, chocolatey, github` |
-| Linux | `baller, system, github` |
+| Linux | `baller, system, cargo, github` |
 
 The Baller registry comes first (it is not implemented yet, so it currently
 fails fast and falls through), the platform's native ecosystem comes next, and
@@ -90,9 +116,10 @@ fails fast and falls through), the platform's native ecosystem comes next, and
 working everywhere.
 
 A source that does not belong to the platform is disabled by default —
-`chocolatey_enabled` is `false` on Linux and `system_enabled` is `false` on
-Windows — and `SystemRegistry` detection is skipped entirely off Linux. Both
-remain available as an explicit opt-in via the `_enabled` flags below.
+`chocolatey_enabled` is `false` on Linux, and `system_enabled` and
+`cargo_enabled` are `false` on Windows — and `SystemRegistry` detection is
+skipped entirely off Linux. All three remain available as an explicit opt-in via
+the `_enabled` flags below.
 
 Entries in `source_order` that match no known source are ignored.
 
@@ -101,7 +128,7 @@ Entries in `source_order` that match no known source are ignored.
 ```ini
 [registry]
 # Source resolution order (comma-separated), overrides the platform default
-source_order = baller,chocolatey,github
+source_order = baller,system,cargo,github
 
 # Custom registry URLs
 baller_registry_url = https://registry.baller.dev/api
@@ -112,6 +139,7 @@ github_enabled = true
 baller_enabled = true
 chocolatey_enabled = true
 system_enabled = true
+cargo_enabled = true
 ```
 
 ### Per-Source Enable/Disable
@@ -154,16 +182,23 @@ To add a new registry source:
 6. Add config keys for the new source in `src/config/config.rs`
 7. Add the enabled flag filter in `AppContext::new()` in `src/context.rs`
 
-### Local CLI Source Pattern (System Registry)
+### Local CLI Source Pattern (System and Cargo Registries)
 
-The System registry (`src/http/system.rs`) demonstrates a non-HTTP registry source.
-Key differences from HTTP-based sources:
+The System registry (`src/http/system.rs`) and the Cargo registry
+(`src/http/cargo.rs`) demonstrate non-HTTP registry sources — Cargo follows the
+same local-CLI pattern the System source established. Key differences from
+HTTP-based sources:
 
 - No `HttpClient` dependency — use `std::process::Command` for CLI calls
 - Auto-detects capability at construction time via `detect()` (returns `None` if no PM found)
 - Gracefully returns `BallError::PackageManagerError` when no manager is available
 - Stores detected manager in `PackageSource::System { manager: "apt" }` for provenance
+  (Cargo stores the crate name in `PackageSource::Cargo { crate_name: "ripgrep" }`)
 
 ## System Registry Details
 
 See [docs/system-registry.md](system-registry.md) for the complete reference.
+
+## Cargo Registry Details
+
+See [docs/cargo-registry.md](cargo-registry.md) for the complete reference.

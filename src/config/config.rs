@@ -25,6 +25,7 @@ pub struct RegistryConfig {
     pub baller_enabled: bool,
     pub chocolatey_enabled: bool,
     pub system_enabled: bool,
+    pub cargo_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +95,7 @@ impl Default for BallerConfig {
                 baller_enabled: true,
                 chocolatey_enabled: cfg!(target_os = "windows"),
                 system_enabled: cfg!(target_os = "linux"),
+                cargo_enabled: cfg!(target_os = "linux"),
             },
             hooks: HooksConfig {
                 pre_install: true,
@@ -187,6 +189,9 @@ impl BallerConfig {
                 }
                 "system_enabled" => {
                     config.registry.system_enabled = parse_bool(&value, line)?;
+                }
+                "cargo_enabled" => {
+                    config.registry.cargo_enabled = parse_bool(&value, line)?;
                 }
                 "pre_install" => {
                     config.hooks.pre_install = parse_bool(&value, line)?;
@@ -505,6 +510,7 @@ post_update = off
             baller_enabled: false,
             chocolatey_enabled: false,
             system_enabled: true,
+            cargo_enabled: true,
         };
         let debug = format!("{:?}", cfg);
         assert!(debug.contains("RegistryConfig"));
@@ -597,6 +603,7 @@ post_update = off
         let cfg = BallerConfig::default();
         assert_eq!(cfg.registry.system_enabled, cfg!(target_os = "linux"));
         assert_eq!(cfg.registry.chocolatey_enabled, cfg!(target_os = "windows"));
+        assert_eq!(cfg.registry.cargo_enabled, cfg!(target_os = "linux"));
         assert!(cfg.registry.github_enabled);
         assert!(cfg.registry.baller_enabled);
     }
@@ -610,7 +617,7 @@ post_update = off
         if cfg!(target_os = "windows") {
             assert_eq!(order, vec!["baller", "chocolatey", "github"]);
         } else {
-            assert_eq!(order, vec!["baller", "system", "github"]);
+            assert_eq!(order, vec!["baller", "system", "cargo", "github"]);
         }
     }
 
@@ -647,6 +654,34 @@ post_update = off
         let (path, dir) = write_config(content);
         let config = BallerConfig::parse_config(&path).unwrap();
         assert!(config.registry.system_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_cargo_enabled_false() {
+        let content = "[registry]\ncargo_enabled = false\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(!config.registry.cargo_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_cargo_enabled_true() {
+        let content = "[registry]\ncargo_enabled = true\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(config.registry.cargo_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_source_order_with_cargo() {
+        let content = "[registry]\nsource_order = baller,system,cargo,github\n";
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(config.registry.source_order.contains(&"cargo".to_string()));
+        assert_eq!(config.registry.source_order.len(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

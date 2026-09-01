@@ -64,6 +64,7 @@ pub enum SourceArg {
     Baller,
     Chocolatey,
     System,
+    Cargo,
 }
 
 impl SourceArg {
@@ -73,6 +74,7 @@ impl SourceArg {
             SourceArg::Baller => RegistrySource::BallerRegistry,
             SourceArg::Chocolatey => RegistrySource::Chocolatey,
             SourceArg::System => RegistrySource::System,
+            SourceArg::Cargo => RegistrySource::Cargo,
         }
     }
 }

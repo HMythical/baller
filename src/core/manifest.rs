@@ -295,9 +295,20 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
             })?;
             json!({ "System": { "manager": manager } })
         }
+        "cargo" | "crate" => {
+            let crate_name = string_field(&source, "crate_name")
+                .or_else(|| string_field(&source, "name"))
+                .or_else(|| map.get("name").and_then(|v| v.as_str().map(String::from)))
+                .ok_or_else(|| {
+                    BallError::InvalidConfig(
+                        "cargo source requires a 'crate_name' field".to_string(),
+                    )
+                })?;
+            json!({ "Cargo": { "crate_name": crate_name } })
+        }
         other => {
             return Err(BallError::InvalidConfig(format!(
-                "unknown source type '{}': expected github, baller, chocolatey, or system",
+                "unknown source type '{}': expected github, baller, chocolatey, system, or cargo",
                 other
             )))
         }
@@ -644,6 +655,54 @@ type = "system"
 "#;
         let result = ManifestParser::parse_toml(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_nested_source_cargo() {
+        let toml = r#"
+name = "ripgrep"
+version = "14.1.1"
+
+[source]
+type = "cargo"
+crate_name = "ripgrep"
+"#;
+        let pkg = ManifestParser::parse_toml(toml).unwrap();
+        match pkg.source {
+            PackageSource::Cargo { crate_name } => assert_eq!(crate_name, "ripgrep"),
+            other => panic!("expected Cargo source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_nested_source_cargo_defaults_to_package_name() {
+        let toml = r#"
+name = "ripgrep"
+version = "14.1.1"
+
+[source]
+type = "crate"
+"#;
+        let pkg = ManifestParser::parse_toml(toml).unwrap();
+        match pkg.source {
+            PackageSource::Cargo { crate_name } => assert_eq!(crate_name, "ripgrep"),
+            other => panic!("expected Cargo source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_nested_source_unknown_type_lists_cargo() {
+        let toml = r#"
+name = "pkg"
+version = "1.0.0"
+
+[source]
+type = "npm"
+"#;
+        let err = ManifestParser::parse_toml(toml).unwrap_err();
+        let message = format!("{}", err);
+        assert!(message.contains("unknown source type 'npm'"));
+        assert!(message.contains("cargo"));
     }
 
     #[test]

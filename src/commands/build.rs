@@ -9,6 +9,7 @@ use crate::core::manifest::{parse_github_url, ManifestParser};
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
+use crate::http::cargo::install_cargo_package;
 use crate::http::chocolatey::ChocolateyRegistry;
 use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
@@ -75,6 +76,10 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
 
     if let PackageSource::System { manager } = &pkg.source {
         return build_system_package(ctx, &pkg, manager, &manifest_str);
+    }
+
+    if let PackageSource::Cargo { crate_name } = &pkg.source {
+        return build_cargo_package(ctx, &pkg, crate_name, &manifest_str);
     }
 
     if pkg.download_url.is_none() {
@@ -237,6 +242,16 @@ fn override_source(
                 manager: manager.to_string(),
             }
         }
+        RegistrySource::Cargo => {
+            ctx.registry.cargo_manager_name().ok_or_else(|| {
+                BallError::PackageManagerError(
+                    "--source cargo needs a cargo toolchain on PATH".to_string(),
+                )
+            })?;
+            PackageSource::Cargo {
+                crate_name: pkg.name.clone(),
+            }
+        }
     };
 
     pkg.source = replacement;
@@ -365,6 +380,61 @@ fn build_system_package(
     Ok(())
 }
 
+/// Install a manifest that names a crate via `cargo install`
+fn build_cargo_package(
+    ctx: &AppContext,
+    pkg: &Package,
+    crate_name: &str,
+    manifest_path: &str,
+) -> Result<(), BallError> {
+    let quiet = ctx.flags.is_quiet();
+
+    info(
+        quiet,
+        format!(
+            "{} installing {} via cargo...",
+            "Cargo".green(),
+            crate_name.cyan()
+        ),
+    );
+    install_cargo_package(crate_name)?;
+
+    ctx.db
+        .insert_package(pkg, "", None, Some(manifest_path), true)?;
+
+    run_hook(
+        &HookType::PostInstall,
+        &pkg.name,
+        &pkg.version,
+        &ctx.config.hooks_dir,
+        &ctx.config.hooks,
+        &[],
+    )?;
+
+    announce_dependencies(ctx, pkg);
+
+    if ctx.flags.json {
+        return print_json(&json!({
+            "command": "build",
+            "manifest": manifest_path,
+            "package": pkg.name,
+            "version": pkg.version,
+            "source": source_label(&pkg.source),
+            "status": "installed",
+        }));
+    }
+
+    println!(
+        "{} {} v{} installed via {}!",
+        "Done".green().bold(),
+        pkg.name.cyan(),
+        pkg.version.yellow(),
+        "cargo".cyan()
+    );
+
+    Ok(())
+}
+
 /// Fill in a missing `download_url` from the manifest's declared source
 fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallError> {
     let quiet = ctx.flags.is_quiet();
@@ -413,7 +483,7 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
             );
             BallerRegistryApi::new(ctx.http_client.clone(), url.clone()).fetch_package(&pkg.name)?
         }
-        PackageSource::System { .. } => return Ok(()),
+        PackageSource::System { .. } | PackageSource::Cargo { .. } => return Ok(()),
     };
 
     let download_url = resolved.download_url.ok_or_else(|| {

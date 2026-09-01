@@ -92,13 +92,15 @@ flat `dependencies` array, which is fine:
 | `chocolatey` (`choco`) | `feed_url` (or `url`) | Defaults to `https://community.chocolatey.org/api/v2` |
 | `baller` (`registry`) | `url` | Required |
 | `system` | `manager` | One of `apt`, `dnf`, `pacman`; Linux only |
+| `cargo` (`crate`) | `crate_name` (or `name`) | Defaults to the package `name`; installed with `cargo install` |
 
 Omitting `[source]` entirely leaves the default GitHub source, in which case the
 manifest needs a `download_url`. An unknown `type` is a parse error.
 
 The equivalent flat spelling uses the tagged variant name directly —
 `[source] GitHub = { owner = "..", repo = ".." }`, `BallerRegistry = { url = ".." }`,
-`Chocolatey = { feed_url = ".." }`, or `System = { manager = ".." }`.
+`Chocolatey = { feed_url = ".." }`, `System = { manager = ".." }`, or
+`Cargo = { crate_name = ".." }`.
 
 ## Grouped Tables
 

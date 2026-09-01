@@ -7,6 +7,7 @@ use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
+use crate::http::cargo::install_cargo_package;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
 use crate::utils::output::{info, print_json};
@@ -116,6 +117,47 @@ pub fn execute_draft(
                     pkg_to_install.name.cyan(),
                     pkg_to_install.version.yellow(),
                     manager.cyan()
+                ),
+            );
+            continue;
+        }
+
+        // Crates are compiled and installed by cargo into ~/.cargo/bin,
+        // so there is nothing to download or extract here either.
+        if let PackageSource::Cargo { crate_name } = &pkg_to_install.source {
+            info(
+                quiet,
+                format!(
+                    "{} installing {} via cargo...",
+                    "Cargo".green(),
+                    crate_name.cyan()
+                ),
+            );
+            install_cargo_package(crate_name)?;
+
+            let is_root = pkg_to_install.name == pkg.name;
+            ctx.db
+                .insert_package(pkg_to_install, "", None, None, is_root)?;
+            session_packages.push(pkg_to_install.name.clone());
+            installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
+
+            run_hook(
+                &HookType::PostInstall,
+                &pkg_to_install.name,
+                &pkg_to_install.version,
+                &ctx.config.hooks_dir,
+                &ctx.config.hooks,
+                &[],
+            )?;
+
+            info(
+                quiet,
+                format!(
+                    "{} {} v{} installed via {}!",
+                    "Done".green().bold(),
+                    pkg_to_install.name.cyan(),
+                    pkg_to_install.version.yellow(),
+                    "cargo".cyan()
                 ),
             );
             continue;
@@ -301,6 +343,7 @@ pub(crate) fn source_label(source: &PackageSource) -> String {
         PackageSource::BallerRegistry { .. } => "baller".to_string(),
         PackageSource::Chocolatey { .. } => "chocolatey".to_string(),
         PackageSource::System { manager } => format!("system:{}", manager),
+        PackageSource::Cargo { crate_name } => format!("cargo:{}", crate_name),
     }
 }
 

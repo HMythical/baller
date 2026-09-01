@@ -19,6 +19,7 @@ pub fn effective_source_order(registry: &RegistryConfig) -> Vec<RegistrySource> 
             RegistrySource::BallerRegistry => registry.baller_enabled,
             RegistrySource::Chocolatey => registry.chocolatey_enabled,
             RegistrySource::System => registry.system_enabled,
+            RegistrySource::Cargo => registry.cargo_enabled,
         })
         .collect()
 }

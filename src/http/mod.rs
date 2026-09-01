@@ -1,3 +1,4 @@
+pub mod cargo;
 pub mod chocolatey;
 pub mod github;
 pub mod registry_api;

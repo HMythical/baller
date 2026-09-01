@@ -1,5 +1,6 @@
 use crate::core::package::Package;
 use crate::error::error::BallError;
+use crate::http::cargo::CargoRegistry;
 use crate::http::chocolatey::ChocolateyRegistry;
 use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
@@ -12,6 +13,7 @@ pub enum RegistrySource {
     BallerRegistry,
     Chocolatey,
     System,
+    Cargo,
 }
 
 impl RegistrySource {
@@ -22,6 +24,7 @@ impl RegistrySource {
             RegistrySource::BallerRegistry => "baller",
             RegistrySource::Chocolatey => "chocolatey",
             RegistrySource::System => "system",
+            RegistrySource::Cargo => "cargo",
         }
     }
 
@@ -32,6 +35,7 @@ impl RegistrySource {
             RegistrySource::BallerRegistry => "baller_registry",
             RegistrySource::Chocolatey => "chocolatey",
             RegistrySource::System => "system",
+            RegistrySource::Cargo => "cargo",
         }
     }
 
@@ -42,14 +46,15 @@ impl RegistrySource {
             "baller" => Some(RegistrySource::BallerRegistry),
             "chocolatey" => Some(RegistrySource::Chocolatey),
             "system" => Some(RegistrySource::System),
+            "cargo" => Some(RegistrySource::Cargo),
             _ => None,
         }
     }
 }
 
 /// The source chain this platform prefers: the Baller registry first, then the
-/// native ecosystem (Chocolatey on Windows, the distro package manager on
-/// Linux), with GitHub as the last-resort fallback.
+/// native ecosystem (Chocolatey on Windows, the distro package manager followed
+/// by crates.io on Linux), with GitHub as the last-resort fallback.
 pub fn default_source_order() -> Vec<RegistrySource> {
     if cfg!(target_os = "windows") {
         vec![
@@ -61,6 +66,7 @@ pub fn default_source_order() -> Vec<RegistrySource> {
         vec![
             RegistrySource::BallerRegistry,
             RegistrySource::System,
+            RegistrySource::Cargo,
             RegistrySource::GitHub,
         ]
     }
@@ -88,6 +94,7 @@ pub struct RegistryClient {
     baller_api: BallerRegistryApi,
     chocolatey: ChocolateyRegistry,
     system: SystemRegistry,
+    cargo: CargoRegistry,
     source_order: Vec<RegistrySource>,
 }
 
@@ -101,12 +108,14 @@ impl RegistryClient {
         );
         let chocolatey = ChocolateyRegistry::new(client);
         let system = system_registry();
+        let cargo = CargoRegistry::detect();
 
         Self {
             github,
             baller_api,
             chocolatey,
             system,
+            cargo,
             source_order: default_source_order(),
         }
     }
@@ -122,12 +131,14 @@ impl RegistryClient {
         let baller_api = BallerRegistryApi::new(client.clone(), baller_registry_url);
         let chocolatey = ChocolateyRegistry::with_feed_url(client, chocolatey_feed_url);
         let system = system_registry();
+        let cargo = CargoRegistry::detect();
 
         Self {
             github,
             baller_api,
             chocolatey,
             system,
+            cargo,
             source_order,
         }
     }
@@ -192,6 +203,11 @@ impl RegistryClient {
         self.system.manager_name()
     }
 
+    /// `"cargo"` when a cargo toolchain was detected on this host
+    pub fn cargo_manager_name(&self) -> Option<&'static str> {
+        self.cargo.manager_name()
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<Package>, BallError> {
         let mut all_results = Vec::new();
 
@@ -201,6 +217,7 @@ impl RegistryClient {
                 RegistrySource::BallerRegistry => self.baller_api.search(query),
                 RegistrySource::Chocolatey => self.chocolatey.search(query),
                 RegistrySource::System => self.system.search(query),
+                RegistrySource::Cargo => self.cargo.search(query),
             };
 
             match results {
@@ -222,6 +239,7 @@ impl RegistryClient {
             RegistrySource::BallerRegistry => self.baller_api.fetch_package(name),
             RegistrySource::Chocolatey => self.chocolatey.fetch_package(name),
             RegistrySource::System => self.system.fetch_package(name),
+            RegistrySource::Cargo => self.cargo.fetch_package(name),
         }
     }
 
@@ -239,6 +257,10 @@ impl RegistryClient {
             )),
             RegistrySource::System => Err(BallError::PackageManagerError(format!(
                 "system packages always install the latest available version — cannot pin '{}'",
+                name
+            ))),
+            RegistrySource::Cargo => Err(BallError::PackageManagerError(format!(
+                "cargo packages always install the latest available version — cannot pin '{}'",
                 name
             ))),
         }
@@ -298,12 +320,14 @@ mod tests {
                 ]
             );
             assert!(!order.contains(&RegistrySource::System));
+            assert!(!order.contains(&RegistrySource::Cargo));
         } else {
             assert_eq!(
                 order,
                 vec![
                     RegistrySource::BallerRegistry,
                     RegistrySource::System,
+                    RegistrySource::Cargo,
                     RegistrySource::GitHub
                 ]
             );
@@ -318,10 +342,21 @@ mod tests {
             RegistrySource::BallerRegistry,
             RegistrySource::Chocolatey,
             RegistrySource::System,
+            RegistrySource::Cargo,
         ] {
             let name = source.config_name();
             assert_eq!(RegistrySource::from_config_name(name), Some(source));
         }
+    }
+
+    #[test]
+    fn test_cargo_source_names() {
+        assert_eq!(RegistrySource::Cargo.config_name(), "cargo");
+        assert_eq!(RegistrySource::Cargo.db_name(), "cargo");
+        assert_eq!(
+            RegistrySource::from_config_name(" Cargo "),
+            Some(RegistrySource::Cargo)
+        );
     }
 
     #[test]

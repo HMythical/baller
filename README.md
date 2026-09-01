@@ -86,6 +86,7 @@ The goal is to complement existing package managers (Chocolatey, apt, npm, NuGet
 - **Baller Registry** — custom registry API
 - **Chocolatey/NuGet** — install from the Chocolatey community feed (SHA-512 verified)
 - **System Package Manager** — wraps apt, dnf, or pacman for native Linux packages
+- **Cargo** — installs crates from crates.io through the local cargo toolchain
 
 ---
 

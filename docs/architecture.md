@@ -39,7 +39,8 @@ baller/
 │   │   ├── github.rs        # GitHub Releases API
 │   │   ├── registry_api.rs  # Baller registry API
 │   │   ├── chocolatey.rs    # Chocolatey OData v2 feed
-│   │   └── system.rs        # System Linux package manager (apt/dnf/pacman)
+│   │   ├── system.rs        # System Linux package manager (apt/dnf/pacman)
+│   │   └── cargo.rs         # crates.io via the local cargo CLI
 │   ├── platform/            # OS abstraction
 │   │   ├── mod.rs
 │   │   ├── common.rs        # PlatformManager trait
@@ -82,7 +83,7 @@ to every command function and sub-operation.
 ### Package
 The universal package metadata struct used across the entire system:
 - `name`, `version`, `description`, `author`
-- `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`, `System { manager }`)
+- `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`, `System { manager }`, `Cargo { crate_name }`)
 - `download_url`, `sha256`, `hash_algorithm`, `dependencies`
 
 The `hash_algorithm` field (e.g., `"SHA256"`, `"SHA512"`) is set by the
@@ -108,16 +109,25 @@ The `RegistryClient` iterates sources in configurable order (`source_order`),
 trying each until one returns successfully. The per-source `_enabled` booleans
 act as a filter — disabled sources are skipped entirely.
 
-The default `source_order` is `github, baller, chocolatey, system`, so
-system packages (apt/dnf/pacman) are tried as a last resort. When all
-sources fail, the returned error lists every source that was tried and the
-reason it failed.
+The default `source_order` is platform-derived: the Baller registry comes
+first, the platform's native ecosystem comes next (Chocolatey on Windows; the
+distro package manager followed by Cargo on Linux), and **GitHub is always the
+last-resort fallback**. When all sources fail, the returned error lists every
+source that was tried and the reason it failed.
+
+| Platform | Default `source_order` |
+|---|---|
+| Windows | `baller, chocolatey, github` |
+| Linux | `baller, system, cargo, github` |
 
 ```
-request → [GitHub Releases] ?→ [Baller Registry] ?→ [Chocolatey Feed] ?→ [System PM]
-              ↓ failure           ↓ failure               ↓ failure            ↓ failure
-          try next             try next              try next              return error
+Windows: request → [Baller Registry] ?→ [Chocolatey] ?→ [GitHub]
+Linux:   request → [Baller Registry] ?→ [System PM]  ?→ [Cargo] ?→ [GitHub]
+                          ↓ failure          ↓ failure     ↓ failure   ↓ failure
+                          try next           try next      try next    return error
 ```
+
+See [docs/registry.md](registry.md) for the per-source details.
 
 ## Dependency Resolution
 
@@ -155,7 +165,7 @@ are **not** strict semver. `parse_version_flexible()` in `dep_solver.rs` handles
 
 ## Installation Paths
 
-BALLER supports three installation paths, selected automatically based on
+BALLER supports four installation paths, selected automatically based on
 `PackageSource`:
 
 - **Archive path** (GitHub / BallerRegistry): download archive →
@@ -169,11 +179,16 @@ BALLER supports three installation paths, selected automatically based on
   manager via `install_system_package()` in `http/system.rs`, which runs
   `sudo apt-get install -y <name>` (or dnf/pacman equivalent) and records
   the package in the DB. No archive is downloaded, no symlink is created.
+- **Cargo path** (`PackageSource::Cargo`): delegate to the local toolchain
+  via `install_cargo_package()` in `http/cargo.rs`, which runs
+  `cargo install <crate>` — without `sudo`, since cargo builds into the
+  user's `~/.cargo/bin` — and records the package in the DB. No archive is
+  downloaded, no symlink is created.
 
 The downloader (`Downloader::download_and_extract`) refuses to handle
-system packages, returning a `PackageManagerError` if invoked on one — this
-is a defensive check, since the `draft` command should always dispatch
-system packages to the system path.
+system and cargo packages, returning a `PackageManagerError` if invoked on
+one — this is a defensive check, since the `draft` command should always
+dispatch those packages to their own path.
 
 ## Error Handling and Rollback
 

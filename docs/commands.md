@@ -43,8 +43,8 @@ Chocolatey), extracts, symlinks the binary, and records in the SQLite database.
 **Flags:**
 | Flag | Description |
 |------|-------------|
-| `--version <V>` | Pin an exact version. GitHub and Chocolatey only — the Baller registry does not support pinning yet, and system packages always install the latest |
-| `--source <S>` | Resolve from one registry (`github`, `baller`, `chocolatey`, `system`) instead of the configured chain. `system` is Linux-only |
+| `--version <V>` | Pin an exact version. GitHub and Chocolatey only — the Baller registry does not support pinning yet, and system and cargo packages always install the latest |
+| `--source <S>` | Resolve from one registry (`github`, `baller`, `chocolatey`, `system`, `cargo`) instead of the configured chain. `system` is Linux-only; `cargo` needs a cargo toolchain on `PATH` |
 | `--no-deps` | Install the root package alone |
 | `--dry-run` | Print the resolved plan (every package, version, source and action) and change nothing |
 | `--force`, `-f` | Reinstall even when the package is already on the roster (without it, installed packages are skipped) |
@@ -61,7 +61,7 @@ Note nothing was installed
 
 ### Installation Modes
 
-The `draft` command follows one of three code paths depending on the package
+The `draft` command follows one of four code paths depending on the package
 source:
 
 **Archive mode** (GitHub, Baller Registry): download archive →
@@ -76,6 +76,12 @@ the package is installed in place by the native package manager under `sudo`.
 No archive is downloaded, no extraction happens, no symlink is created —
 BALLER only records the package in its database for tracking. The pre-install
 and post-install hooks still run.
+
+**Cargo mode** (`PackageSource::Cargo`): the crate is compiled and installed
+by `cargo install` into `~/.cargo/bin` — without `sudo`, since the install is
+user-local. As with system mode, nothing is downloaded, extracted, or
+symlinked by BALLER; it records the package for tracking and still runs the
+pre-install and post-install hooks.
 
 **Example — archive mode:**
 ```
@@ -168,7 +174,7 @@ baller roster [package_name] [--frozen] [--source <S>] [--outdated] [--remote]
 | Flag | Description |
 |------|-------------|
 | `--frozen` | Only show frozen packages |
-| `--source <S>` | Only show packages installed from `github`, `baller`, `chocolatey` or `system` |
+| `--source <S>` | Only show packages installed from `github`, `baller`, `chocolatey`, `system` or `cargo` |
 | `--outdated` | Check the registries and list packages with a newer version available, without updating |
 | `--remote` | Skip the local roster and search registries directly (needs a search term) |
 | `--verbose`, `-v` | *(global)* Print the full detail block for every listed package |
@@ -392,7 +398,7 @@ directory resolves `baller.toml` first, then `baller.json`.
 | `--no-deps` | Ignore the manifest's declared dependencies, so none are recorded |
 | `--install-dir <DIR>` | Link the binary into this directory instead of the platform default |
 | `--force`, `-f` | Build over a package that is already on the roster (otherwise that is an error) |
-| `--source <S>` | Override the manifest's source before resolving. Clears any manifest `download_url` so the new source is actually consulted. `github` needs a github.com `repository` URL in the manifest; `system` is Linux-only |
+| `--source <S>` | Override the manifest's source before resolving. Clears any manifest `download_url` so the new source is actually consulted. `github` needs a github.com `repository` URL in the manifest; `system` is Linux-only; `cargo` needs a cargo toolchain on `PATH` |
 
 Both manifest layouts parse: the flat form and the nested form documented in
 [docs/manifest.md](manifest.md).

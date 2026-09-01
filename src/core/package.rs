@@ -6,6 +6,7 @@ pub enum PackageSource {
     BallerRegistry { url: String },
     Chocolatey { feed_url: String },
     System { manager: String },
+    Cargo { crate_name: String },
 }
 
 impl Default for PackageSource {

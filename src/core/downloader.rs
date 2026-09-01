@@ -43,6 +43,12 @@ impl Downloader {
                     pkg.name
                 )));
             }
+            if matches!(pkg.source, PackageSource::Cargo { .. }) {
+                return Err(BallError::PackageManagerError(format!(
+                    "'{}' is a cargo package — use cargo install",
+                    pkg.name
+                )));
+            }
             return Err(BallError::NetworkError(format!(
                 "no download URL for package '{}'",
                 pkg.name

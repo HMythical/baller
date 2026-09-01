@@ -58,6 +58,25 @@ exclusively. Common messages:
 - `"invalid base64 hash: ..."` — when a Chocolatey package's base64-encoded
   hash cannot be decoded
 
+## Cargo Package Errors
+
+Crate installation (`install_cargo_package`) and the `PackageSource::Cargo`
+path of `draft` use `BallError::PackageManagerError` exclusively. Common
+messages:
+
+- `"'foo' is a cargo package — use cargo install"` — when
+  `Downloader::download_and_extract` is called on a cargo package
+- `"cargo install of 'foo' exited with status exit code: 1"` — when cargo
+  fails to build or install the crate
+- `"cargo is not installed on this host"` — when the Cargo source is queried
+  on a host with no cargo toolchain
+- `"--source cargo needs a cargo toolchain on PATH"` — when `build --source
+  cargo` is used on such a host
+- `"cargo packages always install the latest available version — cannot pin
+  'foo'"` — when `--version` is combined with the Cargo source
+
+See [docs/cargo-registry.md](cargo-registry.md) for the full error table.
+
 ## Rollback on Partial Failure
 
 When `draft` or `substitute` installs multiple packages and one fails mid-way,

@@ -394,92 +394,104 @@ impl SystemRegistry {
 
     fn search_dnf(&self, query: &str) -> Result<Vec<Package>, BallError> {
         let output = Self::run_cmd("dnf", &["search", "--all-namespaces", query])?;
-        let mut results = Vec::new();
 
-        for line in output.lines() {
-            if line.starts_with("Name") || line.starts_with('=') || line.is_empty() {
-                continue;
-            }
-            if let Some((name, summary)) = line.split_once(" : ") {
-                let name = name.trim();
-                let summary = summary.trim();
-                if !name.is_empty() {
-                    results.push(Package {
-                        name: name.to_string(),
-                        version: String::new(),
-                        description: if summary.is_empty() {
-                            None
-                        } else {
-                            Some(summary.to_string())
-                        },
-                        author: None,
-                        repository: None,
-                        architectures: None,
-                        dependencies: None,
-                        sha256: None,
-                        hash_algorithm: None,
-                        download_url: None,
-                        source: PackageSource::System {
-                            manager: "apt".to_string(),
-                        },
-                    });
-                }
-            }
-        }
-
-        Ok(results)
+        Ok(parse_dnf_search_output(&output))
     }
 
     fn search_pacman(&self, query: &str) -> Result<Vec<Package>, BallError> {
         let output = Self::run_cmd("pacman", &["-Ss", query])?;
-        let mut results = Vec::new();
 
-        for line in output.lines() {
-            if !line.starts_with(' ') && line.contains('/') {
-                let parts: Vec<&str> = line.splitn(3, ' ').collect();
-                if parts.len() >= 2 {
-                    let repo_name = parts[0].trim();
-                    if repo_name.starts_with('#') || repo_name == "::" {
-                        continue;
-                    }
-                    let entries: Vec<&str> = parts[0].split('/').collect();
-                    if entries.len() != 2 {
-                        continue;
-                    }
-                    let name = entries[1].trim();
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let ver_rest = if parts.len() >= 3 {
-                        Some(parts[2].trim().to_string())
-                    } else {
+        Ok(parse_pacman_search_output(&output))
+    }
+}
+
+/// Parse `dnf search` lines of the form `name.arch : summary`
+fn parse_dnf_search_output(output: &str) -> Vec<Package> {
+    let mut results = Vec::new();
+
+    for line in output.lines() {
+        if line.starts_with("Name") || line.starts_with('=') || line.is_empty() {
+            continue;
+        }
+        if let Some((name, summary)) = line.split_once(" : ") {
+            let name = name.trim();
+            let summary = summary.trim();
+            if !name.is_empty() {
+                results.push(Package {
+                    name: name.to_string(),
+                    version: String::new(),
+                    description: if summary.is_empty() {
                         None
-                    };
-                    let version = match &ver_rest {
-                        Some(v) => v.clone(),
-                        None => String::new(),
-                    };
-                    results.push(Package {
-                        name: name.to_string(),
-                        version,
-                        description: parts.get(2).map(|s| s.trim().to_string()),
-                        author: None,
-                        repository: None,
-                        architectures: None,
-                        dependencies: None,
-                        sha256: None,
-                        hash_algorithm: None,
-                        download_url: None,
-                        source: PackageSource::System {
-                            manager: "dnf".to_string(),
-                        },
-                    });
-                }
+                    } else {
+                        Some(summary.to_string())
+                    },
+                    author: None,
+                    repository: None,
+                    architectures: None,
+                    dependencies: None,
+                    sha256: None,
+                    hash_algorithm: None,
+                    download_url: None,
+                    source: PackageSource::System {
+                        manager: "dnf".to_string(),
+                    },
+                });
             }
         }
-
-        Ok(results)
     }
+
+    results
+}
+
+/// Parse `pacman -Ss` output: `repo/name version` with the summary on the
+/// following indented line
+fn parse_pacman_search_output(output: &str) -> Vec<Package> {
+    let mut results: Vec<Package> = Vec::new();
+
+    for line in output.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            let summary = line.trim();
+            if let Some(pkg) = results.last_mut() {
+                if pkg.description.is_none() && !summary.is_empty() {
+                    pkg.description = Some(summary.to_string());
+                }
+            }
+            continue;
+        }
+
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 || fields[0].starts_with('#') || fields[0] == "::" {
+            continue;
+        }
+
+        let entries: Vec<&str> = fields[0].split('/').collect();
+        if entries.len() != 2 {
+            continue;
+        }
+
+        let name = entries[1].trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        results.push(Package {
+            name: name.to_string(),
+            version: fields[1].to_string(),
+            description: None,
+            author: None,
+            repository: None,
+            architectures: None,
+            dependencies: None,
+            sha256: None,
+            hash_algorithm: None,
+            download_url: None,
+            source: PackageSource::System {
+                manager: "pacman".to_string(),
+            },
+        });
+    }
+
+    results
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -884,27 +896,59 @@ vim-runtime - Vi Improved - Runtime files
     fn test_parse_pacman_ss_output() {
         let test_output = r#"core/vim 9.0.1300-1
     Vi Improved, a highly configurable, improved vi editor
-extra/git 2.40.1-1
+extra/git 2.40.1-1 [installed]
     The fast distributed version control system
 "#;
 
-        let mut results: Vec<(String, String)> = Vec::new();
-
-        for line in test_output.lines() {
-            if !line.starts_with(' ') && line.contains('/') {
-                let parts: Vec<&str> = line.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let entries: Vec<&str> = parts[0].split('/').collect();
-                    if entries.len() == 2 {
-                        results.push((entries[1].to_string(), parts[1].trim().to_string()));
-                    }
-                }
-            }
-        }
+        let results = parse_pacman_search_output(test_output);
 
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "vim");
-        assert_eq!(results[1].0, "git");
+        assert_eq!(results[0].name, "vim");
+        assert_eq!(results[0].version, "9.0.1300-1");
+        assert_eq!(
+            results[0].description.as_deref(),
+            Some("Vi Improved, a highly configurable, improved vi editor")
+        );
+        assert_eq!(results[1].name, "git");
+        assert_eq!(results[1].version, "2.40.1-1");
+        assert_eq!(
+            results[1].description.as_deref(),
+            Some("The fast distributed version control system")
+        );
+    }
+
+    #[test]
+    fn test_parse_pacman_ss_output_stamps_pacman_manager() {
+        let results = parse_pacman_search_output("core/vim 9.0.1300-1\n    Vi Improved\n");
+
+        assert_eq!(results.len(), 1);
+        match &results[0].source {
+            PackageSource::System { manager } => assert_eq!(manager, "pacman"),
+            other => panic!("expected System source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_dnf_search_output_stamps_dnf_manager() {
+        let test_output = r#"====== Name Exactly Matched: vim ======
+vim-enhanced.x86_64 : A version of the VIM editor
+vim-minimal.x86_64 : A minimal version of the VIM editor
+"#;
+
+        let results = parse_dnf_search_output(test_output);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "vim-enhanced.x86_64");
+        assert_eq!(
+            results[0].description.as_deref(),
+            Some("A version of the VIM editor")
+        );
+        for pkg in &results {
+            match &pkg.source {
+                PackageSource::System { manager } => assert_eq!(manager, "dnf"),
+                other => panic!("expected System source, got {:?}", other),
+            }
+        }
     }
 
     #[test]

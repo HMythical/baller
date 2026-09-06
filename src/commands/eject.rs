@@ -28,21 +28,21 @@ pub fn execute_eject(
 ) -> Result<(), BallError> {
     let quiet = ctx.flags.is_quiet();
 
-    // E4: Confirmation prompt (unless --yes/-y)
-    if !ctx.flags.yes
-        && !confirm(&format!(
-            "Are you sure you want to eject {}? [y/N]",
-            package_name.cyan()
-        ))?
-    {
-        return Err(BallError::ConfirmationAborted);
-    }
-
     if ctx.db.is_frozen(package_name)? && !opts.force {
         return Err(BallError::PackageFrozen(package_name.to_string()));
     }
 
     let installed = ctx.db.get_package(package_name)?;
+
+    // E4: Confirmation prompt (unless --yes/-y)
+    if !ctx.flags.yes
+        && !confirm(&format!(
+            "Are you sure you want to eject {}? [y/N]",
+            installed.name.cyan()
+        ))?
+    {
+        return Err(BallError::ConfirmationAborted);
+    }
 
     run_hook(
         &HookType::PreEject,

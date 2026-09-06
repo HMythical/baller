@@ -99,6 +99,17 @@ fn validate_manifest(manifest: &BallManifest) -> Result<PathBuf, BallError> {
         )));
     }
 
+    static VALID_COMMAND_NAME: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$").unwrap());
+
+    if !VALID_COMMAND_NAME.is_match(&manifest.command_name) {
+        return Err(BallError::InjectedCommandError(format!(
+            "'{}' is not a valid command name: must start with a letter, digit, or underscore \
+                and contain only letters, digits, underscores, or hyphens",
+            manifest.command_name
+        )));
+    }
+
     if !manifest.path.exists() {
         return Err(BallError::InjectedCommandError(format!(
             "no binary found at '{}' for command '{}'",
@@ -218,5 +229,53 @@ mod tests {
         assert!(resolved.is_absolute());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_names() {
+        macro_rules! test_invalid_name {
+            ($name:literal, $dir:literal) => {
+                let dir = test_dir($dir);
+                let binary = dir.join("tool");
+                std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+
+                let err = validate_manifest(&manifest_with($name, binary)).unwrap_err();
+                assert!(format!("{}", err).contains("valid command name"));
+
+                let _ = std::fs::remove_dir_all(&dir);
+            };
+        }
+
+        test_invalid_name!("--json", "name_with_dashes");
+        test_invalid_name!("-j", "name_with_single_dash");
+        test_invalid_name!("-", "lonely_dash");
+        test_invalid_name!("$(rm -rf ~)", "dangerous_shell_subst");
+        test_invalid_name!("foo;bar", "possible_command_sep");
+        test_invalid_name!("foo|bar", "pipe");
+        test_invalid_name!("foo&bar", "ampersand");
+        test_invalid_name!("../inject", "path");
+        test_invalid_name!("foo/bar", "path2");
+        test_invalid_name!("café", "non_ascii");
+        test_invalid_name!("foo\0bar", "null_byte");
+        test_invalid_name!("", "empty");
+    }
+
+    #[test]
+    fn test_validate_doesnt_reject_valid_names() {
+        macro_rules! test_valid_name {
+            ($name:literal, $dir:literal) => {
+                let dir = test_dir($dir);
+                let binary = dir.join("tool");
+                std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+
+                assert!(validate_manifest(&manifest_with($name, binary)).is_ok());
+            };
+        }
+
+        test_valid_name!("foo", "usual_name");
+        test_valid_name!("1foo", "number");
+        test_valid_name!("foo1", "number_at_the_end");
+        test_valid_name!("some_underscored_name", "underscored_name");
+        test_valid_name!("name-with-dashes", "name_with_dashes");
     }
 }

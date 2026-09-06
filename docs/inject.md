@@ -50,6 +50,8 @@ INI but with bracketed section names. `#` and `;` start comments.
 - `ROOTPERMS` accepts `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off`.
 - Section and key names are **case-insensitive**.
 - Blank lines and comment lines are ignored.
+- COMMAND-NAME must start with a letter, digit, or underscore 
+  and contain only letters, digits, underscores or hyphens
 
 ### Full Example
 

@@ -29,27 +29,31 @@ pub const RESERVED_COMMANDS: [&str; 11] = [
 /// Injecting hands an arbitrary binary the ability to run under `baller <name>`,
 /// so the user has to clear three separate confirmations first.
 pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
-    if !confirm(
-        "This will modify baller's runtime behavior by adding a new command. Continue? [yes/no]",
-    ) {
-        println!("Aborted.");
-        return Ok(());
-    }
+    if !ctx.flags.yes {
+        if !confirm(
+            "This will modify baller's runtime behavior by adding a new command. Continue? [yes/no]",
+        ) {
+            println!("Aborted.");
+            return Ok(());
+        }
 
-    if !confirm(
-        "Only inject .ball files from sources you trust: the binary they name runs with your privileges. Continue? [yes/no]",
-    ) {
-        println!("Aborted.");
-        return Ok(());
+        if !confirm(
+            "Only inject .ball files from sources you trust: the binary they name runs with your privileges. Continue? [yes/no]",
+        ) {
+            println!("Aborted.");
+            return Ok(());
+        }
     }
 
     let manifest = parse_ball_file(Path::new(path))?;
 
-    if !confirm(&format!(
-        "Final confirmation: inject '{}' from {}? [yes/no]",
-        manifest.command_name.cyan(),
-        manifest.path.display().to_string().cyan()
-    )) {
+    if !ctx.flags.yes
+        && !confirm(&format!(
+            "Final confirmation: inject '{}' from {}? [yes/no]",
+            manifest.command_name.cyan(),
+            manifest.path.display().to_string().cyan()
+        ))
+    {
         println!("Aborted.");
         return Ok(());
     }

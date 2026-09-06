@@ -124,8 +124,7 @@ pub fn execute_sweep(ctx: &AppContext, opts: &SweepOptions) -> Result<(), BallEr
                     "status": "aborted",
                 }));
             }
-            println!("Aborted.");
-            return Ok(());
+            return Err(BallError::ConfirmationAborted);
         }
     }
 

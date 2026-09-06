@@ -64,8 +64,7 @@ pub fn execute_substitute(
         };
 
         if !confirm(&prompt) {
-            println!("Aborted.");
-            return Ok(());
+            return Err(BallError::ConfirmationAborted);
         }
     }
 

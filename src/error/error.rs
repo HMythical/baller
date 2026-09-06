@@ -19,6 +19,7 @@ pub enum BallError {
     PackageFrozen(String),
     PackageManagerError(String),
     InjectedCommandError(String),
+    ConfirmationAborted,
 }
 
 impl fmt::Display for BallError {
@@ -69,6 +70,8 @@ impl fmt::Display for BallError {
             BallError::PackageManagerError(msg) => write!(f, "package manager error: {}", msg),
 
             BallError::InjectedCommandError(msg) => write!(f, "injected command error: {}", msg),
+            
+            BallError::ConfirmationAborted => write!(f, "Aborted"),
         }
     }
 }

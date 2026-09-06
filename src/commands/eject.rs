@@ -35,8 +35,7 @@ pub fn execute_eject(
             package_name.cyan()
         ))
     {
-        println!("Aborted.");
-        return Ok(());
+        return Err(BallError::ConfirmationAborted);
     }
 
     if ctx.db.is_frozen(package_name)? && !opts.force {

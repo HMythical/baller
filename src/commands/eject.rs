@@ -33,7 +33,7 @@ pub fn execute_eject(
         && !confirm(&format!(
             "Are you sure you want to eject {}? [y/N]",
             package_name.cyan()
-        ))
+        ))?
     {
         return Err(BallError::ConfirmationAborted);
     }

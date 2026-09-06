@@ -63,7 +63,7 @@ pub fn execute_substitute(
             )
         };
 
-        if !confirm(&prompt) {
+        if !confirm(&prompt)? {
             return Err(BallError::ConfirmationAborted);
         }
     }

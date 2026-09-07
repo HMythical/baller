@@ -1,6 +1,7 @@
 use colored::Colorize;
 use serde_json::json;
 
+use crate::commands::draft::source_label;
 use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
@@ -8,7 +9,7 @@ use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::Package;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::{debug, info, print_json};
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -25,6 +26,8 @@ pub struct UpdateOptions {
 pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), BallError> {
     let quiet = ctx.flags.is_quiet();
     let pkgs = select_packages(ctx, opts)?;
+
+    debug(format!("{} package(s) selected for update", pkgs.len()));
 
     let mut updated = 0u32;
     let mut failed = 0u32;
@@ -55,6 +58,23 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     (Some(cur), Some(rem)) => rem > cur,
                     _ => remote_pkg.version != pkg.version, // fallback to string comparison
                 };
+
+                debug(format!(
+                    "{}: installed v{}, registry v{} from {} -> {}",
+                    pkg.name,
+                    pkg.version,
+                    remote_pkg.version,
+                    source_label(&remote_pkg.source),
+                    if needs_update { "stale" } else { "current" }
+                ));
+                debug(format!(
+                    "{}: registry asset url {}",
+                    pkg.name,
+                    remote_pkg
+                        .download_url
+                        .as_deref()
+                        .unwrap_or("<resolved by source>")
+                ));
 
                 if !needs_update {
                     info(
@@ -116,7 +136,23 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                             dep.name.cyan()
                         ),
                     );
+                    debug(format!(
+                        "{}: fetching dependency {} v{} from {}",
+                        pkg.name,
+                        dep.name,
+                        dep.version,
+                        dep.download_url
+                            .as_deref()
+                            .unwrap_or("<resolved by source>")
+                    ));
+
                     let downloaded = ctx.downloader.download_and_extract(dep, !quiet)?;
+
+                    debug(format!(
+                        "{}: dependency extracted to {}",
+                        dep.name,
+                        downloaded.extract_dir.display()
+                    ));
 
                     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
                     let bin_path_str = downloaded
@@ -151,13 +187,31 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     &pre_env,
                 )?;
 
+                debug(format!(
+                    "{}: fetching v{} into cache {}",
+                    pkg.name,
+                    remote_pkg.version,
+                    ctx.config.cache_dir.display()
+                ));
+
                 let downloaded = ctx.downloader.download_and_extract(&remote_pkg, !quiet)?;
+
+                debug(format!(
+                    "{}: extracted to {}",
+                    remote_pkg.name,
+                    downloaded.extract_dir.display()
+                ));
 
                 // U3: Clean old extracted directory before installing new one
                 let old_extract_dir = ctx
                     .config
                     .cache_dir
                     .join(format!("{}-{}", pkg.name, pkg.version));
+                debug(format!(
+                    "{}: pruning stale extract dir {}",
+                    pkg.name,
+                    old_extract_dir.display()
+                ));
                 let _ = std::fs::remove_dir_all(&old_extract_dir);
 
                 if let Some(binary_path) = &downloaded.binary_path {

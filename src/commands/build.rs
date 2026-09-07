@@ -15,7 +15,7 @@ use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::{debug, info, print_json};
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -43,14 +43,28 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         format!("{} {}...", "Building".green().bold(), manifest_str.cyan()),
     );
 
+    debug(format!("manifest: {}", manifest_path.display()));
+
     let mut pkg = ManifestParser::parse_auto(&manifest_path)?;
     ManifestParser::validate(&pkg)?;
 
     if let Some(source) = &opts.source {
+        debug(format!(
+            "overriding manifest source with --source {}",
+            source.config_name()
+        ));
         override_source(ctx, &mut pkg, source)?;
     }
 
+    debug(format!(
+        "parsed {} v{}, effective source {}",
+        pkg.name,
+        pkg.version,
+        source_label(&pkg.source)
+    ));
+
     if opts.no_deps {
+        debug("manifest dependencies dropped (--no-deps)");
         pkg.dependencies = None;
     }
 
@@ -86,7 +100,23 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         resolve_download_url(ctx, &mut pkg)?;
     }
 
+    debug(format!(
+        "fetching {} into cache {}",
+        pkg.download_url.as_deref().unwrap_or("<resolved by source>"),
+        ctx.config.cache_dir.display()
+    ));
+
     let downloaded = ctx.downloader.download_and_extract(&pkg, !quiet)?;
+
+    debug(format!(
+        "extracted to {} (binary: {})",
+        downloaded.extract_dir.display(),
+        downloaded
+            .binary_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none found".to_string())
+    ));
 
     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
     let bin_path_str = downloaded
@@ -505,6 +535,11 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
         );
         pkg.version = resolved.version;
     }
+
+    debug(format!(
+        "resolved download url for {}: {}",
+        pkg.name, download_url
+    ));
 
     pkg.download_url = Some(download_url);
 

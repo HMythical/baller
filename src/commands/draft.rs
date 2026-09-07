@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde_json::json;
 
-use crate::context::AppContext;
+use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
@@ -10,7 +10,7 @@ use crate::error::error::BallError;
 use crate::http::cargo::install_cargo_package;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::{debug, info, print_json};
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -44,14 +44,42 @@ pub fn execute_draft(
         format!("{} {}...", "Drafting".green().bold(), package_name.cyan()),
     );
 
+    debug(format!("registry chain: {}", registry_chain(ctx, opts)));
+
     let pkg = fetch_root(ctx, package_name, opts)?;
+
+    debug(format!(
+        "resolved root: {} v{} from {}",
+        pkg.name,
+        pkg.version,
+        source_label(&pkg.source)
+    ));
+    debug(format!(
+        "root asset url: {}",
+        pkg.download_url.as_deref().unwrap_or("<none declared>")
+    ));
 
     let mut installed = get_installed_map(&ctx.db);
     let result_packages = if opts.no_deps {
+        debug("dependency resolution skipped (--no-deps)");
         vec![pkg.clone()]
     } else {
-        resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages
+        let resolved = resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages;
+        debug(format!(
+            "dependency resolution produced {} package(s)",
+            resolved.len()
+        ));
+        resolved
     };
+
+    for candidate in &result_packages {
+        debug(format!(
+            "plan: {} v{} -> {}",
+            candidate.name,
+            candidate.version,
+            plan_action(candidate, &installed, opts)
+        ));
+    }
 
     if opts.dry_run {
         return report_plan(ctx, &pkg, &result_packages, &installed, opts);
@@ -163,9 +191,30 @@ pub fn execute_draft(
             continue;
         }
 
+        debug(format!(
+            "{}: fetching {} into cache {}",
+            pkg_to_install.name,
+            pkg_to_install
+                .download_url
+                .as_deref()
+                .unwrap_or("<resolved by source>"),
+            ctx.config.cache_dir.display()
+        ));
+
         let downloaded = ctx
             .downloader
             .download_and_extract(pkg_to_install, !quiet)?;
+
+        debug(format!(
+            "{}: extracted to {} (binary: {})",
+            pkg_to_install.name,
+            downloaded.extract_dir.display(),
+            downloaded
+                .binary_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none found".to_string())
+        ));
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
         let bin_path_str = downloaded
@@ -245,6 +294,21 @@ pub fn execute_draft(
     }
 
     Ok(())
+}
+
+/// The registry order this draft will consult, as `--verbose` reports it.
+///
+/// `--source` pins resolution to one registry, so the configured chain is only
+/// relevant when the flag is absent.
+fn registry_chain(ctx: &AppContext, opts: &DraftOptions) -> String {
+    match opts.source.as_ref() {
+        Some(source) => format!("{} (pinned by --source)", source.config_name()),
+        None => effective_source_order(&ctx.config.registry)
+            .iter()
+            .map(|source| source.config_name())
+            .collect::<Vec<_>>()
+            .join(" -> "),
+    }
 }
 
 /// Fetch the root package, honoring `--version` and `--source`

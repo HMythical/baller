@@ -116,7 +116,7 @@ pub fn execute_sweep(ctx: &AppContext, opts: &SweepOptions) -> Result<(), BallEr
             )
         };
 
-        if !confirm(&prompt) {
+        if !confirm(&prompt)? {
             if json {
                 return print_json(&json!({
                     "command": "sweep",
@@ -124,8 +124,7 @@ pub fn execute_sweep(ctx: &AppContext, opts: &SweepOptions) -> Result<(), BallEr
                     "status": "aborted",
                 }));
             }
-            println!("Aborted.");
-            return Ok(());
+            return Err(BallError::ConfirmationAborted);
         }
     }
 

@@ -32,16 +32,14 @@ pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
     if !ctx.flags.yes {
         if !confirm(
             "This will modify baller's runtime behavior by adding a new command. Continue? [yes/no]",
-        ) {
-            println!("Aborted.");
-            return Ok(());
+        )? {
+          return Err(BallError::ConfirmationAborted);
         }
 
         if !confirm(
             "Only inject .ball files from sources you trust: the binary they name runs with your privileges. Continue? [yes/no]",
-        ) {
-            println!("Aborted.");
-            return Ok(());
+        )? {
+          return Err(BallError::ConfirmationAborted);
         }
     }
 
@@ -52,10 +50,9 @@ pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
             "Final confirmation: inject '{}' from {}? [yes/no]",
             manifest.command_name.cyan(),
             manifest.path.display().to_string().cyan()
-        ))
+        ))?
     {
-        println!("Aborted.");
-        return Ok(());
+        return Err(BallError::ConfirmationAborted);
     }
 
     let binary_path = validate_manifest(&manifest)?;

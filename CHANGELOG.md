@@ -14,15 +14,33 @@ with a custom scheme:
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+---
+
+## [0.1.5] - 2026-09-07
+
 ### Features
 
-- **Cargo source: install crates from crates.io**
+- **Cargo source: install crates from crates.io** (`7b2b361`, PR #26)
   Added a `cargo` registry source (`src/http/cargo.rs`) that resolves crates through the local cargo toolchain — `cargo info` (falling back to `cargo search`) for metadata, `cargo search --limit 20` for search, and `cargo install` for installation without `sudo`. The source is wired through `--source cargo`, `[source] type = "cargo"` manifests, `draft`/`build` install dispatch, and DB provenance (`source = "cargo"`). The Linux default `source_order` is now `baller, system, cargo, github`; the Windows default (`baller, chocolatey, github`) is unchanged. New `cargo_enabled` config key defaults to `true` on Linux and `false` on Windows and can be set in `baller.conf`. Documented in `docs/cargo-registry.md` and `docs/registry.md`. Part of #8.
 
 ### Bug Fixes
 
-- **System search stamped the wrong package manager**
+- **System search stamped the wrong package manager** (`7b2b361`, PR #26)
   `search_dnf` labelled its results `apt` and `search_pacman` labelled its results `dnf`, so a package found by search on Fedora or Arch would have been installed through the wrong CLI. Both now record the manager that produced them. `pacman -Ss` parsing was also misreading the entry — it stored the description as the version and dropped the real version; the version now comes from the `repo/name version` line and the description from the indented line that follows. Part of #8.
+
+- **The values from the configuration file should not be empty** (`46bfc5c`, PR #25)
+  Added a verification that every value read from `baller.conf` is non-empty, and reorganized error checking so all configuration errors are reported at once instead of stopping at the first one. Refs #24.
+
+- **Inject command honours the `yes` flag** (`e075bc1`, PR #28)
+  The `inject` subcommand no longer blocks on its confirmation prompts when `-y`/`--yes` is passed, matching the behaviour of the other commands.
+
+- **Confirmations no longer exit with a non-zero code** (`5caae6e`, PR #30)
+  `confirm()` now returns a `Result<bool, BallError>` and propagates two new error types — `ConfirmationAborted` and `PipeRedirected` — so aborted confirmations and redirected pipes no longer surface as failures. The confirmation prompt in the `eject` subcommand was also moved below the installation check and now uses `installed.name`. Closes #17, Closes #18.
+
+- **Invalid names are rejected in the `inject` subcommand** (`19a6aba`, PR #31)
+  Command names provided to `inject` are now validated against a regular expression, so invalid names are rejected instead of being accepted. Closes #19.
 
 ---
 

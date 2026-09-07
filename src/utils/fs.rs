@@ -1,6 +1,6 @@
-use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use crate::error::error::BallError;
 
@@ -221,12 +221,21 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Prompt user for confirmation from stdin. Returns true if user confirms.
-pub fn confirm(prompt: &str) -> bool {
+pub fn confirm(prompt: &str) -> Result<bool, BallError> {
+    let stdin = io::stdin();
+
+    if !stdin.is_terminal() {
+        return Err(BallError::PipeRedirected {
+            pipe: "stdin".to_string(),
+            msg: "--yes/-y flag required to use this command with redirected pipe".to_string(),
+        });
+    }
+
     print!("{prompt} ");
-    std::io::stdout().flush().ok();
+    io::stdout().flush().ok();
     let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+    io::stdin().read_line(&mut input).ok();
+    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 pub fn find_binary_in_dir(dir: &Path, pkg_name: &str) -> Option<PathBuf> {

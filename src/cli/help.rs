@@ -146,7 +146,7 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 10] = [
 const GLOBAL_OPTIONS: [&str; 9] = [
     "-y, --yes          Skip confirmation prompts",
     "-q, --quiet        Suppress progress bars and step-by-step output",
-    "-v, --verbose      Increase output detail (repeatable)",
+    "-v, --verbose      Increase output detail",
     "--json             Emit machine-readable JSON instead of formatted text",
     "--no-hooks         Skip every pre/post install, eject and update hook",
     "--no-color         Disable colored output",

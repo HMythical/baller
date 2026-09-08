@@ -15,7 +15,7 @@ use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -38,19 +38,30 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
     let manifest_path = resolve_manifest_path(path)?;
     let manifest_str = manifest_path.to_string_lossy().to_string();
 
-    info(
-        quiet,
-        format!("{} {}...", "Building".green().bold(), manifest_str.cyan()),
-    );
+    tracing::info!("{} {}...", "Building".green().bold(), manifest_str.cyan(),);
+
+    tracing::debug!("manifest: {}", manifest_path.display());
 
     let mut pkg = ManifestParser::parse_auto(&manifest_path)?;
     ManifestParser::validate(&pkg)?;
 
     if let Some(source) = &opts.source {
+        tracing::debug!(
+            "overriding manifest source with --source {}",
+            source.config_name()
+        );
         override_source(ctx, &mut pkg, source)?;
     }
 
+    tracing::debug!(
+        "parsed {} v{}, effective source {}",
+        pkg.name,
+        pkg.version,
+        source_label(&pkg.source)
+    );
+
     if opts.no_deps {
+        tracing::debug!("manifest dependencies dropped (--no-deps)");
         pkg.dependencies = None;
     }
 
@@ -86,7 +97,25 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         resolve_download_url(ctx, &mut pkg)?;
     }
 
+    tracing::debug!(
+        "fetching {} into cache {}",
+        pkg.download_url
+            .as_deref()
+            .unwrap_or("<resolved by source>"),
+        ctx.config.cache_dir.display()
+    );
+
     let downloaded = ctx.downloader.download_and_extract(&pkg, !quiet)?;
+
+    tracing::debug!(
+        "extracted to {} (binary: {})",
+        downloaded.extract_dir.display(),
+        downloaded
+            .binary_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none found".to_string())
+    );
 
     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
     let bin_path_str = downloaded
@@ -98,30 +127,21 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         match &opts.install_dir {
             Some(dir) => {
                 ActiveManager::create_symlink_in(Path::new(dir), binary_path, &pkg.name)?;
-                info(
-                    quiet,
-                    format!("{} linked into {}", "Linked".green(), dir.cyan()),
-                );
+                tracing::info!("{} linked into {}", "Linked".green(), dir.cyan(),);
             }
             None => {
                 ActiveManager::create_symlink(binary_path, &pkg.name)?;
-                info(
-                    quiet,
-                    format!(
-                        "{} symlinked to {}",
-                        "Linked".green(),
-                        binary_path.display().to_string().cyan()
-                    ),
+                tracing::info!(
+                    "{} symlinked to {}",
+                    "Linked".green(),
+                    binary_path.display().to_string().cyan(),
                 );
             }
         }
     } else {
-        info(
-            quiet,
-            format!(
-                "{} no binary found in extracted package",
-                "Warning".yellow()
-            ),
+        tracing::info!(
+            "{} no binary found in extracted package",
+            "Warning".yellow()
         );
     }
 
@@ -147,7 +167,7 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         &post_env,
     )?;
 
-    announce_dependencies(ctx, &pkg);
+    announce_dependencies(&pkg);
 
     if ctx.flags.json {
         return print_json(&json!({
@@ -336,12 +356,7 @@ fn build_system_package(
         )));
     }
 
-    let quiet = ctx.flags.is_quiet();
-
-    info(
-        quiet,
-        format!("{} installing via {}...", "System".green(), manager.cyan()),
-    );
+    tracing::info!("{} installing via {}...", "System".green(), manager.cyan(),);
     install_system_package(manager, &pkg.name)?;
 
     ctx.db
@@ -356,7 +371,7 @@ fn build_system_package(
         &[],
     )?;
 
-    announce_dependencies(ctx, pkg);
+    announce_dependencies(pkg);
 
     if ctx.flags.json {
         return print_json(&json!({
@@ -387,15 +402,10 @@ fn build_cargo_package(
     crate_name: &str,
     manifest_path: &str,
 ) -> Result<(), BallError> {
-    let quiet = ctx.flags.is_quiet();
-
-    info(
-        quiet,
-        format!(
-            "{} installing {} via cargo...",
-            "Cargo".green(),
-            crate_name.cyan()
-        ),
+    tracing::info!(
+        "{} installing {} via cargo...",
+        "Cargo".green(),
+        crate_name.cyan()
     );
     install_cargo_package(crate_name)?;
 
@@ -411,7 +421,7 @@ fn build_cargo_package(
         &[],
     )?;
 
-    announce_dependencies(ctx, pkg);
+    announce_dependencies(pkg);
 
     if ctx.flags.json {
         return print_json(&json!({
@@ -437,8 +447,6 @@ fn build_cargo_package(
 
 /// Fill in a missing `download_url` from the manifest's declared source
 fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallError> {
-    let quiet = ctx.flags.is_quiet();
-
     let resolved = match &pkg.source {
         PackageSource::GitHub { owner, repo } => {
             if owner.is_empty() || repo.is_empty() {
@@ -448,38 +456,29 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
                 )));
             }
 
-            info(
-                quiet,
-                format!(
-                    "{} latest release of {}...",
-                    "Scouting".green(),
-                    format!("{}/{}", owner, repo).cyan()
-                ),
+            tracing::info!(
+                "{} latest release of {}...",
+                "Scouting".green(),
+                format!("{}/{}", owner, repo).cyan()
             );
             GitHubRegistry::new(ctx.http_client.clone(), None)
                 .fetch_package(&format!("{}/{}", owner, repo))?
         }
         PackageSource::Chocolatey { feed_url } => {
-            info(
-                quiet,
-                format!(
-                    "{} {} on Chocolatey...",
-                    "Scouting".green(),
-                    pkg.name.cyan()
-                ),
+            tracing::info!(
+                "{} {} on Chocolatey...",
+                "Scouting".green(),
+                pkg.name.cyan()
             );
             let registry =
                 ChocolateyRegistry::with_feed_url(ctx.http_client.clone(), feed_url.clone());
             registry.fetch_package(&pkg.name)?
         }
         PackageSource::BallerRegistry { url } => {
-            info(
-                quiet,
-                format!(
-                    "{} {} in the Baller registry...",
-                    "Scouting".green(),
-                    pkg.name.cyan()
-                ),
+            tracing::info!(
+                "{} {} in the Baller registry...",
+                "Scouting".green(),
+                pkg.name.cyan()
             );
             BallerRegistryApi::new(ctx.http_client.clone(), url.clone()).fetch_package(&pkg.name)?
         }
@@ -494,17 +493,16 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
     })?;
 
     if !resolved.version.is_empty() && resolved.version != pkg.version {
-        info(
-            quiet,
-            format!(
-                "{} {} -> {}",
-                "Version".green(),
-                pkg.version.yellow(),
-                resolved.version.yellow()
-            ),
+        tracing::info!(
+            "{} {} -> {}",
+            "Version".green(),
+            pkg.version.yellow(),
+            resolved.version.yellow()
         );
         pkg.version = resolved.version;
     }
+
+    tracing::debug!("resolved download url for {}: {}", pkg.name, download_url);
 
     pkg.download_url = Some(download_url);
 
@@ -519,16 +517,13 @@ fn resolve_download_url(ctx: &AppContext, pkg: &mut Package) -> Result<(), BallE
 }
 
 /// Manifest dependencies are recorded in the DB but not drafted by `build`
-fn announce_dependencies(ctx: &AppContext, pkg: &Package) {
+fn announce_dependencies(pkg: &Package) {
     if let Some(deps) = &pkg.dependencies {
         if !deps.is_empty() {
-            info(
-                ctx.flags.is_quiet(),
-                format!(
-                    "{} {} declared dependencies recorded — draft them separately",
-                    "Bench".yellow(),
-                    deps.len().to_string().cyan()
-                ),
+            tracing::info!(
+                "{} {} declared dependencies recorded — draft them separately",
+                "Bench".yellow(),
+                deps.len().to_string().cyan()
             );
         }
     }

@@ -19,7 +19,7 @@ These work on every subcommand and may appear before or after it —
 |------|-------------|
 | `--yes`, `-y` | Skip confirmation prompts (`eject`, `sweep`, `substitute`) |
 | `--quiet`, `-q` | Suppress progress bars and step-by-step output |
-| `--verbose`, `-v` | Increase output detail; repeatable (`-vv`). `roster` prints full detail blocks |
+| `--verbose`, `-v` | Increase output detail: resolved URLs, source chains and cache paths on stderr. `roster` prints full detail blocks |
 | `--json` | Emit machine-readable JSON instead of formatted text; implies quiet |
 | `--no-hooks` | Skip every pre/post install, eject and update hook |
 | `--no-color` | Disable colored output (useful in CI) |
@@ -27,6 +27,11 @@ These work on every subcommand and may appear before or after it —
 
 `--json` prints a single JSON document on stdout and suppresses every other
 print, so command output stays parseable.
+
+Progress lines and verbose detail are written to **stderr**; stdout carries
+only the data a command produces. `-v` raises the detail level, `-q` and
+`--json` silence it entirely, so `baller --json roster > out.json` yields a file
+holding nothing but JSON.
 
 ---
 

@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde_json::json;
 
-use crate::context::AppContext;
+use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
@@ -10,7 +10,7 @@ use crate::error::error::BallError;
 use crate::http::cargo::install_cargo_package;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -39,19 +39,44 @@ pub fn execute_draft(
         ));
     }
 
-    info(
-        quiet,
-        format!("{} {}...", "Drafting".green().bold(), package_name.cyan()),
-    );
+    tracing::info!("{} {}...", "Drafting".green().bold(), package_name.cyan(),);
+
+    tracing::debug!("registry chain: {}", registry_chain(ctx, opts));
 
     let pkg = fetch_root(ctx, package_name, opts)?;
 
+    tracing::debug!(
+        "resolved root: {} v{} from {}",
+        pkg.name,
+        pkg.version,
+        source_label(&pkg.source)
+    );
+    tracing::debug!(
+        "root asset url: {}",
+        pkg.download_url.as_deref().unwrap_or("<none declared>")
+    );
+
     let mut installed = get_installed_map(&ctx.db);
     let result_packages = if opts.no_deps {
+        tracing::debug!("dependency resolution skipped (--no-deps)");
         vec![pkg.clone()]
     } else {
-        resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages
+        let resolved = resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages;
+        tracing::debug!(
+            "dependency resolution produced {} package(s)",
+            resolved.len()
+        );
+        resolved
     };
+
+    for candidate in &result_packages {
+        tracing::debug!(
+            "plan: {} v{} -> {}",
+            candidate.name,
+            candidate.version,
+            plan_action(candidate, &installed, opts)
+        );
+    }
 
     if opts.dry_run {
         return report_plan(ctx, &pkg, &result_packages, &installed, opts);
@@ -63,13 +88,10 @@ pub fn execute_draft(
 
     for pkg_to_install in &result_packages {
         if installed.contains_key(&pkg_to_install.name) && !opts.force {
-            info(
-                quiet,
-                format!(
-                    "{} {} already installed",
-                    "Skipping".yellow(),
-                    pkg_to_install.name.cyan()
-                ),
+            tracing::info!(
+                "{} {} already installed",
+                "Skipping".yellow(),
+                pkg_to_install.name.cyan()
             );
             skipped.push(pkg_to_install.name.clone());
             continue;
@@ -88,9 +110,11 @@ pub fn execute_draft(
         // System packages are installed via the native package manager,
         // not downloaded/archived. Record them in the DB and continue.
         if let PackageSource::System { manager } = &pkg_to_install.source {
-            info(
+            tracing::info!(
                 quiet,
-                format!("{} installing via {}...", "System".green(), manager.cyan()),
+                "{} installing via {}...",
+                "System".green(),
+                manager.cyan(),
             );
             install_system_package(manager, &pkg_to_install.name)?;
 
@@ -109,15 +133,12 @@ pub fn execute_draft(
                 &[],
             )?;
 
-            info(
-                quiet,
-                format!(
-                    "{} {} v{} installed via {}!",
-                    "Done".green().bold(),
-                    pkg_to_install.name.cyan(),
-                    pkg_to_install.version.yellow(),
-                    manager.cyan()
-                ),
+            tracing::info!(
+                "{} {} v{} installed via {}!",
+                "Done".green().bold(),
+                pkg_to_install.name.cyan(),
+                pkg_to_install.version.yellow(),
+                manager.cyan()
             );
             continue;
         }
@@ -125,13 +146,10 @@ pub fn execute_draft(
         // Crates are compiled and installed by cargo into ~/.cargo/bin,
         // so there is nothing to download or extract here either.
         if let PackageSource::Cargo { crate_name } = &pkg_to_install.source {
-            info(
-                quiet,
-                format!(
-                    "{} installing {} via cargo...",
-                    "Cargo".green(),
-                    crate_name.cyan()
-                ),
+            tracing::info!(
+                "{} installing {} via cargo...",
+                "Cargo".green(),
+                crate_name.cyan()
             );
             install_cargo_package(crate_name)?;
 
@@ -150,22 +168,40 @@ pub fn execute_draft(
                 &[],
             )?;
 
-            info(
-                quiet,
-                format!(
-                    "{} {} v{} installed via {}!",
-                    "Done".green().bold(),
-                    pkg_to_install.name.cyan(),
-                    pkg_to_install.version.yellow(),
-                    "cargo".cyan()
-                ),
+            tracing::info!(
+                "{} {} v{} installed via {}!",
+                "Done".green().bold(),
+                pkg_to_install.name.cyan(),
+                pkg_to_install.version.yellow(),
+                "cargo".cyan()
             );
             continue;
         }
 
+        tracing::debug!(
+            "{}: fetching {} into cache {}",
+            pkg_to_install.name,
+            pkg_to_install
+                .download_url
+                .as_deref()
+                .unwrap_or("<resolved by source>"),
+            ctx.config.cache_dir.display()
+        );
+
         let downloaded = ctx
             .downloader
             .download_and_extract(pkg_to_install, !quiet)?;
+
+        tracing::debug!(
+            "{}: extracted to {} (binary: {})",
+            pkg_to_install.name,
+            downloaded.extract_dir.display(),
+            downloaded
+                .binary_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none found".to_string())
+        );
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
         let bin_path_str = downloaded
@@ -175,21 +211,15 @@ pub fn execute_draft(
 
         if let Some(binary_path) = &downloaded.binary_path {
             ActiveManager::create_symlink(binary_path, &pkg_to_install.name)?;
-            info(
-                quiet,
-                format!(
-                    "{} symlinked to {}",
-                    "Linked".green(),
-                    binary_path.display().to_string().cyan()
-                ),
+            tracing::info!(
+                "{} symlinked to {}",
+                "Linked".green(),
+                binary_path.display().to_string().cyan()
             );
         } else {
-            info(
-                quiet,
-                format!(
-                    "{} no binary found in extracted package",
-                    "Warning".yellow()
-                ),
+            tracing::info!(
+                "{} no binary found in extracted package",
+                "Warning".yellow()
             );
         }
 
@@ -222,14 +252,11 @@ pub fn execute_draft(
             &post_env,
         )?;
 
-        info(
-            quiet,
-            format!(
-                "{} {} v{} drafted!",
-                "Done".green().bold(),
-                pkg_to_install.name.cyan(),
-                pkg_to_install.version.yellow()
-            ),
+        tracing::info!(
+            "{} {} v{} drafted!",
+            "Done".green().bold(),
+            pkg_to_install.name.cyan(),
+            pkg_to_install.version.yellow()
         );
     }
 
@@ -245,6 +272,21 @@ pub fn execute_draft(
     }
 
     Ok(())
+}
+
+/// The registry order this draft will consult, as `--verbose` reports it.
+///
+/// `--source` pins resolution to one registry, so the configured chain is only
+/// relevant when the flag is absent.
+fn registry_chain(ctx: &AppContext, opts: &DraftOptions) -> String {
+    match opts.source.as_ref() {
+        Some(source) => format!("{} (pinned by --source)", source.config_name()),
+        None => effective_source_order(&ctx.config.registry)
+            .iter()
+            .map(|source| source.config_name())
+            .collect::<Vec<_>>()
+            .join(" -> "),
+    }
 }
 
 /// Fetch the root package, honoring `--version` and `--source`

@@ -6,7 +6,7 @@ use crate::core::hooks::{run_hook, HookType};
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use crate::utils::fs::confirm;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -26,8 +26,6 @@ pub fn execute_eject(
     package_name: &str,
     opts: &EjectOptions,
 ) -> Result<(), BallError> {
-    let quiet = ctx.flags.is_quiet();
-
     if ctx.db.is_frozen(package_name)? && !opts.force {
         return Err(BallError::PackageFrozen(package_name.to_string()));
     }
@@ -54,13 +52,10 @@ pub fn execute_eject(
     )?;
 
     if opts.keep_bin {
-        info(
-            quiet,
-            format!(
-                "{} leaving the linked binary for {} in place",
-                "Keeping".yellow(),
-                installed.name.cyan()
-            ),
+        tracing::info!(
+            "{} leaving the linked binary for {} in place",
+            "Keeping".yellow(),
+            installed.name.cyan()
         );
     } else {
         ActiveManager::remove_symlink(&installed.name)?;
@@ -87,10 +82,7 @@ pub fn execute_eject(
             if !other_pkg.user_installed && *other_pkg.name != installed.name {
                 let depended_on = ctx.db.is_depended_on(&other_pkg.name).unwrap_or(false);
                 if !depended_on {
-                    info(
-                        quiet,
-                        format!("Removing unused dependency {}...", other_pkg.name.cyan()),
-                    );
+                    tracing::info!("Removing unused dependency {}...", other_pkg.name.cyan(),);
                     // Remove symlink if it exists
                     if !opts.keep_bin {
                         let _ = ActiveManager::remove_symlink(&other_pkg.name);
@@ -116,23 +108,17 @@ pub fn execute_eject(
             Some(url) => {
                 purged = ctx.downloader.remove_archive(url)?;
                 if purged {
-                    info(
-                        quiet,
-                        format!(
-                            "{} removed the cached archive for {}",
-                            "Purged".red(),
-                            installed.name.cyan()
-                        ),
+                    tracing::info!(
+                        "{} removed the cached archive for {}",
+                        "Purged".red(),
+                        installed.name.cyan()
                     );
                 }
             }
-            None => info(
-                quiet,
-                format!(
-                    "{} {} has no recorded download URL to purge",
-                    "Note".yellow(),
-                    installed.name.cyan()
-                ),
+            None => tracing::info!(
+                "{} {} has no recorded download URL to purge",
+                "Note".yellow(),
+                installed.name.cyan()
             ),
         }
     }

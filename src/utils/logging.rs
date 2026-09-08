@@ -38,9 +38,11 @@ pub fn init_tracing(verbose: bool, quiet: bool, json: bool, color: bool) {
     let level = level_for(verbose, quiet, json);
 
     let builder = tracing_subscriber::fmt()
+        .with_level(false)
         .with_env_filter(env_filter(level, quiet || json))
         .with_writer(stderr)
         .with_ansi(color)
+        .with_ansi_sanitization(false)
         .without_time()
         .with_target(false);
 
@@ -59,11 +61,7 @@ fn env_filter(level: LevelFilter, silenced: bool) -> EnvFilter {
     }
 
     EnvFilter::builder()
-        .with_default_directive(
-            default
-                .parse()
-                .unwrap_or_else(|_| LevelFilter::INFO.into()),
-        )
+        .with_default_directive(default.parse().unwrap_or_else(|_| LevelFilter::INFO.into()))
         .with_env_var(LOG_ENV)
         .from_env_lossy()
 }

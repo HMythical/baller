@@ -9,7 +9,7 @@ use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::Package;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
-use crate::utils::output::{debug, info, print_json};
+use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -27,7 +27,7 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
     let quiet = ctx.flags.is_quiet();
     let pkgs = select_packages(ctx, opts)?;
 
-    debug(format!("{} package(s) selected for update", pkgs.len()));
+    tracing::debug!("{} package(s) selected for update", pkgs.len());
 
     let mut updated = 0u32;
     let mut failed = 0u32;
@@ -38,13 +38,10 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
 
     for pkg in &pkgs {
         if pkg.frozen && !opts.include_frozen {
-            info(
-                quiet,
-                format!(
-                    "{} {} is frozen, skipping",
-                    "Frozen".cyan(),
-                    pkg.name.cyan()
-                ),
+            tracing::info!(
+                "{} {} is frozen, skipping",
+                "Frozen".cyan(),
+                pkg.name.cyan()
             );
             continue;
         }
@@ -59,42 +56,36 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     _ => remote_pkg.version != pkg.version, // fallback to string comparison
                 };
 
-                debug(format!(
+                tracing::debug!(
                     "{}: installed v{}, registry v{} from {} -> {}",
                     pkg.name,
                     pkg.version,
                     remote_pkg.version,
                     source_label(&remote_pkg.source),
                     if needs_update { "stale" } else { "current" }
-                ));
-                debug(format!(
+                );
+                tracing::debug!(
                     "{}: registry asset url {}",
                     pkg.name,
                     remote_pkg
                         .download_url
                         .as_deref()
                         .unwrap_or("<resolved by source>")
-                ));
+                );
 
                 if !needs_update {
-                    info(
-                        quiet,
-                        format!("{} {} is up-to-date", "OK".green(), pkg.name.cyan()),
-                    );
+                    tracing::info!("{} {} is up-to-date", "OK".green(), pkg.name.cyan(),);
                     current.push(pkg.name.clone());
                     continue;
                 }
 
                 if opts.check {
-                    info(
-                        quiet,
-                        format!(
-                            "{} {}: {} -> {}",
-                            "Stale".yellow(),
-                            pkg.name.cyan(),
-                            pkg.version.yellow(),
-                            remote_pkg.version.green()
-                        ),
+                    tracing::info!(
+                        "{} {}: {} -> {}",
+                        "Stale".yellow(),
+                        pkg.name.cyan(),
+                        pkg.version.yellow(),
+                        remote_pkg.version.green()
                     );
                     stale.push(json!({
                         "name": pkg.name,
@@ -105,15 +96,12 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     continue;
                 }
 
-                info(
-                    quiet,
-                    format!(
-                        "{} {}: {} -> {}",
-                        "Updating".green(),
-                        pkg.name.cyan(),
-                        pkg.version.yellow(),
-                        remote_pkg.version.green()
-                    ),
+                tracing::info!(
+                    "{} {}: {} -> {}",
+                    "Updating".green(),
+                    pkg.name.cyan(),
+                    pkg.version.yellow(),
+                    remote_pkg.version.green()
                 );
 
                 // U2: Resolve dependencies for the updated package
@@ -128,15 +116,12 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
 
                 // Install any missing dependencies first
                 for dep in &missing_deps {
-                    info(
-                        quiet,
-                        format!(
-                            "  {} new dependency: {}",
-                            "Fetching".cyan(),
-                            dep.name.cyan()
-                        ),
+                    tracing::info!(
+                        "  {} new dependency: {}",
+                        "Fetching".cyan(),
+                        dep.name.cyan()
                     );
-                    debug(format!(
+                    tracing::debug!(
                         "{}: fetching dependency {} v{} from {}",
                         pkg.name,
                         dep.name,
@@ -144,15 +129,15 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                         dep.download_url
                             .as_deref()
                             .unwrap_or("<resolved by source>")
-                    ));
+                    );
 
                     let downloaded = ctx.downloader.download_and_extract(dep, !quiet)?;
 
-                    debug(format!(
+                    tracing::debug!(
                         "{}: dependency extracted to {}",
                         dep.name,
                         downloaded.extract_dir.display()
-                    ));
+                    );
 
                     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
                     let bin_path_str = downloaded
@@ -187,31 +172,31 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     &pre_env,
                 )?;
 
-                debug(format!(
+                tracing::debug!(
                     "{}: fetching v{} into cache {}",
                     pkg.name,
                     remote_pkg.version,
                     ctx.config.cache_dir.display()
-                ));
+                );
 
                 let downloaded = ctx.downloader.download_and_extract(&remote_pkg, !quiet)?;
 
-                debug(format!(
+                tracing::debug!(
                     "{}: extracted to {}",
                     remote_pkg.name,
                     downloaded.extract_dir.display()
-                ));
+                );
 
                 // U3: Clean old extracted directory before installing new one
                 let old_extract_dir = ctx
                     .config
                     .cache_dir
                     .join(format!("{}-{}", pkg.name, pkg.version));
-                debug(format!(
+                tracing::debug!(
                     "{}: pruning stale extract dir {}",
                     pkg.name,
                     old_extract_dir.display()
-                ));
+                );
                 let _ = std::fs::remove_dir_all(&old_extract_dir);
 
                 if let Some(binary_path) = &downloaded.binary_path {
@@ -250,14 +235,11 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                 updated_names.push(pkg.name.clone());
             }
             Err(e) => {
-                info(
-                    quiet,
-                    format!(
-                        "{} {} update failed: {}",
-                        "Failed".red(),
-                        pkg.name.cyan(),
-                        e
-                    ),
+                tracing::info!(
+                    "{} {} update failed: {}",
+                    "Failed".red(),
+                    pkg.name.cyan(),
+                    e
                 );
                 failed += 1;
                 failures.push(json!({ "name": pkg.name, "error": e.to_string() }));

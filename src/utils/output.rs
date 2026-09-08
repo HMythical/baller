@@ -13,24 +13,6 @@ pub fn print_json<T: Serialize>(value: &T) -> Result<(), BallError> {
     Ok(())
 }
 
-/// Emit a progress/status line unless output is suppressed.
-///
-/// Goes out through `tracing` at `INFO`, so it lands on stderr and stdout is
-/// left to the data a command produces.
-pub fn info(quiet: bool, message: impl AsRef<str>) {
-    if !quiet {
-        tracing::info!("{}", message.as_ref());
-    }
-}
-
-/// Emit verbose detail, seen only when `--verbose` raises the tracer to `DEBUG`.
-///
-/// No `quiet` argument: `--quiet` and `--json` already pin the tracer to
-/// `ERROR`, which drops these events before they are formatted.
-pub fn debug(message: impl AsRef<str>) {
-    tracing::debug!("{}", message.as_ref());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,13 +26,13 @@ mod tests {
 
     #[test]
     fn test_info_is_quiet_safe() {
-        info(true, "suppressed");
-        info(false, "printed");
+        tracing::info!(true, "suppressed");
+        tracing::info!(false, "printed");
     }
 
     #[test]
     fn test_debug_without_subscriber_is_safe() {
-        debug("verbose detail");
-        debug(format!("formatted {}", "detail"));
+        tracing::debug!("verbose detail");
+        tracing::debug!("formatted {}", "detail");
     }
 }

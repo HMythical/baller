@@ -42,3 +42,7 @@ build/winbuild/dist/
 *.key
 *.pem
 credentials
+
+#Local version-bump tooling
+/scripts/update_version.py
+/scripts/test_update_version.py

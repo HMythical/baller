@@ -676,11 +676,7 @@ fn report_cargo_plan(
 }
 
 /// Compile a Cargo project from source and install the binary it produces
-fn build_cargo_project(
-    ctx: &AppContext,
-    dir: &Path,
-    opts: &BuildOptions,
-) -> Result<(), BallError> {
+fn build_cargo_project(ctx: &AppContext, dir: &Path, opts: &BuildOptions) -> Result<(), BallError> {
     if opts.source.is_some() {
         return Err(BallError::InvalidConfig(
             "--source does not apply to a Cargo project — its sources are compiled from disk"

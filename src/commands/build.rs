@@ -1092,9 +1092,12 @@ mod tests {
         std::fs::write(dir.join(scanned), "binary").unwrap();
         std::fs::write(dir.join("my_tool.d"), "deps").unwrap();
 
+        let found =
+            locate_cargo_binary(&dir, "my-tool").expect("case-insensitive match should be found");
+        assert!(found.is_file());
         assert_eq!(
-            locate_cargo_binary(&dir, "my-tool"),
-            Some(dir.join(scanned))
+            found.file_name().unwrap().to_string_lossy().to_lowercase(),
+            scanned.to_lowercase()
         );
 
         let _ = std::fs::remove_dir_all(&dir);

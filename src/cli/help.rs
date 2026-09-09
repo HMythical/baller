@@ -19,7 +19,7 @@ struct BuiltinCommand {
     notes: &'static [&'static str],
 }
 
-const BUILTIN_COMMANDS: [BuiltinCommand; 10] = [
+const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
     BuiltinCommand {
         name: "draft",
         summary: "Drafts (Installs) a new player onto your team",
@@ -113,14 +113,19 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 10] = [
         summary: "Builds a package natively from a local manifest",
         usage: "baller build <PATH>",
         details: &[
-            "<PATH>           Manifest (.toml or .json) to build from",
+            "<PATH>           Manifest (.toml or .json) to build from, or a directory",
+            "                 containing a Cargo project (Rust sources are compiled",
+            "                 with 'cargo build --release' and installed)",
             "--dry-run        Parse and validate the manifest without installing",
             "--no-deps        Ignore the manifest's declared dependencies",
             "--install-dir    Link the binary into this directory instead of the default",
             "-f, --force      Build over an existing installation of the same package",
             "--source <SRC>   Override the manifest's source before resolving",
         ],
-        notes: &[],
+        notes: &[
+            "A Cargo project's dependencies are resolved by cargo itself, so",
+            "--source and --no-deps do not apply to one.",
+        ],
     },
     BuiltinCommand {
         name: "inject",
@@ -139,6 +144,13 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 10] = [
         summary: "Prints this message, or details for one command",
         usage: "baller help [COMMAND]",
         details: &["[COMMAND]  Built-in or injected command to describe"],
+        notes: &[],
+    },
+    BuiltinCommand {
+        name: "version",
+        summary: "Prints the current baller version",
+        usage: "baller version",
+        details: &[],
         notes: &[],
     },
 ];

@@ -23,8 +23,6 @@ use crate::{
     utils::logging::init_tracing,
 };
 
-pub const CRATE_VERSION: &str = "v0.1";
-
 fn main() {
     if let Err(e) = entry() {
         eprintln!("\n[Error]: {}", e);

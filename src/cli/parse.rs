@@ -1,4 +1,5 @@
 use crate::cli::help::execute_command_help;
+use crate::cli::version::execute_command_version;
 use crate::commands::build::{execute_build, BuildOptions};
 use crate::commands::draft::{execute_draft, DraftOptions};
 use crate::commands::eject::{execute_eject, EjectOptions};
@@ -213,6 +214,8 @@ pub enum CommandTypes {
         /// Built-in or injected command to describe
         command: Option<String>,
     },
+    /// Prints baller's version
+    Version,
     /// Any unknown subcommand: dispatched to an injected command, if one matches
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -368,6 +371,7 @@ impl BallerCommand {
             CommandTypes::Help { command } => {
                 execute_command_help(&resolve_baller_dir(&ctx.config), command.as_deref())
             }
+            CommandTypes::Version => execute_command_version(),
             CommandTypes::External(args) => {
                 let (name, rest) = args
                     .split_first()
@@ -683,6 +687,15 @@ mod tests {
                 assert_eq!(source, Some(SourceArg::Github));
             }
             other => panic!("expected Build, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_version_subcommand() {
+        let cmd = parse(&["baller", "version"]);
+        match cmd.command {
+            CommandTypes::Version => {}
+            other => panic!("expected Version, got {:?}", other),
         }
     }
 }

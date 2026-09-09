@@ -394,7 +394,9 @@ baller build <path> [--dry-run] [--no-deps] [--install-dir <DIR>] [-f] [--source
 
 Assembles a package from a local manifest instead of resolving a name through
 the registry chain. `<path>` is either a manifest file or a directory — a
-directory resolves `baller.toml` first, then `baller.json`.
+directory resolves `baller.toml` first, then `baller.json`. A directory that
+holds no manifest but does hold a `Cargo.toml` is compiled from source instead;
+see [Build a Rust project from source](#build-a-rust-project-from-source).
 
 **Flags:**
 | Flag | Description |
@@ -441,6 +443,39 @@ Manifest dependencies are recorded in the database but are **not** installed by
 Errors are explicit: manifest not found, no `baller.toml`/`baller.json` in the
 directory, missing required fields, an unknown source type, no resolvable
 download URL, a checksum mismatch, or an existing installation without `--force`.
+
+### Build a Rust project from source
+
+When `<path>` is a directory with no `baller.toml`/`baller.json` but with a
+`Cargo.toml`, `build` compiles the crate and installs the binary it produces:
+
+1. Read `package.name`, `package.version` (defaults to `0.0.0`) and the first
+   `[[bin]]` name (defaults to the package name) out of `Cargo.toml`.
+2. Run `cargo build --release` in the project directory.
+3. Locate the artifact in `target/release` (the bin name, then the same name
+   with `-` swapped for `_`, plus `.exe` on Windows).
+4. Link it into the platform default bin directory — `~/.local/bin` on Linux,
+   `%LOCALAPPDATA%\baller\bin` on Windows — or into `--install-dir`.
+5. Record the package with `source = cargo`, `manifest_path` set to the
+   `Cargo.toml` and `user_installed = true`, then run the `post_install` hook.
+
+```
+$ baller build ./mytool
+Building /home/me/dev/mytool/Cargo.toml...
+Compiling cargo build --release...
+Linked symlinked to /home/me/dev/mytool/target/release/mytool
+Done mytool v1.3.0 built!
+```
+
+Dependencies are resolved by cargo while compiling, so none are recorded and
+`--no-deps` does not apply; `--source` does not apply either, because the
+sources are the ones on disk. Both are rejected with an explicit error.
+`--dry-run`, `--force`, `--install-dir`, `--json` and `--quiet` all behave as
+they do for a manifest build.
+
+Only single-crate projects are supported — a workspace root (a `Cargo.toml`
+with no `[package]` name) is an error, and so is a build that leaves no
+matching binary in `target/release`.
 
 ---
 

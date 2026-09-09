@@ -20,6 +20,7 @@ use crate::{
     context::AppContext,
     error::error::BallError,
     utils::fs::ensure_dir,
+    utils::logging::init_tracing,
 };
 
 fn main() {
@@ -39,6 +40,15 @@ fn entry() -> Result<(), BallError> {
     if command.no_color {
         colored::control::set_override(false);
     }
+
+    // The tracer owns stderr from here on: every progress line and every
+    // verbose detail flows through it, leaving stdout to the data commands emit.
+    init_tracing(
+        command.verbose,
+        command.quiet,
+        command.json,
+        !command.no_color,
+    );
 
     let baller_dir = resolve_baller_dir(command.config.as_deref())?;
 

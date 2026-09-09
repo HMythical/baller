@@ -89,7 +89,7 @@ fn list_packages(ctx: &AppContext, opts: &RosterOptions) -> Result<(), BallError
     println!("{}", "─".repeat(60));
 
     for pkg in &pkgs {
-        if ctx.flags.verbose > 0 {
+        if ctx.flags.verbose {
             print_detail_block(ctx, pkg)?;
             continue;
         }

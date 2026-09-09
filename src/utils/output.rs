@@ -13,13 +13,6 @@ pub fn print_json<T: Serialize>(value: &T) -> Result<(), BallError> {
     Ok(())
 }
 
-/// Print a progress/status line unless output is suppressed.
-pub fn info(quiet: bool, message: impl AsRef<str>) {
-    if !quiet {
-        println!("{}", message.as_ref());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -33,7 +26,13 @@ mod tests {
 
     #[test]
     fn test_info_is_quiet_safe() {
-        info(true, "suppressed");
-        info(false, "printed");
+        tracing::info!(true, "suppressed");
+        tracing::info!(false, "printed");
+    }
+
+    #[test]
+    fn test_debug_without_subscriber_is_safe() {
+        tracing::debug!("verbose detail");
+        tracing::debug!("formatted {}", "detail");
     }
 }

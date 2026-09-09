@@ -15,7 +15,7 @@ use crate::core::injected::resolve_baller_dir;
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
 use clap::error::ErrorKind;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "baller")]
@@ -53,9 +53,9 @@ pub struct BallerCommand {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Increase output detail (repeatable)
-    #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
-    pub verbose: u8,
+    /// Increase output detail
+    #[arg(short = 'v', long, global = true)]
+    pub verbose: bool,
 }
 
 /// A registry source named on the command line
@@ -424,7 +424,7 @@ mod tests {
             "--no-color",
             "--config",
             "/tmp/baller",
-            "-vv",
+            "-v",
             "roster",
         ]);
 
@@ -432,7 +432,7 @@ mod tests {
         assert!(flags.quiet);
         assert!(flags.json);
         assert!(flags.is_quiet());
-        assert_eq!(flags.verbose, 2);
+        assert!(flags.verbose);
         assert!(cmd.no_hooks);
         assert!(cmd.no_color);
         assert_eq!(cmd.config.as_deref(), Some("/tmp/baller"));
@@ -445,7 +445,7 @@ mod tests {
         assert!(!flags.quiet);
         assert!(!flags.json);
         assert!(!flags.is_quiet());
-        assert_eq!(flags.verbose, 0);
+        assert!(!flags.verbose);
     }
 
     #[test]

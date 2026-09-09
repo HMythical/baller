@@ -7,7 +7,7 @@ use crate::core::hooks::{run_hook, HookType};
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use crate::utils::fs::confirm;
-use crate::utils::output::{info, print_json};
+use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -68,14 +68,11 @@ pub fn execute_substitute(
         }
     }
 
-    info(
-        quiet,
-        format!(
-            "{} {} with {}...",
-            "Substituting".cyan(),
-            old_package.cyan(),
-            new_package.cyan()
-        ),
+    tracing::info!(
+        "{} {} with {}...",
+        "Substituting".cyan(),
+        old_package.cyan(),
+        new_package.cyan()
     );
 
     // S2: Run pre-install hooks for all packages first (before any changes)
@@ -138,13 +135,10 @@ pub fn execute_substitute(
     }
 
     if opts.keep_old {
-        info(
-            quiet,
-            format!(
-                "{} {} left on the roster",
-                "Keeping".yellow(),
-                old_package.cyan()
-            ),
+        tracing::info!(
+            "{} {} left on the roster",
+            "Keeping".yellow(),
+            old_package.cyan()
         );
     } else {
         // Now remove the old package
@@ -152,13 +146,10 @@ pub fn execute_substitute(
         match ctx.db.remove_package(old_package) {
             Ok(_) => {}
             Err(BallError::PackageNotFound(_)) => {
-                info(
-                    quiet,
-                    format!(
-                        "{} '{}' was not in the roster",
-                        "Note".yellow(),
-                        old_package.cyan()
-                    ),
+                tracing::info!(
+                    "{} '{}' was not in the roster",
+                    "Note".yellow(),
+                    old_package.cyan()
                 );
             }
             Err(e) => {

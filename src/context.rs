@@ -30,7 +30,7 @@ pub struct GlobalFlags {
     pub yes: bool,
     pub quiet: bool,
     pub json: bool,
-    pub verbose: u8,
+    pub verbose: bool,
 }
 
 impl GlobalFlags {

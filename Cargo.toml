@@ -1,6 +1,6 @@
 [package]
 name = "baller"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2021"
 authors = ["HMythical <baller.support@gmail.com>"]
 description = "A package manager for Windows & Linux Similar to Chocolatey, but with a sense of syntactical humor!"

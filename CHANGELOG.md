@@ -14,7 +14,15 @@ with a custom scheme:
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Features
+
+- **`build` compiles and installs Rust projects from source** (Refs #9)
+  `baller build <dir>` now falls back to a Cargo build when the directory holds no `baller.toml`/`baller.json` but does hold a `Cargo.toml`: the crate name, version and first `[[bin]]` name are read from the manifest, `cargo build --release` runs in the project directory, and the artifact found in `target/release` is linked into the platform default bin directory (`~/.local/bin` on Linux, `%LOCALAPPDATA%\baller\bin` on Windows) or into `--install-dir`. The package is recorded with `source = cargo` and the `Cargo.toml` as its manifest path, and the `pre_install`/`post_install` hooks run as they do for a manifest build. `--dry-run`, `--force`, `--install-dir`, `--json` and `--quiet` are supported; `--source` and `--no-deps` are rejected because cargo resolves the project's dependencies itself. Manifest-driven builds are unchanged.
+
+### Other Changes
+
+- **Real `baller version` subcommand and env-driven package version** (Refs #29)
+  Removed the hard-coded, stale `CRATE_VERSION` const from `lib.rs` and `main.rs`. `baller version` is now a fully wired subcommand and prints `env!("CARGO_PKG_VERSION")`, and `Cargo.toml` was bumped to `0.1.5` so it reports the current release. Clap's `-V/--version` derives from the same source, keeping both outputs in sync.
 
 ---
 

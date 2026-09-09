@@ -41,7 +41,7 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
     let manifest_path = match resolve_manifest_path(path) {
         Ok(manifest) => manifest,
         Err(err) => match detect_cargo_project(path) {
-            Some(project_dir) => return build_cargo_project(ctx, &project_dir, opts, quiet),
+            Some(project_dir) => return build_cargo_project(ctx, &project_dir, opts),
             None => return Err(err),
         },
     };
@@ -680,7 +680,6 @@ fn build_cargo_project(
     ctx: &AppContext,
     dir: &Path,
     opts: &BuildOptions,
-    quiet: bool,
 ) -> Result<(), BallError> {
     if opts.source.is_some() {
         return Err(BallError::InvalidConfig(
@@ -699,10 +698,7 @@ fn build_cargo_project(
     let project_dir = dir.to_string_lossy().to_string();
     let manifest_str = dir.join("Cargo.toml").to_string_lossy().to_string();
 
-    info(
-        quiet,
-        format!("{} {}...", "Building".green().bold(), manifest_str.cyan()),
-    );
+    tracing::info!("{} {}...", "Building".green().bold(), manifest_str.cyan(),);
 
     let meta = read_cargo_meta(dir)?;
     let release_dir = dir.join("target").join("release");
@@ -732,10 +728,7 @@ fn build_cargo_project(
         &[],
     )?;
 
-    info(
-        quiet,
-        format!("{} cargo build --release...", "Compiling".green()),
-    );
+    tracing::info!("{} cargo build --release...", "Compiling".green(),);
     compile_cargo_project(dir)?;
 
     let binary_path = locate_cargo_binary(&release_dir, &meta.bin).ok_or_else(|| {
@@ -749,20 +742,14 @@ fn build_cargo_project(
     match &opts.install_dir {
         Some(install_dir) => {
             ActiveManager::create_symlink_in(Path::new(install_dir), &binary_path, &pkg.name)?;
-            info(
-                quiet,
-                format!("{} linked into {}", "Linked".green(), install_dir.cyan()),
-            );
+            tracing::info!("{} linked into {}", "Linked".green(), install_dir.cyan(),);
         }
         None => {
             ActiveManager::create_symlink(&binary_path, &pkg.name)?;
-            info(
-                quiet,
-                format!(
-                    "{} symlinked to {}",
-                    "Linked".green(),
-                    binary_path.display().to_string().cyan()
-                ),
+            tracing::info!(
+                "{} symlinked to {}",
+                "Linked".green(),
+                binary_path.display().to_string().cyan(),
             );
         }
     }

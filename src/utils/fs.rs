@@ -40,19 +40,19 @@ pub fn path_exists(path: &Path) -> bool {
     path.exists()
 }
 
-pub fn dir_size(path: &Path) -> u64 {
+pub fn dir_size(path: &Path) -> Result<u64, BallError> {
     let mut total = 0u64;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            if entry_path.is_file() {
-                total += entry_path.metadata().map(|m| m.len()).unwrap_or(0);
-            } else if entry_path.is_dir() {
-                total += dir_size(&entry_path);
-            }
+    for entry in fs::read_dir(path).map_err(BallError::FileIoErr)? {
+        let entry = entry.map_err(BallError::FileIoErr)?;
+        let entry_path = entry.path();
+        let metadata = entry.metadata().map_err(BallError::FileIoErr)?;
+        if metadata.is_file() {
+            total += metadata.len();
+        } else if metadata.is_dir() {
+            total += dir_size(&entry_path)?;
         }
     }
-    total
+    Ok(total)
 }
 
 #[allow(dead_code)]
@@ -392,7 +392,7 @@ mod tests {
     fn test_dir_size_empty() {
         let dir = std::env::temp_dir().join("baller_test_size_empty");
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(dir_size(&dir), 0);
+        assert_eq!(dir_size(&dir).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -402,7 +402,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
         std::fs::write(dir.join("b.txt"), b"world").unwrap();
-        assert_eq!(dir_size(&dir), 10);
+        assert_eq!(dir_size(&dir).unwrap(), 10);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -413,14 +413,16 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(dir.join("root.txt"), b"12345").unwrap();
         std::fs::write(sub.join("nested.txt"), b"67890").unwrap();
-        assert_eq!(dir_size(&dir), 10);
+        assert_eq!(dir_size(&dir).unwrap(), 10);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_dir_size_nonexistent() {
         let dir = Path::new("/nonexistent_dir_xyz_abc");
-        assert_eq!(dir_size(dir), 0);
+        assert!(
+            matches!(dir_size(dir), Err(BallError::FileIoErr(err)) if err.kind() == io::ErrorKind::NotFound)
+        );
     }
 
     #[test]

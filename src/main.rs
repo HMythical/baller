@@ -248,7 +248,7 @@ mod integration_tests {
         let result = security::verify_checksum(&file_path, &wrong_hash);
         assert!(result.is_err());
 
-        let dir_size = fs::dir_size(&dir);
+        let dir_size = fs::dir_size(&dir).unwrap();
         assert!(dir_size > 0);
 
         let sanitized = fs::sanitize_filename("hello:world?test=1&2");

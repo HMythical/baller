@@ -26,7 +26,7 @@ pub fn execute_sweep(ctx: &AppContext, opts: &SweepOptions) -> Result<(), BallEr
         .map(|meta| meta.len())
         .sum();
     let cache_bytes = if cache_dir.exists() {
-        util_fs::dir_size(cache_dir)
+        util_fs::dir_size(cache_dir)?
     } else {
         0
     };

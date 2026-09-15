@@ -58,19 +58,44 @@ Chocolatey), extracts, symlinks the binary, and records in the SQLite database.
 against GitHub alone. Dependencies still resolve through the normal chain.
 
 ```
-$ baller draft ripgrep --version 14.1.0 --dry-run
-Dry run ripgrep v14.1.0 from chocolatey
-  • ripgrep v14.1.0 (root, install)
+$ baller draft BurntSushi/ripgrep --source github --dry-run
+Dry run ripgrep v15.2.0 from github:BurntSushi/ripgrep
+  • ripgrep v15.2.0 (root, install)
+    Download: https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz
 Note nothing was installed
 ```
+
+Each plan entry carries the exact artifact that would be downloaded on a
+`Download:` line, and `--json` reports the same value as `download_url`.
+Packages whose artifact is resolved by the native tool at install time —
+system and cargo — print `<resolved by source>` instead:
+
+```
+$ baller draft jq --source system --dry-run
+Dry run jq v1.7.1-6+deb13u3 from system:apt
+  • jq v1.7.1-6+deb13u3 (root, install)
+    Download: <resolved by source>
+Note nothing was installed
+```
+
+Because the GitHub asset is chosen while the package is fetched, a release with
+no build for the host platform now fails the dry run with `NoMatchingAsset`
+instead of reporting a plan that cannot work — see
+[error-handling.md](error-handling.md#github-source-asset-errors). `-v` logs
+the chosen asset's file name alongside the URL.
 
 ### Installation Modes
 
 The `draft` command follows one of four code paths depending on the package
 source:
 
-**Archive mode** (GitHub, Baller Registry): download archive →
-SHA-256 verify → extract → symlink binary → record in DB.
+**Archive mode** (GitHub, Baller Registry): select the asset matching the host
+platform → download archive → SHA-256 verify → extract → symlink binary →
+record in DB. A GitHub release with no build for this platform fails with
+`NoMatchingAsset`, and an archive that extracts without an executable fails
+with `NoBinaryFound` — in both cases nothing is linked and nothing reaches the
+roster. See
+[error-handling.md](error-handling.md#github-source-asset-errors).
 
 **Chocolatey mode** (Chocolatey/NuGet): download `.nupkg` archive →
 SHA-512 verify (base64 hash decoded from Chocolatey API) → extract as zip →

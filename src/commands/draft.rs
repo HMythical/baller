@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
+use crate::core::downloader::DownloadedPackage;
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistrySource;
@@ -204,24 +205,21 @@ pub fn execute_draft(
         );
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-        let bin_path_str = downloaded
-            .binary_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
 
-        if let Some(binary_path) = &downloaded.binary_path {
-            ActiveManager::create_symlink(binary_path, &pkg_to_install.name)?;
-            tracing::info!(
-                "{} symlinked to {}",
-                "Linked".green(),
-                binary_path.display().to_string().cyan()
-            );
-        } else {
-            tracing::info!(
-                "{} no binary found in extracted package",
-                "Warning".yellow()
-            );
-        }
+        // An extracted tree with no executable cannot be installed: linking,
+        // recording it on the roster and reporting success would all be lies.
+        let binary_path = match downloaded.binary_path.as_ref() {
+            Some(path) => path.clone(),
+            None => return Err(fail_without_binary(ctx, pkg_to_install, &downloaded)),
+        };
+        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+        ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
+        tracing::info!(
+            "{} symlinked to {}",
+            "Linked".green(),
+            binary_path.display().to_string().cyan()
+        );
 
         // Pass user_installed=true for root packages, false for deps
         let is_root = pkg_to_install.name == pkg.name;
@@ -274,6 +272,46 @@ pub fn execute_draft(
     Ok(())
 }
 
+/// Turn a binary-less extraction into `NoBinaryFound`, leaving no cache behind.
+///
+/// The extract directory and the cached archive are both removed so a retry
+/// re-downloads instead of reusing a package that produced nothing runnable.
+/// Cleanup failures are reported at `--verbose` and never mask the real error.
+fn fail_without_binary(
+    ctx: &AppContext,
+    pkg: &Package,
+    downloaded: &DownloadedPackage,
+) -> BallError {
+    let err = BallError::NoBinaryFound {
+        package: pkg.name.clone(),
+        version: pkg.version.clone(),
+        dir: downloaded.extract_dir.to_string_lossy().to_string(),
+        archive: Some(downloaded.archive_path.to_string_lossy().to_string()),
+    };
+
+    if let Err(cleanup_err) = ctx.downloader.remove_extracted(pkg) {
+        tracing::debug!(
+            "{}: could not remove extract dir {}: {}",
+            pkg.name,
+            downloaded.extract_dir.display(),
+            cleanup_err
+        );
+    }
+
+    if let Some(url) = pkg.download_url.as_deref() {
+        if let Err(cleanup_err) = ctx.downloader.remove_archive(url) {
+            tracing::debug!(
+                "{}: could not remove cached archive for {}: {}",
+                pkg.name,
+                url,
+                cleanup_err
+            );
+        }
+    }
+
+    err
+}
+
 /// The registry order this draft will consult, as `--verbose` reports it.
 ///
 /// `--source` pins resolution to one registry, so the configured chain is only
@@ -324,6 +362,7 @@ fn report_plan(
                     "source": source_label(&pkg.source),
                     "role": if pkg.name == root.name { "root" } else { "dependency" },
                     "action": plan_action(pkg, installed, opts),
+                    "download_url": pkg.download_url,
                 })
             })
             .collect();
@@ -359,6 +398,10 @@ fn report_plan(
             role,
             plan_action(pkg, installed, opts)
         );
+        match pkg.download_url.as_deref() {
+            Some(url) => println!("    {} {}", "Download:".yellow(), url),
+            None => println!("    {} <resolved by source>", "Download:".yellow()),
+        }
     }
 
     println!("{} nothing was installed", "Note".yellow());

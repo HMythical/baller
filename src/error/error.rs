@@ -24,6 +24,33 @@ pub enum BallError {
         msg: String,
     },
     ConfirmationAborted,
+    /// No release asset matches the host platform.
+    ///
+    /// A hard error: only `PackageNotFound` is skippable during dependency
+    /// resolution (`core::dep_solver`), so this aborts the command rather than
+    /// letting an install proceed with an asset built for another platform.
+    NoMatchingAsset {
+        /// The package the release belongs to
+        package: String,
+        /// The host platform, as `<os>-<arch>`
+        platform: String,
+        /// Every asset name the release offered, for diagnosis
+        assets: Vec<String>,
+    },
+    /// An archive extracted cleanly but held no executable for this host.
+    ///
+    /// A hard error for the same reason as `NoMatchingAsset`: the package is
+    /// not recorded on the roster, because nothing installable was produced.
+    NoBinaryFound {
+        /// The package that was extracted
+        package: String,
+        /// The version that was extracted
+        version: String,
+        /// The extract directory that was searched
+        dir: String,
+        /// The cached archive it came from, when one is known
+        archive: Option<String>,
+    },
 }
 
 impl fmt::Display for BallError {
@@ -80,6 +107,38 @@ impl fmt::Display for BallError {
             }
 
             BallError::ConfirmationAborted => write!(f, "Aborted"),
+
+            BallError::NoMatchingAsset {
+                package,
+                platform,
+                assets,
+            } => {
+                let available = if assets.is_empty() {
+                    "none".to_string()
+                } else {
+                    assets.join(", ")
+                };
+                write!(
+                    f,
+                    "no {} asset for '{}' — available: {} (specify a different source or version)",
+                    platform, package, available
+                )
+            }
+
+            BallError::NoBinaryFound {
+                package,
+                version,
+                dir,
+                archive,
+            } => write!(
+                f,
+                "no binary found in extracted package '{}' v{} — expected an executable for {} in {} (archive: {})",
+                package,
+                version,
+                std::env::consts::OS,
+                dir,
+                archive.as_deref().unwrap_or("<none>")
+            ),
         }
     }
 }
@@ -195,6 +254,59 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("injected command error"));
         assert!(msg.contains("'my-tool' is not injected"));
+    }
+
+    #[test]
+    fn test_no_matching_asset_display() {
+        let err = BallError::NoMatchingAsset {
+            package: "ripgrep".to_string(),
+            platform: "linux-x86_64".to_string(),
+            assets: vec![
+                "ripgrep-aarch64-apple-darwin.tar.gz".to_string(),
+                "ripgrep.deb".to_string(),
+            ],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("no linux-x86_64 asset for 'ripgrep'"));
+        assert!(msg.contains("ripgrep-aarch64-apple-darwin.tar.gz, ripgrep.deb"));
+        assert!(msg.contains("specify a different source or version"));
+    }
+
+    #[test]
+    fn test_no_matching_asset_display_with_no_assets() {
+        let err = BallError::NoMatchingAsset {
+            package: "empty".to_string(),
+            platform: "windows-x86_64".to_string(),
+            assets: Vec::new(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("available: none"));
+    }
+
+    #[test]
+    fn test_no_binary_found_display() {
+        let err = BallError::NoBinaryFound {
+            package: "tool".to_string(),
+            version: "1.2.3".to_string(),
+            dir: "/cache/tool-1.2.3".to_string(),
+            archive: Some("/cache/tool.tar.gz".to_string()),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("no binary found in extracted package 'tool' v1.2.3"));
+        assert!(msg.contains("/cache/tool-1.2.3"));
+        assert!(msg.contains("archive: /cache/tool.tar.gz"));
+    }
+
+    #[test]
+    fn test_no_binary_found_display_without_archive() {
+        let err = BallError::NoBinaryFound {
+            package: "tool".to_string(),
+            version: "1.2.3".to_string(),
+            dir: "/cache/tool-1.2.3".to_string(),
+            archive: None,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("archive: <none>"));
     }
 
     #[test]

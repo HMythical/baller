@@ -21,6 +21,17 @@ with a custom scheme:
 
 ### Fixed
 
+- **`draft` no longer installs another platform's release asset and calls it a success** (Closes #13)
+  GitHub asset selection matched the literal string `linux-x86_64` — a naming scheme almost no project uses — with a single case-sensitive `contains`, and fell back to `release.assets.first()` when that missed. `baller draft <owner>/<repo> --source github` therefore downloaded whatever asset happened to be listed first: a macOS `.dmg`, a `.deb`, or a `checksums.txt`.
+
+  `src/http/github.rs` now selects in two stages. Assets are **excluded** first by lowercased name — distro packages, installers, signatures, checksum and metadata files, foreign-OS tokens (`darwin`, `macos`, `apple`, `android`, `*bsd`, plus `windows` on Linux and `linux` on Windows) and foreign-arch tokens (the arm64 family, `riscv`, `ppc64`, `s390x`, `i686`, `386` on an amd64 host, and the mirror set on arm64). The survivors are then **matched** against the host's candidate tags, most specific first: Rust target triples (gnu preferred over musl), Go-style `linux_amd64` names, then bare `x86_64` / `amd64` tokens. Where a release ships both a bare binary and an archive of the same build, the archive wins, since only an archive can be extracted. The `assets.first()` fallback and `detect_arch_string()` are gone: a release with no host build is now a hard `NoMatchingAsset` error naming the platform and listing every asset offered.
+
+  `draft` also stops recording packages it could not install. "No binary found in extracted package" was a warning that fell through to `insert_package` and exited 0, leaving a roster entry with no symlink; it is now a hard `NoBinaryFound` error, and both the `<name>-<version>` extract directory and the cached archive are removed so a retry starts clean.
+
+  `--dry-run` gained a `Download:` line under each plan entry showing the exact asset URL (`download_url` in `--json`), mirroring `build`'s dry run; system and cargo packages print `<resolved by source>`. Because the asset is chosen during fetch, a repo with no host asset now fails the dry run too, instead of reporting a plan that cannot work. `-v` additionally logs the chosen asset's file name as it is selected.
+
+  The same no-binary guard for `substitute`, `update` and `build` is a deliberate follow-up.
+
 - The case-insensitive artifact lookup in `build` passes on Windows
   `test_locate_cargo_binary_scans_for_a_case_insensitive_match` compared `PathBuf`s byte-for-byte, which fails on case-insensitive filesystems: the direct name lookup returns the requested (lowercased) spelling while the scan returns the on-disk spelling. The test now lowercases the compared file names, making it platform-agnostic.
 

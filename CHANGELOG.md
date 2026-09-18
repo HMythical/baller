@@ -30,7 +30,12 @@ with a custom scheme:
 
   `--dry-run` gained a `Download:` line under each plan entry showing the exact asset URL (`download_url` in `--json`), mirroring `build`'s dry run; system and cargo packages print `<resolved by source>`. Because the asset is chosen during fetch, a repo with no host asset now fails the dry run too, instead of reporting a plan that cannot work. `-v` additionally logs the chosen asset's file name as it is selected.
 
-  The same no-binary guard for `substitute`, `update` and `build` is a deliberate follow-up.
+- **`build`, `substitute` and `update` stop recording packages they could not install** (Refs #13)
+  The follow-up to the `draft` fix above. All three shared the pattern issue #13 reported: `if let Some(binary_path) = &downloaded.binary_path` linked the binary when one was found and fell through to `insert_package` when one was not, so an archive that extracted without an executable still produced a roster entry, a "Done … built!" message and exit code 0. `build` announced it with `Warning no binary found in extracted package`; `substitute` and `update` said nothing at all.
+
+  All four call sites — `build`, `substitute`, and both of `update`'s (installing a newly declared dependency, and upgrading a package) — now fail with `NoBinaryFound` before anything is linked or recorded. The cleanup that `draft` performs moved to `Downloader::no_binary_error`, so every command removes the `<name>-<version>` extract directory and the cached archive on the way out and a retry starts clean.
+
+  Per command: `build` links nothing into the platform default or `--install-dir`; `substitute` fails **before** ejecting the old package, so a broken replacement can no longer cost you a working one; `update` aborts the upgrade (note that it prunes the old extract directory before unpacking the new archive, so restoring a package whose new release ships no usable asset needs a `draft --force`).
 
 - The case-insensitive artifact lookup in `build` passes on Windows
   `test_locate_cargo_binary_scans_for_a_case_insensitive_match` compared `PathBuf`s byte-for-byte, which fails on case-insensitive filesystems: the direct name lookup returns the requested (lowercased) spelling while the scan returns the on-disk spelling. The test now lowercases the compared file names, making it platform-agnostic.

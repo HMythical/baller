@@ -16,7 +16,6 @@ pub struct Downloader {
 
 #[derive(Debug, Clone)]
 pub struct DownloadedPackage {
-    #[allow(dead_code)]
     pub archive_path: PathBuf,
     pub extract_dir: PathBuf,
     pub binary_path: Option<PathBuf>,
@@ -277,13 +276,52 @@ impl Downloader {
         Ok(true)
     }
 
-    #[allow(dead_code)]
     pub fn remove_extracted(&self, pkg: &Package) -> Result<(), BallError> {
         let extract_dir = self.cache_dir.join(format!("{}-{}", pkg.name, pkg.version));
         if extract_dir.exists() {
             fs::remove_dir_all(&extract_dir).map_err(BallError::FileIoErr)?;
         }
         Ok(())
+    }
+
+    /// The error for an extraction that produced no executable, with the cache
+    /// cleaned out first.
+    ///
+    /// An extracted tree with no binary cannot be installed, so linking it,
+    /// recording it or reporting success would all be lies — every command that
+    /// extracts an archive routes that case through here. The extract directory
+    /// and the cached archive are both removed so a retry re-downloads instead
+    /// of reusing a package that produced nothing runnable; cleanup failures are
+    /// reported at `--verbose` and never mask the real error.
+    pub fn no_binary_error(&self, pkg: &Package, downloaded: &DownloadedPackage) -> BallError {
+        let err = BallError::NoBinaryFound {
+            package: pkg.name.clone(),
+            version: pkg.version.clone(),
+            dir: downloaded.extract_dir.to_string_lossy().to_string(),
+            archive: Some(downloaded.archive_path.to_string_lossy().to_string()),
+        };
+
+        if let Err(cleanup_err) = self.remove_extracted(pkg) {
+            tracing::debug!(
+                "{}: could not remove extract dir {}: {}",
+                pkg.name,
+                downloaded.extract_dir.display(),
+                cleanup_err
+            );
+        }
+
+        if let Some(url) = pkg.download_url.as_deref() {
+            if let Err(cleanup_err) = self.remove_archive(url) {
+                tracing::debug!(
+                    "{}: could not remove cached archive for {}: {}",
+                    pkg.name,
+                    url,
+                    cleanup_err
+                );
+            }
+        }
+
+        err
     }
 }
 

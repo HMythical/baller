@@ -3,7 +3,6 @@ use serde_json::json;
 
 use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
-use crate::core::downloader::DownloadedPackage;
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistrySource;
@@ -210,7 +209,7 @@ pub fn execute_draft(
         // recording it on the roster and reporting success would all be lies.
         let binary_path = match downloaded.binary_path.as_ref() {
             Some(path) => path.clone(),
-            None => return Err(fail_without_binary(ctx, pkg_to_install, &downloaded)),
+            None => return Err(ctx.downloader.no_binary_error(pkg_to_install, &downloaded)),
         };
         let bin_path_str = Some(binary_path.to_string_lossy().to_string());
 
@@ -270,46 +269,6 @@ pub fn execute_draft(
     }
 
     Ok(())
-}
-
-/// Turn a binary-less extraction into `NoBinaryFound`, leaving no cache behind.
-///
-/// The extract directory and the cached archive are both removed so a retry
-/// re-downloads instead of reusing a package that produced nothing runnable.
-/// Cleanup failures are reported at `--verbose` and never mask the real error.
-fn fail_without_binary(
-    ctx: &AppContext,
-    pkg: &Package,
-    downloaded: &DownloadedPackage,
-) -> BallError {
-    let err = BallError::NoBinaryFound {
-        package: pkg.name.clone(),
-        version: pkg.version.clone(),
-        dir: downloaded.extract_dir.to_string_lossy().to_string(),
-        archive: Some(downloaded.archive_path.to_string_lossy().to_string()),
-    };
-
-    if let Err(cleanup_err) = ctx.downloader.remove_extracted(pkg) {
-        tracing::debug!(
-            "{}: could not remove extract dir {}: {}",
-            pkg.name,
-            downloaded.extract_dir.display(),
-            cleanup_err
-        );
-    }
-
-    if let Some(url) = pkg.download_url.as_deref() {
-        if let Err(cleanup_err) = ctx.downloader.remove_archive(url) {
-            tracing::debug!(
-                "{}: could not remove cached archive for {}: {}",
-                pkg.name,
-                url,
-                cleanup_err
-            );
-        }
-    }
-
-    err
 }
 
 /// The registry order this draft will consult, as `--verbose` reports it.

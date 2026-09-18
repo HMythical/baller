@@ -59,8 +59,11 @@ no project uses — and fell back to `release.assets.first()`, so `draft` happil
 downloaded a macOS `.dmg` or a `.deb` and reported success (issue #13).
 
 If the download and extraction succeed but no executable is found in the
-extracted tree, `draft` fails with `NoBinaryFound` rather than warning and
-continuing:
+extracted tree, the command fails with `NoBinaryFound` rather than warning and
+continuing. Every command that extracts an archive enforces this —
+`draft`, `build`, `substitute` and `update` (both when it installs a newly
+declared dependency and when it upgrades a package) all route the case through
+`Downloader::no_binary_error`:
 
 ```
 [Error]: no binary found in extracted package 'ripgrep' v15.2.0 — expected an
@@ -142,17 +145,21 @@ messages:
 
 See [docs/cargo-registry.md](cargo-registry.md) for the full error table.
 
-## What a Failed `draft` Leaves Behind
+## What a Failed Install Leaves Behind
 
 A package that fails one of the hard errors above leaves **nothing** of itself
 on disk or in the database: no symlink, no roster row, no extract directory and
 no cached archive. A retry therefore re-downloads from scratch rather than
 reusing a half-usable cache.
 
-Packages that already installed successfully earlier in the same `draft` run
-are not affected by a later failure. In practice a GitHub root has no
-dependency metadata, so a GitHub `draft` installs exactly one package and the
-distinction rarely arises.
+Per command:
+
+| Command | On `NoBinaryFound` |
+|---------|--------------------|
+| `draft` | The package is not linked and not recorded. Packages installed earlier in the same run stay installed |
+| `build` | Nothing is linked (neither the platform default nor `--install-dir`) and no row is written, so the manifest can be fixed and rebuilt |
+| `substitute` | Fails **before** the old package is ejected, so the roster keeps the working package rather than losing it for an unusable replacement |
+| `update` | The upgrade aborts. `update` prunes the old extract directory before unpacking the new archive, so the previously linked binary is gone — re-run `draft --force` (or `update` once upstream ships a usable asset) to restore it |
 
 ## Rollback on Partial Failure
 

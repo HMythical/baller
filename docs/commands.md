@@ -308,6 +308,10 @@ Pass the global `--yes`/`-y` to skip the prompt.
 | `--dry-run` | List what would be installed and ejected, then stop |
 | `--no-deps` | Install the new root package alone |
 
+If the replacement extracts without an executable, the substitution fails with
+`NoBinaryFound` **before** the old package is ejected, so a broken replacement
+cannot cost you a working package.
+
 **Example:**
 ```
 $ baller substitute ripgrep hound
@@ -447,7 +451,8 @@ The pipeline mirrors `draft`:
    - Baller registry source → resolve from the manifest's registry `url`.
    - System source → install via the native package manager (Linux only).
 4. Verify the checksum when the manifest carries one, extract the archive, and
-   locate the binary.
+   locate the binary. An archive that extracts without an executable fails with
+   `NoBinaryFound`, leaving nothing linked and nothing on the roster.
 5. Link the binary (symlink on Linux, `.exe` copy on Windows).
 6. Record the package in the database with `manifest_path` set and
    `user_installed = true`, then run the `post_install` hook.

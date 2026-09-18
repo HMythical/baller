@@ -174,9 +174,11 @@ BALLER supports four installation paths, selected automatically based on
 - **Archive path** (GitHub / BallerRegistry): select the asset built for the
   host platform → download archive → SHA-256 hex verify → extract → locate the
   binary → symlink it → record in DB. Locating the binary gates the rest: if
-  the extracted tree holds no executable, `draft` fails with `NoBinaryFound`,
-  removes the extract directory and the cached archive, and writes no database
-  row — it never links or records a package it could not install. See
+  the extracted tree holds no executable, the command fails with
+  `NoBinaryFound`, removes the extract directory and the cached archive, and
+  writes no database row — it never links or records a package it could not
+  install. `Downloader::no_binary_error` implements that cleanup once, and
+  `draft`, `build`, `substitute` and `update` all call it. See
   [error-handling.md](error-handling.md#github-source-asset-errors) for how
   the GitHub asset is chosen.
 - **Chocolatey path** (Chocolatey/NuGet): download `.nupkg` archive →

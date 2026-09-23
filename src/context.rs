@@ -4,6 +4,7 @@ use crate::core::downloader::Downloader;
 use crate::core::registry::{RegistryClient, RegistrySource};
 use crate::error::error::BallError;
 use crate::http::HttpClient;
+use crate::security::Referee;
 use crate::utils::fs::ensure_dir;
 
 /// Resolve the configured `source_order` into the chain the registry client
@@ -31,6 +32,11 @@ pub struct GlobalFlags {
     pub quiet: bool,
     pub json: bool,
     pub verbose: bool,
+    /// `--no-referee`: the CLI escape hatch out of the security layer.
+    ///
+    /// Distinct from `referee.enabled = false` in `baller.conf`: config is the
+    /// policy default, the flag is a per-invocation override.
+    pub no_referee: bool,
 }
 
 impl GlobalFlags {
@@ -49,6 +55,7 @@ pub struct AppContext {
     pub http_client: HttpClient,
     pub registry: RegistryClient,
     pub downloader: Downloader,
+    pub referee: Referee,
     pub flags: GlobalFlags,
 }
 
@@ -60,6 +67,18 @@ impl AppContext {
         let http_client = HttpClient::new()?;
         let db = DbManager::init_at_path(&config.db_path)?;
         let downloader = Downloader::new(config.cache_dir.clone(), http_client.clone());
+
+        // Referee is off when either the config or the flag says so: the
+        // config sets the policy, the flag overrides it for one run.
+        let referee = Referee::new(
+            http_client.clone(),
+            config.referee.enabled && !flags.no_referee,
+            config.referee.thresholds(),
+            config.referee.fail_policy,
+            config.referee.osv_base_url.clone(),
+            config.referee.virustotal_api_key.clone(),
+            config.referee.virustotal_base_url.clone(),
+        );
 
         let effective_order = effective_source_order(&config.registry);
 
@@ -77,6 +96,7 @@ impl AppContext {
             http_client,
             registry,
             downloader,
+            referee,
             flags,
         })
     }

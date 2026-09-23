@@ -1,5 +1,20 @@
 use std::fmt;
 
+use crate::security::scan::ScanFinding;
+use crate::security::verdict::MatchedAdvisory;
+
+/// One advisory as a blocked install reports it: id, aliases, score, summary.
+pub type AdvisoryRef = MatchedAdvisory;
+
+/// A package the advisory gate refused to install, and why.
+#[derive(Debug, Clone)]
+pub struct BlockedPackage {
+    pub package: String,
+    pub version: String,
+    pub advisories: Vec<AdvisoryRef>,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub enum BallError {
     UnsupportedOs(String),
@@ -50,6 +65,31 @@ pub enum BallError {
         dir: String,
         /// The cached archive it came from, when one is known
         archive: Option<String>,
+    },
+    /// Referee's advisory gate refused the plan.
+    ///
+    /// Raised before the install loop runs, so nothing has been downloaded,
+    /// linked or recorded: the block is all-or-nothing by construction. Every
+    /// package that crossed the block threshold is listed, because fixing one
+    /// and rediscovering the next one at a time helps nobody.
+    RefereeBlocked {
+        packages: Vec<BlockedPackage>,
+    },
+    /// Referee's artifact scan refused a downloaded package.
+    ///
+    /// Raised after extraction and before linking; the caller purges the
+    /// extract directory and the cached archive on the way out.
+    RefereeScanBlocked {
+        package: String,
+        version: String,
+        findings: Vec<ScanFinding>,
+    },
+    /// The advisory service could not be reached.
+    ///
+    /// Only fatal under `fail_policy = fail-closed`; the default fail-open
+    /// path reports the affected packages as `Unverified` and continues.
+    RefereeUnavailable {
+        message: String,
     },
 }
 
@@ -123,6 +163,54 @@ impl fmt::Display for BallError {
                     "no {} asset for '{}' — available: {} (specify a different source or version)",
                     platform, package, available
                 )
+            }
+
+            BallError::RefereeBlocked { packages } => {
+                writeln!(
+                    f,
+                    "referee blocked {} package(s); nothing was installed",
+                    packages.len()
+                )?;
+                for (index, blocked) in packages.iter().enumerate() {
+                    if index > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(
+                        f,
+                        "\t{} v{} — {}",
+                        blocked.package, blocked.version, blocked.reason
+                    )?;
+                    for advisory in &blocked.advisories {
+                        write!(f, "\n\t  • {}", advisory.describe())?;
+                    }
+                }
+                write!(
+                    f,
+                    "\n\trun with --no-referee to install anyway, or raise referee.block_at"
+                )
+            }
+
+            BallError::RefereeScanBlocked {
+                package,
+                version,
+                findings,
+            } => {
+                writeln!(
+                    f,
+                    "referee blocked the downloaded archive for '{}' v{} — the download was discarded",
+                    package, version
+                )?;
+                for (index, finding) in findings.iter().enumerate() {
+                    if index > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(f, "\t• {}", finding.describe())?;
+                }
+                Ok(())
+            }
+
+            BallError::RefereeUnavailable { message } => {
+                write!(f, "referee could not verify this install: {}", message)
             }
 
             BallError::NoBinaryFound {

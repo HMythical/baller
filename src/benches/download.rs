@@ -28,6 +28,8 @@ pub fn bench_download_performance(c: &mut Criterion) {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         };
 
         b.iter(|| {

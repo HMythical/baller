@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde_json::json;
 
-use crate::commands::draft::source_label;
+use crate::commands::draft::{screen_artifact, source_label};
 use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
@@ -114,6 +114,18 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     .filter(|dep| dep.name != pkg.name && !installed.contains_key(&dep.name))
                     .collect();
 
+                // Referee Phase A: the upgrade and every dependency it pulls in
+                // are checked before anything is downloaded, so a blocked
+                // upgrade leaves the working installed version untouched.
+                let mut plan: Vec<Package> = vec![remote_pkg.clone()];
+                plan.extend(missing_deps.iter().map(|dep| (*dep).clone()));
+
+                let gate = ctx.referee.gate(&ctx.db, &plan)?;
+                gate.report(quiet);
+                if let Some(blocked) = gate.block_error() {
+                    return Err(blocked);
+                }
+
                 // Install any missing dependencies first
                 for dep in &missing_deps {
                     tracing::info!(
@@ -138,6 +150,8 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                         dep.name,
                         downloaded.extract_dir.display()
                     );
+
+                    screen_artifact(ctx, dep, &downloaded)?;
 
                     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
 
@@ -188,6 +202,11 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     remote_pkg.name,
                     downloaded.extract_dir.display()
                 );
+
+                // Referee Phase B runs *before* the old extract directory is
+                // pruned: a rejected upgrade must not also cost the user the
+                // version they already had working.
+                screen_artifact(ctx, &remote_pkg, &downloaded)?;
 
                 // U3: Clean old extracted directory before installing new one
                 let old_extract_dir = ctx

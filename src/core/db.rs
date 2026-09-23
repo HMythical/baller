@@ -35,8 +35,44 @@ pub struct InstalledPackage {
     pub manifest_path: Option<String>,
     #[allow(dead_code)]
     pub installed_at: String,
+    /// The package's self-declared advisory identity, as JSON.
+    ///
+    /// Kept on the roster so `baller referee` can re-check a package under the
+    /// same identity the install checked it under. Without it an audit would
+    /// know strictly less than the install did, which is the one thing an
+    /// audit must not do.
+    pub advisory: Option<String>,
     #[allow(dead_code)]
     pub dependencies: Vec<String>,
+}
+
+impl InstalledPackage {
+    /// Rebuild the `Package` this roster row was recorded from.
+    ///
+    /// Lossy by design: the roster keeps what an install produced, not the
+    /// registry document it came from. It keeps enough for Referee — name,
+    /// version, source and repository — which is exactly what advisory
+    /// identities are built out of.
+    pub fn to_package(&self) -> Package {
+        Package {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            description: self.description.clone(),
+            author: self.author.clone(),
+            repository: self.repository.clone(),
+            architectures: None,
+            dependencies: None,
+            sha256: self.sha256.clone(),
+            hash_algorithm: None,
+            download_url: self.download_url.clone(),
+            source: deserialize_source(&self.source, self.source_detail.as_deref()),
+            advisory: self
+                .advisory
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok()),
+            vulnerabilities: Vec::new(),
+        }
+    }
 }
 
 pub struct DbManager {
@@ -83,7 +119,8 @@ impl DbManager {
                 install_path TEXT NOT NULL,
                 bin_path TEXT,
                 manifest_path TEXT,
-                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                installed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                advisory TEXT
             );
 
             CREATE TABLE IF NOT EXISTS package_dependencies (
@@ -99,6 +136,17 @@ impl DbManager {
                 version TEXT NOT NULL,
                 source TEXT NOT NULL,
                 sha256 TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS referee_cache (
+                ecosystem   TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                verdict     TEXT NOT NULL,
+                risk        REAL,
+                advisories  TEXT NOT NULL,
+                checked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (ecosystem, name, version)
             );",
         )
         .map_err(|e| BallError::InvalidConfig(format!("failed to create schema: {}", e)))?;
@@ -117,6 +165,23 @@ impl DbManager {
             // Backfill: entries without the column get default value of 1
         }
 
+        // Migration: add the advisory column to databases written before
+        // Referee existed. Existing rows get NULL, which reads as "declared
+        // nothing" — the same answer a package without the section gives.
+        let has_advisory: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if has_advisory == 0 {
+            let _ = conn.execute(
+                "ALTER TABLE installed_packages ADD COLUMN advisory TEXT",
+                [],
+            );
+        }
+
         Ok(Self { conn })
     }
 
@@ -129,10 +194,17 @@ impl DbManager {
         user_installed: bool,
     ) -> Result<(), BallError> {
         let (source, source_detail) = serialize_source(&pkg.source);
+        // A declaration that cannot be re-encoded is dropped rather than
+        // failing the install: it is metadata about the package, not the
+        // package.
+        let advisory = pkg
+            .advisory
+            .as_ref()
+            .and_then(|declaration| serde_json::to_string(declaration).ok());
 
         self.conn.execute(
-            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, user_installed, install_path, bin_path, manifest_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, user_installed, install_path, bin_path, manifest_path, advisory)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(name) DO UPDATE SET
                  version=excluded.version,
                  source=excluded.source,
@@ -146,11 +218,13 @@ impl DbManager {
                  install_path=excluded.install_path,
                  bin_path=excluded.bin_path,
                  manifest_path=excluded.manifest_path,
+                 advisory=excluded.advisory,
                  installed_at=datetime('now')",
             params![
                 pkg.name, pkg.version, source, source_detail,
                 pkg.description, pkg.author, pkg.repository,
-                pkg.download_url, pkg.sha256, user_installed, install_path, bin_path, manifest_path
+                pkg.download_url, pkg.sha256, user_installed, install_path, bin_path, manifest_path,
+                advisory
             ],
         ).map_err(|e| BallError::InvalidConfig(format!("failed to insert package '{}': {}", pkg.name, e)))?;
 
@@ -215,7 +289,7 @@ impl DbManager {
     pub fn get_package(&self, name: &str) -> Result<InstalledPackage, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE name = ?1"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -237,6 +311,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -253,7 +328,7 @@ impl DbManager {
     pub fn list_packages(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -275,6 +350,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -290,7 +366,7 @@ impl DbManager {
         let pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -312,6 +388,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -379,7 +456,7 @@ impl DbManager {
     pub fn list_frozen(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE frozen = 1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -401,6 +478,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -446,6 +524,94 @@ impl DbManager {
                 BallError::InvalidConfig(format!("failed to query deps for '{}': {}", pkg_name, e))
             })?;
         Ok(count > 0)
+    }
+
+    #[allow(dead_code)]
+    /// A Referee verdict recorded earlier for this exact identity and version.
+    pub fn referee_cache_get(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<CachedVerdict>, BallError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT verdict, risk, advisories, checked_at FROM referee_cache
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let row = stmt.query_row(params![ecosystem, name, version], |row| {
+            Ok(CachedVerdict {
+                verdict: row.get(0)?,
+                risk: row.get(1)?,
+                advisories: row.get(2)?,
+                checked_at: row.get(3)?,
+            })
+        });
+
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(BallError::InvalidConfig(format!(
+                "failed to read the referee cache: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Record a verdict, replacing any earlier one for the same key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn referee_cache_put(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        verdict: &str,
+        risk: Option<f32>,
+        advisories: &str,
+    ) -> Result<(), BallError> {
+        self.conn
+            .execute(
+                "INSERT INTO referee_cache (ecosystem, name, version, verdict, risk, advisories, checked_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                 ON CONFLICT(ecosystem, name, version) DO UPDATE SET
+                     verdict=excluded.verdict,
+                     risk=excluded.risk,
+                     advisories=excluded.advisories,
+                     checked_at=excluded.checked_at",
+                params![
+                    ecosystem,
+                    name,
+                    version,
+                    verdict,
+                    risk.map(|risk| risk as f64),
+                    advisories
+                ],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to write the referee cache: {}", e))
+            })?;
+        Ok(())
+    }
+
+    /// Drop every cached verdict, for `referee --refresh`.
+    pub fn referee_cache_clear(&self) -> Result<usize, BallError> {
+        self.conn
+            .execute("DELETE FROM referee_cache", [])
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to clear the referee cache: {}", e))
+            })
+    }
+
+    /// How many verdicts are cached.
+    pub fn referee_cache_count(&self) -> Result<i64, BallError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM referee_cache", [], |row| row.get(0))
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to count the referee cache: {}", e))
+            })
     }
 
     #[allow(dead_code)]
@@ -554,6 +720,59 @@ impl DbManager {
     }
 }
 
+/// The inverse of [`serialize_source`].
+///
+/// An unrecognised `source` column — written by another build, or hand-edited —
+/// falls back to a GitHub source with no owner, which produces no advisory
+/// identity at all. That reads as `Unknown`, which is the truthful answer for a
+/// row baller cannot interpret.
+pub fn deserialize_source(source: &str, detail: Option<&str>) -> PackageSource {
+    let detail = detail.unwrap_or("").trim();
+
+    match source {
+        "github" => {
+            let (owner, repo) = detail.split_once('/').unwrap_or(("", detail));
+            PackageSource::GitHub {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+            }
+        }
+        "baller_registry" => PackageSource::BallerRegistry {
+            url: detail.to_string(),
+        },
+        "chocolatey" => PackageSource::Chocolatey {
+            feed_url: detail.to_string(),
+        },
+        "system" => PackageSource::System {
+            manager: detail.to_string(),
+        },
+        "cargo" => PackageSource::Cargo {
+            crate_name: detail.to_string(),
+        },
+        other => {
+            tracing::debug!("unrecognised roster source '{}'", other);
+            PackageSource::GitHub {
+                owner: String::new(),
+                repo: String::new(),
+            }
+        }
+    }
+}
+
+/// A verdict recorded by an earlier Referee run.
+///
+/// Cached rows are keyed by the exact `(ecosystem, name, version)` they were
+/// computed from: a `Clean` verdict says nothing about any other version, and
+/// reusing it for one would be the whole point of the cache getting it wrong.
+#[derive(Debug, Clone)]
+pub struct CachedVerdict {
+    pub verdict: String,
+    pub risk: Option<f64>,
+    /// The matched advisories, as the JSON `referee_cache.advisories` holds
+    pub advisories: String,
+    pub checked_at: String,
+}
+
 fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
     match source {
         PackageSource::GitHub { owner, repo } => {
@@ -646,6 +865,8 @@ mod tests {
                 owner: "owner".to_string(),
                 repo: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         }
     }
 
@@ -657,6 +878,212 @@ mod tests {
     // `remove_file`. The DbManager owns an open sqlite Connection (holding an OS
     // file handle); on Windows a file cannot be deleted while a handle is open,
     // so dropping the connection first is required to avoid leaking .db files.
+
+    #[test]
+    fn test_advisory_declaration_survives_the_roster() {
+        use crate::core::package::AdvisoryDeclaration;
+
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        let mut pkg = make_pkg("declares", "1.0.0");
+        pkg.advisory = Some(AdvisoryDeclaration {
+            ecosystem: Some("crates.io".to_string()),
+            name: Some("declares".to_string()),
+            aliases: vec!["CVE-2026-1".to_string()],
+        });
+        db.insert_package(&pkg, "/install", None, None, true)
+            .unwrap();
+
+        let row = db.get_package("declares").unwrap();
+        assert!(row.advisory.is_some());
+
+        // The audit must be able to check a package under the same identity
+        // the install checked it under.
+        let restored = row.to_package();
+        assert_eq!(restored.advisory, pkg.advisory);
+        assert_eq!(
+            restored.advisory_identities(),
+            vec![("crates.io".to_string(), "declares".to_string())]
+        );
+        assert_eq!(restored.declared_aliases(), ["CVE-2026-1".to_string()]);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_a_package_without_a_declaration_stores_null() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        db.insert_package(&make_pkg("plain", "1.0.0"), "/install", None, None, true)
+            .unwrap();
+
+        let row = db.get_package("plain").unwrap();
+        assert!(row.advisory.is_none());
+        assert!(row.to_package().advisory.is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_a_pre_referee_database_gains_the_advisory_column() {
+        let path = test_db_path();
+        {
+            // A database written before Referee existed: no advisory column.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE installed_packages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'github',
+                    source_detail TEXT,
+                    description TEXT,
+                    author TEXT,
+                    repository TEXT,
+                    download_url TEXT,
+                    sha256 TEXT,
+                    frozen BOOLEAN NOT NULL DEFAULT 0,
+                    user_installed BOOLEAN NOT NULL DEFAULT 1,
+                    install_path TEXT NOT NULL,
+                    bin_path TEXT,
+                    manifest_path TEXT,
+                    installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO installed_packages (name, version, install_path)
+                VALUES ('legacy', '0.9.0', '/old/path');",
+            )
+            .unwrap();
+        }
+
+        let db = init_db(&path);
+        let row = db.get_package("legacy").unwrap();
+        assert_eq!(row.version, "0.9.0");
+        assert!(row.advisory.is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_round_trip() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        assert!(db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .is_none());
+        assert_eq!(db.referee_cache_count().unwrap(), 0);
+
+        db.referee_cache_put(
+            "crates.io",
+            "serde",
+            "1.0.0",
+            "vulnerable",
+            Some(3.75),
+            "[{\"id\":\"GHSA-a\",\"aliases\":[],\"cvss\":7.5,\"summary\":null}]",
+        )
+        .unwrap();
+
+        let cached = db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.verdict, "vulnerable");
+        assert!((cached.risk.unwrap() - 3.75).abs() < 1e-6);
+        assert!(cached.advisories.contains("GHSA-a"));
+        assert!(!cached.checked_at.is_empty());
+
+        // A different version is a different key.
+        assert!(db
+            .referee_cache_get("crates.io", "serde", "1.0.1")
+            .unwrap()
+            .is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_put_overwrites_the_same_key() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "serde", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "serde", "1.0.0", "vulnerable", Some(5.0), "[]")
+            .unwrap();
+
+        assert_eq!(db.referee_cache_count().unwrap(), 1);
+        let cached = db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.verdict, "vulnerable");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_clear_empties_it() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "a", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("NuGet", "b", "2.0.0", "clean", None, "[]")
+            .unwrap();
+        assert_eq!(db.referee_cache_count().unwrap(), 2);
+
+        assert_eq!(db.referee_cache_clear().unwrap(), 2);
+        assert_eq!(db.referee_cache_count().unwrap(), 0);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_deserialize_source_round_trips_every_variant() {
+        let cases = [
+            PackageSource::GitHub {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            PackageSource::BallerRegistry {
+                url: "https://registry.test/api".to_string(),
+            },
+            PackageSource::Chocolatey {
+                feed_url: "https://feed.test/api/v2".to_string(),
+            },
+            PackageSource::System {
+                manager: "apt".to_string(),
+            },
+            PackageSource::Cargo {
+                crate_name: "ripgrep".to_string(),
+            },
+        ];
+
+        for source in cases {
+            let (name, detail) = serialize_source(&source);
+            assert_eq!(deserialize_source(&name, detail.as_deref()), source);
+        }
+    }
+
+    #[test]
+    fn test_deserialize_source_of_an_unknown_name_is_inert() {
+        let source = deserialize_source("quantum", Some("whatever"));
+        assert_eq!(
+            source,
+            PackageSource::GitHub {
+                owner: String::new(),
+                repo: String::new()
+            }
+        );
+    }
 
     #[test]
     fn test_db_init_creates_schema() {
@@ -1017,6 +1444,8 @@ mod tests {
             source: PackageSource::System {
                 manager: "apt".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         };
 
         db.insert_package(&pkg, "/usr/lib", None, None, true)

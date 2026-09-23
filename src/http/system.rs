@@ -205,6 +205,8 @@ impl SystemRegistry {
             source: PackageSource::System {
                 manager: "apt".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -290,6 +292,8 @@ impl SystemRegistry {
             source: PackageSource::System {
                 manager: "dnf".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -359,6 +363,8 @@ impl SystemRegistry {
             source: PackageSource::System {
                 manager: "pacman".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -384,6 +390,8 @@ impl SystemRegistry {
                         source: PackageSource::System {
                             manager: "apt".to_string(),
                         },
+                        advisory: None,
+                        vulnerabilities: Vec::new(),
                     });
                 }
             }
@@ -435,6 +443,8 @@ fn parse_dnf_search_output(output: &str) -> Vec<Package> {
                     source: PackageSource::System {
                         manager: "dnf".to_string(),
                     },
+                    advisory: None,
+                    vulnerabilities: Vec::new(),
                 });
             }
         }
@@ -488,6 +498,8 @@ fn parse_pacman_search_output(output: &str) -> Vec<Package> {
             source: PackageSource::System {
                 manager: "pacman".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         });
     }
 
@@ -1016,6 +1028,8 @@ vim-minimal.x86_64 : A minimal version of the VIM editor
                         source: PackageSource::System {
                             manager: "apt".to_string(),
                         },
+                        advisory: None,
+                        vulnerabilities: Vec::new(),
                     };
                     assert_eq!(pkg.version, "unknown");
                     assert!(!pkg.name.is_empty());

@@ -301,6 +301,18 @@ impl Downloader {
             archive: Some(downloaded.archive_path.to_string_lossy().to_string()),
         };
 
+        self.purge_download(pkg, downloaded);
+        err
+    }
+
+    /// Remove an extracted tree and the archive it came from.
+    ///
+    /// The cleanup half of [`Downloader::no_binary_error`], shared with
+    /// Referee's artifact scan: both mean "this download must not be installed
+    /// and must not be reused", so a retry re-downloads instead of finding the
+    /// rejected archive still in the cache. Cleanup failures are reported at
+    /// `--verbose` and never mask the reason the download was rejected.
+    pub fn purge_download(&self, pkg: &Package, downloaded: &DownloadedPackage) {
         if let Err(cleanup_err) = self.remove_extracted(pkg) {
             tracing::debug!(
                 "{}: could not remove extract dir {}: {}",
@@ -320,8 +332,6 @@ impl Downloader {
                 );
             }
         }
-
-        err
     }
 }
 

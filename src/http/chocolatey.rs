@@ -102,6 +102,8 @@ impl ChocolateyRegistry {
             source: PackageSource::Chocolatey {
                 feed_url: self.feed_url.clone(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -162,6 +164,8 @@ impl ChocolateyRegistry {
             source: PackageSource::Chocolatey {
                 feed_url: self.feed_url.clone(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -193,6 +197,8 @@ impl ChocolateyRegistry {
                 source: PackageSource::Chocolatey {
                     feed_url: self.feed_url.clone(),
                 },
+                advisory: None,
+                vulnerabilities: Vec::new(),
             })
             .collect();
 

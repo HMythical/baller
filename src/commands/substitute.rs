@@ -1,6 +1,7 @@
 use colored::Colorize;
 use serde_json::json;
 
+use crate::commands::draft::screen_artifact;
 use crate::context::AppContext;
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
@@ -43,8 +44,17 @@ pub fn execute_substitute(
         resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages
     };
 
+    // Referee Phase A on the replacement, before the old package is touched:
+    // a blocked substitution must leave the roster exactly as it found it.
+    let gate = ctx.referee.gate(&ctx.db, &packages)?;
+    gate.report(quiet);
+
     if opts.dry_run {
         return report_plan(ctx, old_package, &pkg, &packages, opts);
+    }
+
+    if let Some(blocked) = gate.block_error() {
+        return Err(blocked);
     }
 
     // Prompting is the default here, matching eject and sweep.
@@ -93,6 +103,8 @@ pub fn execute_substitute(
         let downloaded = ctx
             .downloader
             .download_and_extract(pkg_to_install, !quiet)?;
+
+        screen_artifact(ctx, pkg_to_install, &downloaded)?;
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
 

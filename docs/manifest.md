@@ -110,6 +110,7 @@ The equivalent flat spelling uses the tagged variant name directly —
 | `[checksum] algorithm = "SHA512"` | `hash_algorithm = "SHA512"` |
 | `[architectures] supported = [..]` | `architectures = [..]` |
 | `[dependencies]` name → constraint table | `dependencies = ["name constraint"]` |
+| `[advisory]` (no flat form — see below) | — |
 
 A flat field wins when both are present (`sha256` beats `[checksum] sha256`).
 
@@ -126,6 +127,34 @@ A flat field wins when both are present (`sha256` beats `[checksum] sha256`).
 | `sha256` | string | no | Expected SHA-256 hash of archive |
 | `dependencies` | array | no | List of dependency strings |
 | `architectures` | array | no | Supported CPU architectures |
+| `advisory` | table | no | Where this package's known-issue surface lives — see below |
+
+## Advisory Identity
+
+Distribution shape and advisory ecosystem are not the same thing: a tool shipped
+as a GitHub release may also be published as a crate, and only its author knows
+that. The optional `[advisory]` section tells Referee where to look.
+
+```toml
+name = "ripgrep"
+version = "14.1.1"
+
+[advisory]
+ecosystem = "crates.io"       # OSV ecosystem: crates.io, npm, NuGet, PyPI, GitHub, …
+name = "ripgrep"              # optional; defaults to the package name
+aliases = ["CVE-2026-1234"]   # advisory ids this package is tracked under
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ecosystem` | string | yes (within the section) | The OSV ecosystem to query. Without it the section names nothing queryable and is ignored |
+| `name` | string | no | The name inside that ecosystem; defaults to the package `name` |
+| `aliases` | array | no | Advisory ids (CVE, GHSA, RUSTSEC, …) fetched by id and range-checked against the installed version |
+
+The declaration is stored on the roster, so `baller referee` re-checks the
+package under the same identity the install used. It is honoured in JSON
+manifests and in registry-served package metadata identically. See
+[referee.md](referee.md).
 
 ## Dependency Strings
 

@@ -6,6 +6,7 @@ mod core;
 mod error;
 mod http;
 mod platform;
+mod security;
 mod utils;
 
 use std::{
@@ -181,6 +182,8 @@ mod integration_tests {
                 owner: "owner".to_string(),
                 repo: "repo".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         };
 
         let toml_str = toml::to_string(&pkg).unwrap();

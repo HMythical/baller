@@ -6,6 +6,7 @@ use crate::commands::eject::{execute_eject, EjectOptions};
 use crate::commands::external::execute_external;
 use crate::commands::freeze::{execute_freeze, FreezeMode, FreezeOptions};
 use crate::commands::inject::execute_inject;
+use crate::commands::referee::{execute_referee, RefereeOptions};
 use crate::commands::roster::{execute_roster, RosterOptions};
 use crate::commands::substitute::{execute_substitute, SubstituteOptions};
 use crate::commands::sweep::{execute_sweep, SweepOptions};
@@ -56,6 +57,10 @@ pub struct BallerCommand {
     /// Increase output detail
     #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
+
+    /// Skip the Referee security checks for this run
+    #[arg(long = "no-referee", global = true)]
+    pub no_referee: bool,
 }
 
 /// A registry source named on the command line
@@ -209,6 +214,18 @@ pub enum CommandTypes {
     },
     /// Injects a custom command described by a .ball file
     Inject { path: String },
+    /// Referees (Audits) the roster against public vulnerability data
+    #[command(arg_required_else_help = false)]
+    Referee {
+        /// Package to audit; omit to audit the whole roster
+        package_name: Option<String>,
+        /// Re-query the advisory service instead of reusing cached verdicts
+        #[arg(long)]
+        refresh: bool,
+        /// Skip the artifact re-scan and only check advisory data
+        #[arg(long = "no-scan")]
+        no_scan: bool,
+    },
     /// Prints every available command, or details for one of them
     Help {
         /// Built-in or injected command to describe
@@ -239,6 +256,7 @@ impl BallerCommand {
             quiet: self.quiet,
             json: self.json,
             verbose: self.verbose,
+            no_referee: self.no_referee,
         }
     }
 
@@ -368,6 +386,18 @@ impl BallerCommand {
                 },
             ),
             CommandTypes::Inject { path } => execute_inject(ctx, path),
+            CommandTypes::Referee {
+                package_name,
+                refresh,
+                no_scan,
+            } => execute_referee(
+                ctx,
+                package_name.as_deref(),
+                &RefereeOptions {
+                    refresh: *refresh,
+                    no_scan: *no_scan,
+                },
+            ),
             CommandTypes::Help { command } => {
                 execute_command_help(&resolve_baller_dir(&ctx.config), command.as_deref())
             }

@@ -24,6 +24,7 @@ These work on every subcommand and may appear before or after it —
 | `--no-hooks` | Skip every pre/post install, eject and update hook |
 | `--no-color` | Disable colored output (useful in CI) |
 | `--config <DIR>` | Use an alternate baller directory; db, cache and hooks all derive from it |
+| `--no-referee` | Skip the Referee security checks (both phases) for this run — see [referee.md](referee.md) |
 
 `--json` prints a single JSON document on stdout and suppresses every other
 print, so command output stays parseable.
@@ -44,6 +45,11 @@ baller draft <package_name> [--version <V>] [--source <S>] [--no-deps] [--dry-ru
 Fetches the package and all its transitive dependencies from the registry chain,
 downloads, verifies the package hash (SHA-256 for GitHub/Baller, SHA-512 for
 Chocolatey), extracts, symlinks the binary, and records in the SQLite database.
+
+Referee checks the whole resolved plan against public vulnerability data before
+the install loop starts, and scans each extracted archive before its binary is
+linked. A blocked plan installs nothing at all; `--no-referee` skips both
+checks. See [referee.md](referee.md).
 
 **Flags:**
 | Flag | Description |
@@ -579,6 +585,42 @@ Final confirmation: inject 'my-tool' from /usr/local/bin/my-tool? [yes/no] yes
 Done Injected 'my-tool' -> /usr/local/bin/my-tool
 Run it with: baller my-tool
 ```
+
+---
+
+## referee — Audit the Roster for Vulnerabilities
+
+```
+baller referee [package_name] [--refresh] [--no-scan]
+```
+
+Re-checks installed packages against public vulnerability data and re-scans
+their extracted artifacts. With no argument it audits the whole roster; with a
+package name it audits that one.
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--refresh` | Drop cached verdicts and re-query the advisory service. A `clean` verdict recorded earlier was computed against the advisory data of that day |
+| `--no-scan` | Check advisory data only; skip the artifact re-scan |
+
+The audit is read-only — nothing is ejected, updated or modified.
+
+```
+$ baller referee --refresh
+Refereeing 2 package(s) — warn at 2.50, block at 4.00 on the 0-5 risk scale
+PACKAGE                  VERSION        STATUS       RISK     ADVISORIES
+alpha                    1.0.0          vulnerable   4.90     GHSA-late
+    • GHSA-late (CVE-2026-4242) CVSS 9.8 — a serious flaw in alpha
+beta                     2.0.0          clean        —        —
+
+Summary 2 package(s): 1 over the block threshold, 0 warned, 0 not verified
+Note the audit changes nothing — eject or update a flagged package yourself
+```
+
+Referee also runs automatically inside `draft`, `update` and `substitute`.
+[referee.md](referee.md) documents the phases, the risk index, the scan rules
+and the `[referee]` config section.
 
 ---
 

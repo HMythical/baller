@@ -10,7 +10,7 @@ use crate::utils::fs::confirm;
 
 /// Names baller reserves for its own subcommands; an injected command may not
 /// shadow any of them.
-pub const RESERVED_COMMANDS: [&str; 11] = [
+pub const RESERVED_COMMANDS: [&str; 12] = [
     "draft",
     "eject",
     "freeze",
@@ -20,6 +20,7 @@ pub const RESERVED_COMMANDS: [&str; 11] = [
     "update",
     "build",
     "inject",
+    "referee",
     "help",
     "version",
 ];

@@ -7,7 +7,7 @@ pub mod system;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE, USER_AGENT};
 
 use crate::error::error::BallError;
 
@@ -174,6 +174,147 @@ impl HttpClient {
                         std::thread::sleep(Duration::from_secs(1 << attempt));
                     }
                 }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            BallError::NetworkError(format!("all retries exhausted for {}", url))
+        }))
+    }
+
+    /// GET a JSON document with extra request headers.
+    ///
+    /// Used by the advisory services Referee talks to, whose authentication is
+    /// a header (`x-apikey`) rather than a query parameter — a header keeps the
+    /// key out of the URL, and so out of logs and error messages.
+    ///
+    /// A 404 is not an error here: an advisory service answers "no record for
+    /// this id" that way, so the caller gets `Ok(None)` and decides what the
+    /// absence means.
+    pub fn get_json_optional_with_headers<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<Option<T>, BallError> {
+        let mut last_error = None;
+
+        for attempt in 0..MAX_RETRIES {
+            let mut req = self.client.get(url).header(ACCEPT, "application/json");
+            for (name, value) in headers {
+                match (
+                    HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(value),
+                ) {
+                    (Ok(name), Ok(value)) => req = req.header(name, value),
+                    _ => {
+                        return Err(BallError::NetworkError(format!(
+                            "invalid request header '{}'",
+                            name
+                        )))
+                    }
+                }
+            }
+
+            match req.send() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return resp.json::<T>().map(Some).map_err(|e| {
+                            BallError::NetworkError(format!(
+                                "failed to parse JSON response from {}: {}",
+                                url, e
+                            ))
+                        });
+                    } else if status.as_u16() == 404 {
+                        return Ok(None);
+                    } else {
+                        last_error = Some(BallError::NetworkError(format!(
+                            "HTTP {} when accessing {}",
+                            status, url
+                        )));
+                        // 4xx other than 404 will not change on a retry.
+                        if status.is_client_error() {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(BallError::NetworkError(format!(
+                        "request to {} failed (attempt {}): {}",
+                        url,
+                        attempt + 1,
+                        e
+                    )));
+                }
+            }
+
+            if attempt < MAX_RETRIES - 1 {
+                std::thread::sleep(Duration::from_secs(1 << attempt));
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            BallError::NetworkError(format!("all retries exhausted for {}", url))
+        }))
+    }
+
+    /// POST a JSON body and decode the JSON response.
+    ///
+    /// Retries mirror `get_json`: the batch advisory query is the only POST
+    /// baller makes, and a transient failure there must behave like a transient
+    /// failure anywhere else.
+    pub fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T, BallError> {
+        let payload = serde_json::to_vec(body).map_err(|e| {
+            BallError::NetworkError(format!("failed to encode request body for {}: {}", url, e))
+        })?;
+
+        let mut last_error = None;
+
+        for attempt in 0..MAX_RETRIES {
+            let req = self
+                .client
+                .post(url)
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json")
+                .body(payload.clone());
+
+            match req.send() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return resp.json::<T>().map_err(|e| {
+                            BallError::NetworkError(format!(
+                                "failed to parse JSON response from {}: {}",
+                                url, e
+                            ))
+                        });
+                    }
+
+                    last_error = Some(BallError::NetworkError(format!(
+                        "HTTP {} when posting to {}",
+                        status, url
+                    )));
+                    // A rejected request body is not retryable.
+                    if status.is_client_error() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(BallError::NetworkError(format!(
+                        "request to {} failed (attempt {}): {}",
+                        url,
+                        attempt + 1,
+                        e
+                    )));
+                }
+            }
+
+            if attempt < MAX_RETRIES - 1 {
+                std::thread::sleep(Duration::from_secs(1 << attempt));
             }
         }
 

@@ -18,6 +18,26 @@ impl Default for PackageSource {
     }
 }
 
+/// A package stating where its own known-issue surface lives.
+///
+/// Distribution shape and advisory ecosystem are not the same thing: a tool
+/// shipped as a GitHub release may also be published as a crate, and only its
+/// author knows that. A manifest `[advisory]` section — and the same field on
+/// registry-served metadata — lets them say so, and Referee treats the answer
+/// as authoritative rather than guessing from the download URL.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct AdvisoryDeclaration {
+    /// OSV ecosystem, e.g. `crates.io`, `npm`, `GitHub`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ecosystem: Option<String>,
+    /// The name inside that ecosystem; defaults to the package name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Advisory ids this package is also known by (CVE, GHSA, …)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Package {
     pub name: String,
@@ -38,6 +58,21 @@ pub struct Package {
 
     #[serde(default)]
     pub source: PackageSource,
+
+    /// The package's self-declared advisory identity, when it ships one.
+    ///
+    /// Serialised last because TOML requires tables after scalar fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<AdvisoryDeclaration>,
+
+    /// Advisories the serving registry published for this exact version.
+    ///
+    /// OSV-shaped records, kept as raw JSON so the wire format stays the
+    /// registry's business and `Package` keeps round-tripping through TOML.
+    /// When present, Referee consumes these instead of querying for this
+    /// package: the registry is the authority on its own contents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vulnerabilities: Vec<serde_json::Value>,
 }
 
 impl Package {
@@ -58,7 +93,47 @@ impl Package {
                 owner: String::new(),
                 repo: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         }
+    }
+
+    /// The `(ecosystem, name)` pairs this package declares about itself.
+    ///
+    /// A declaration with no ecosystem names nothing queryable and is dropped:
+    /// an ecosystem is what makes an advisory lookup possible at all.
+    pub fn advisory_identities(&self) -> Vec<(String, String)> {
+        let declaration = match self.advisory.as_ref() {
+            Some(declaration) => declaration,
+            None => return Vec::new(),
+        };
+
+        let ecosystem = match declaration.ecosystem.as_deref().map(str::trim) {
+            Some(ecosystem) if !ecosystem.is_empty() => ecosystem.to_string(),
+            _ => return Vec::new(),
+        };
+
+        let name = declaration
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.name.trim())
+            .to_string();
+
+        if name.is_empty() {
+            return Vec::new();
+        }
+
+        vec![(ecosystem, name)]
+    }
+
+    /// Advisory ids the package declares itself to be tracked under.
+    pub fn declared_aliases(&self) -> &[String] {
+        self.advisory
+            .as_ref()
+            .map(|declaration| declaration.aliases.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -131,6 +206,8 @@ mod tests {
             source: PackageSource::BallerRegistry {
                 url: "https://reg.example.com".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         };
 
         let json = serde_json::to_string(&pkg).unwrap();

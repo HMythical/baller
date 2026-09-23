@@ -206,7 +206,9 @@ pub(crate) fn parse_dependency_line(dep_str: &str) -> Dependency {
 /// Parse a version string that may use formats other than strict semver.
 ///
 /// Handles Debian epoch prefixes (`2:1.21-76`), Debian/RPM revision suffixes
-/// (`1.21-76`), and upstream Fedora release tags (`8.2.2637-20.fc36`).
+/// (`1.21-76`), upstream Fedora release tags (`8.2.2637-20.fc36`), and the
+/// zero-padded segments distro versions use freely (`2:8.1.0875-5ubuntu2`),
+/// which semver rejects outright.
 /// Returns `None` if the cleaned value still cannot be parsed as semver.
 pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     // Try standard parse first for clean semver versions
@@ -244,8 +246,11 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
         return None;
     }
 
-    // Normalize to 3 segments (major.minor.patch) for semver compatibility
-    let segments: Vec<&str> = clean.split('.').collect();
+    // Normalize to 3 segments (major.minor.patch) for semver compatibility.
+    // Leading zeros are dropped first: semver forbids them on a numeric
+    // identifier, so `8.1.0875` would otherwise fail to parse at all and the
+    // whole version would be reported as unreadable.
+    let segments: Vec<String> = clean.split('.').map(strip_leading_zeros).collect();
     let normalized = match segments.len() {
         0 => return None,
         1 => format!("{}.0.0", segments[0]),
@@ -254,6 +259,16 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     };
 
     Version::parse(&normalized).ok()
+}
+
+/// `0875` -> `875`, `000` -> `0`: the zero padding semver will not accept.
+fn strip_leading_zeros(segment: &str) -> String {
+    let trimmed = segment.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), BallError> {
@@ -380,6 +395,8 @@ mod tests {
                 owner: "test".to_string(),
                 repo: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         }
     }
 
@@ -587,6 +604,32 @@ mod tests {
     fn test_parse_version_flexible_three_part() {
         let v = parse_version_flexible("8.2.2637").unwrap();
         assert_eq!(v, Version::new(8, 2, 2637));
+    }
+
+    #[test]
+    fn test_parse_version_flexible_zero_padded_segment() {
+        let v = parse_version_flexible("8.1.0875").unwrap();
+        assert_eq!(v, Version::new(8, 1, 875));
+    }
+
+    #[test]
+    fn test_parse_version_flexible_debian_epoch_with_zero_padding() {
+        let v = parse_version_flexible("2:8.1.0875-5ubuntu2").unwrap();
+        assert_eq!(v, Version::new(8, 1, 875));
+    }
+
+    #[test]
+    fn test_parse_version_flexible_all_zero_segment() {
+        let v = parse_version_flexible("1.00.0").unwrap();
+        assert_eq!(v, Version::new(1, 0, 0));
+    }
+
+    #[test]
+    fn test_strip_leading_zeros() {
+        assert_eq!(strip_leading_zeros("0875"), "875");
+        assert_eq!(strip_leading_zeros("000"), "0");
+        assert_eq!(strip_leading_zeros("0"), "0");
+        assert_eq!(strip_leading_zeros("12"), "12");
     }
 
     #[test]

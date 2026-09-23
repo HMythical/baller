@@ -88,6 +88,20 @@ The goal is to complement existing package managers (Chocolatey, apt, npm, NuGet
 - **System Package Manager** — wraps apt, dnf, or pacman for native Linux packages
 - **Cargo** — installs crates from crates.io through the local cargo toolchain
 
+### Security
+
+Every install is refereed. Before anything is written, **Referee** checks the
+whole resolved plan — the package you asked for and every dependency — against
+public vulnerability data, and after each archive is extracted it scans the
+files for download-and-execute payloads, credential exfiltration, persistence
+tricks and unsafe permissions. A high-severity advisory or a flagged artifact
+aborts the install with nothing installed and the download discarded; a
+medium-severity one prints the advisory and continues.
+
+`baller referee` audits what you already have. `--no-referee` skips the checks
+for one command, and `[referee]` in `baller.conf` sets the thresholds. See
+[docs/referee.md](docs/referee.md).
+
 ---
 
 ## Building

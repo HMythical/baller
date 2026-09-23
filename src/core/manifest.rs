@@ -395,6 +395,83 @@ author = "Test Author"
     }
 
     #[test]
+    fn test_parse_toml_advisory_section() {
+        let toml = r#"
+name = "ripgrep"
+version = "14.1.1"
+
+[advisory]
+ecosystem = "crates.io"
+name = "ripgrep"
+aliases = ["CVE-2024-0001", "GHSA-aaaa-bbbb-cccc"]
+"#;
+        let pkg = ManifestParser::parse_toml(toml).unwrap();
+        let advisory = pkg.advisory.as_ref().unwrap();
+        assert_eq!(advisory.ecosystem.as_deref(), Some("crates.io"));
+        assert_eq!(advisory.name.as_deref(), Some("ripgrep"));
+        assert_eq!(advisory.aliases.len(), 2);
+        assert_eq!(
+            pkg.advisory_identities(),
+            vec![("crates.io".to_string(), "ripgrep".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_advisory_defaults_its_name() {
+        let toml = r#"
+name = "ripgrep"
+version = "14.1.1"
+
+[advisory]
+ecosystem = "crates.io"
+"#;
+        let pkg = ManifestParser::parse_toml(toml).unwrap();
+        assert_eq!(
+            pkg.advisory_identities(),
+            vec![("crates.io".to_string(), "ripgrep".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_json_advisory_section() {
+        let json = r#"{
+            "name": "tool",
+            "version": "1.0.0",
+            "advisory": { "ecosystem": "npm", "aliases": ["CVE-2026-1"] }
+        }"#;
+        let pkg = ManifestParser::parse_json(json).unwrap();
+        assert_eq!(
+            pkg.advisory_identities(),
+            vec![("npm".to_string(), "tool".to_string())]
+        );
+        assert_eq!(pkg.declared_aliases(), ["CVE-2026-1".to_string()]);
+    }
+
+    #[test]
+    fn test_manifest_without_an_advisory_section_declares_nothing() {
+        let pkg = ManifestParser::parse_toml("name = \"tool\"\nversion = \"1.0.0\"\n").unwrap();
+        assert!(pkg.advisory.is_none());
+        assert!(pkg.advisory_identities().is_empty());
+        assert!(pkg.declared_aliases().is_empty());
+    }
+
+    #[test]
+    fn test_advisory_survives_a_toml_round_trip() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[advisory]
+ecosystem = "crates.io"
+aliases = ["CVE-2026-2"]
+"#;
+        let pkg = ManifestParser::parse_toml(toml).unwrap();
+        let rendered = ManifestParser::serialize(&pkg, "toml").unwrap();
+        let reparsed = ManifestParser::parse_toml(&rendered).unwrap();
+        assert_eq!(reparsed.advisory, pkg.advisory);
+    }
+
+    #[test]
     fn test_parse_toml_with_all_fields() {
         let toml = r#"
 name = "full-pkg"

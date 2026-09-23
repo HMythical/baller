@@ -19,7 +19,7 @@ struct BuiltinCommand {
     notes: &'static [&'static str],
 }
 
-const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
+const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
     BuiltinCommand {
         name: "draft",
         summary: "Drafts (Installs) a new player onto your team",
@@ -140,6 +140,23 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
         ],
     },
     BuiltinCommand {
+        name: "referee",
+        summary: "Referees (Audits) the roster against public vulnerability data",
+        usage: "baller referee [PACKAGE_NAME]",
+        details: &[
+            "[PACKAGE_NAME]  Package to audit; omit to audit the whole roster",
+            "--refresh       Re-query the advisory service instead of reusing cached verdicts",
+            "--no-scan       Skip the artifact re-scan and only check advisory data",
+        ],
+        notes: &[
+            "The audit is read-only: a flagged package stays installed until you",
+            "eject or update it yourself.",
+            "Referee also runs automatically before draft, update and substitute",
+            "install anything. Pass --no-referee to skip it for one command, or",
+            "set 'enabled = false' under [referee] in baller.conf to turn it off.",
+        ],
+    },
+    BuiltinCommand {
         name: "help",
         summary: "Prints this message, or details for one command",
         usage: "baller help [COMMAND]",
@@ -155,7 +172,7 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
     },
 ];
 
-const GLOBAL_OPTIONS: [&str; 9] = [
+const GLOBAL_OPTIONS: [&str; 10] = [
     "-y, --yes          Skip confirmation prompts",
     "-q, --quiet        Suppress progress bars and step-by-step output",
     "-v, --verbose      Increase output detail",
@@ -163,6 +180,7 @@ const GLOBAL_OPTIONS: [&str; 9] = [
     "--no-hooks         Skip every pre/post install, eject and update hook",
     "--no-color         Disable colored output",
     "--config <DIR>     Use an alternate baller directory",
+    "--no-referee       Skip the Referee security checks for this run",
     "-h, --help         Print a short usage summary",
     "-V, --version      Print baller's version",
 ];

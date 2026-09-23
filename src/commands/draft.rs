@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
+use crate::core::downloader::DownloadedPackage;
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistrySource;
@@ -10,6 +11,7 @@ use crate::error::error::BallError;
 use crate::http::cargo::install_cargo_package;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
+use crate::security::GateOutcome;
 use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
@@ -78,8 +80,20 @@ pub fn execute_draft(
         );
     }
 
+    // Referee Phase A: the whole plan is checked before any of it is
+    // installed. The loop below has no rollback — `session_packages` is
+    // tracked for reporting, not for undoing — so blocking here is the only
+    // place a block can be atomic. It also runs before the PreInstall hook, so
+    // a package Referee rejected never gets to run code of its own.
+    let gate = ctx.referee.gate(&ctx.db, &result_packages)?;
+    gate.report(quiet);
+
     if opts.dry_run {
-        return report_plan(ctx, &pkg, &result_packages, &installed, opts);
+        return report_plan(ctx, &pkg, &result_packages, &installed, opts, &gate);
+    }
+
+    if let Some(blocked) = gate.block_error() {
+        return Err(blocked);
     }
 
     // D1: Track packages installed in this session for rollback
@@ -203,6 +217,11 @@ pub fn execute_draft(
                 .unwrap_or_else(|| "none found".to_string())
         );
 
+        // Referee Phase B: the archive is on disk but nothing has been linked
+        // or recorded yet, so a flagged artifact is purged instead of
+        // installed.
+        screen_artifact(ctx, pkg_to_install, &downloaded)?;
+
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
 
         // An extracted tree with no executable cannot be installed: linking,
@@ -265,6 +284,7 @@ pub fn execute_draft(
             "source": source_label(&pkg.source),
             "installed": session_packages,
             "skipped": skipped,
+            "referee": gate.to_json(),
         }));
     }
 
@@ -310,6 +330,7 @@ fn report_plan(
     packages: &[Package],
     installed: &std::collections::HashMap<String, String>,
     opts: &DraftOptions,
+    gate: &GateOutcome,
 ) -> Result<(), BallError> {
     if ctx.flags.json {
         let entries: Vec<_> = packages
@@ -332,6 +353,7 @@ fn report_plan(
             "version": root.version,
             "dry_run": true,
             "plan": entries,
+            "referee": gate.to_json(),
         }));
     }
 
@@ -363,8 +385,46 @@ fn report_plan(
         }
     }
 
+    // A dry run reports the block it would hit rather than returning it: the
+    // point of the command is to show the plan, and a plan that would be
+    // refused is the most important thing it can show.
+    for report in gate.blocked() {
+        println!(
+            "  {} {} v{} would be blocked — {}",
+            "✗".red().bold(),
+            report.name.red(),
+            report.version.yellow(),
+            report.block_reason(&gate.thresholds)
+        );
+        for advisory in report.advisories() {
+            println!("    {} {}", "•".red(), advisory.describe());
+        }
+    }
+
     println!("{} nothing was installed", "Note".yellow());
     Ok(())
+}
+
+/// Run Referee's artifact scan and act on the result.
+///
+/// A blocking finding purges the extract directory and the cached archive on
+/// the way out — the same cleanup a package with no binary gets — so a retry
+/// starts from a fresh download rather than the rejected one.
+pub(crate) fn screen_artifact(
+    ctx: &AppContext,
+    pkg: &Package,
+    downloaded: &DownloadedPackage,
+) -> Result<(), BallError> {
+    match ctx.referee.screen_artifact(pkg, &downloaded.extract_dir) {
+        Ok(findings) => {
+            ctx.referee.report_scan_findings(pkg, &findings);
+            Ok(())
+        }
+        Err(e) => {
+            ctx.downloader.purge_download(pkg, downloaded);
+            Err(e)
+        }
+    }
 }
 
 fn plan_action(

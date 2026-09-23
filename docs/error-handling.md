@@ -74,10 +74,14 @@ The package is **not** recorded in the roster, no symlink is created, and both
 the extract directory and the cached archive are removed so a retry starts
 clean.
 
-Both variants are **hard errors**. Only `PackageNotFound` is treated as
-skippable during dependency resolution (`core::dep_solver`), so a dependency
-with no usable asset aborts the whole install instead of being silently
-dropped. Inside the multi-source fallback chain, however, a `NoMatchingAsset`
+Both variants are **hard errors**. `PackageNotFound` is treated as skippable
+during dependency resolution (`core::dep_solver`) only when every package that
+depends on the missing name is itself system-sourced — the Debian/RPM
+virtual-package window. Any other unresolvable dependency is recorded in
+`ResolveResult.unresolved`, and `draft`/`substitute` abort with
+`UnresolvedDependencies` (`update` stays best-effort and warns per name), so
+a dependency with no usable asset can never be silently dropped from an
+install. Inside the multi-source fallback chain, however, a `NoMatchingAsset`
 from GitHub is folded into the aggregated `PackageNotFound` message like any
 other per-source failure:
 

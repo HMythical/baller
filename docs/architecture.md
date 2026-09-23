@@ -144,7 +144,10 @@ See [docs/registry.md](registry.md) for the per-source details.
 of system packages:
 - **Virtual packages** (e.g., `default-dbus-session-bus`): `PackageNotFound`
   errors for individual dependencies are skipped rather than failing the
-  entire resolution.
+  entire resolution. `PackageNotFound` is the **only** skippable variant —
+  every other error, including `NoMatchingAsset` and `NoBinaryFound`, aborts
+  the resolution, so a dependency with no usable build can never be silently
+  dropped from an install.
 - **Dependency cycles** (e.g., `libc6 ↔ libgcc-s1`): Cycle detection is
   skipped and the topological sort returns the best available ordering.
 - **Unparseable versions**: If `parse_version_flexible()` cannot normalize
@@ -168,8 +171,16 @@ are **not** strict semver. `parse_version_flexible()` in `dep_solver.rs` handles
 BALLER supports four installation paths, selected automatically based on
 `PackageSource`:
 
-- **Archive path** (GitHub / BallerRegistry): download archive →
-  SHA-256 hex verify → extract → symlink binary → record in DB.
+- **Archive path** (GitHub / BallerRegistry): select the asset built for the
+  host platform → download archive → SHA-256 hex verify → extract → locate the
+  binary → symlink it → record in DB. Locating the binary gates the rest: if
+  the extracted tree holds no executable, the command fails with
+  `NoBinaryFound`, removes the extract directory and the cached archive, and
+  writes no database row — it never links or records a package it could not
+  install. `Downloader::no_binary_error` implements that cleanup once, and
+  `draft`, `build`, `substitute` and `update` all call it. See
+  [error-handling.md](error-handling.md#github-source-asset-errors) for how
+  the GitHub asset is chosen.
 - **Chocolatey path** (Chocolatey/NuGet): download `.nupkg` archive →
   SHA-512 base64 decode and verify → extract as zip → record in DB.
   NuGet `.nupkg` files are zip archives and are extracted with the zip handler.

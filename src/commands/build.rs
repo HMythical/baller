@@ -127,31 +127,28 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
     );
 
     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-    let bin_path_str = downloaded
-        .binary_path
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string());
 
-    if let Some(binary_path) = &downloaded.binary_path {
-        match &opts.install_dir {
-            Some(dir) => {
-                ActiveManager::create_symlink_in(Path::new(dir), binary_path, &pkg.name)?;
-                tracing::info!("{} linked into {}", "Linked".green(), dir.cyan(),);
-            }
-            None => {
-                ActiveManager::create_symlink(binary_path, &pkg.name)?;
-                tracing::info!(
-                    "{} symlinked to {}",
-                    "Linked".green(),
-                    binary_path.display().to_string().cyan(),
-                );
-            }
+    // Nothing executable came out of the archive, so there is nothing to link
+    // and nothing worth recording — fail instead of reporting a built package.
+    let binary_path = match downloaded.binary_path.as_ref() {
+        Some(path) => path.clone(),
+        None => return Err(ctx.downloader.no_binary_error(&pkg, &downloaded)),
+    };
+    let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+    match &opts.install_dir {
+        Some(dir) => {
+            ActiveManager::create_symlink_in(Path::new(dir), &binary_path, &pkg.name)?;
+            tracing::info!("{} linked into {}", "Linked".green(), dir.cyan(),);
         }
-    } else {
-        tracing::info!(
-            "{} no binary found in extracted package",
-            "Warning".yellow()
-        );
+        None => {
+            ActiveManager::create_symlink(&binary_path, &pkg.name)?;
+            tracing::info!(
+                "{} symlinked to {}",
+                "Linked".green(),
+                binary_path.display().to_string().cyan(),
+            );
+        }
     }
 
     ctx.db.insert_package(

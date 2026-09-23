@@ -22,6 +22,74 @@ the process exits with a non-zero status code.
 | `VersionConflict` | Version constraint not satisfiable |
 | `PackageFrozen` | Cannot modify a frozen package |
 | `PackageManagerError` | System package manager error (no PM detected, command failed, unsupported manager, wrong code path tried to download a system package, or version unparseable as semver) |
+| `NoMatchingAsset` | A GitHub release has no asset built for the host platform. Carries the package, the host `<os>-<arch>`, and every asset name the release offered |
+| `NoBinaryFound` | An archive extracted cleanly but contained no executable. Carries the package, version, extract directory and cached archive path |
+
+## GitHub Source Asset Errors
+
+A GitHub release usually ships one asset per platform, named with no agreed
+convention: Rust projects use target triples (`x86_64-unknown-linux-gnu`), Go
+projects use `linux_amd64`, and distro packages, checksum files and signatures
+sit alongside them. `src/http/github.rs` picks one in two stages:
+
+1. **Exclude** — by lowercased asset name: forbidden extensions (`.deb`,
+   `.rpm`, `.msi`, `.sig`, `.asc`, `.sha256`, `.sum`, `.txt`, `.json`,
+   `.dsc`, `.buildinfo`, …, which covers `checksums.txt`), foreign-OS tokens
+   (`darwin`, `macos`, `apple`, `android`, `*bsd`, `wasm`, … plus `windows`
+   on a Linux host and `linux` on a Windows host), and foreign-arch tokens
+   (the arm64 family, `riscv`, `ppc64`, `s390x`, `i686`, `386`, … on an amd64
+   host, and the mirror set on an arm64 host).
+2. **Match** — the surviving names are scanned for the host's candidate tags,
+   most specific first: full target triples (gnu before musl), then Go-style
+   `os_arch` names, then bare tokens such as `x86_64` / `amd64`. Where a
+   release ships both a bare binary and an archive of the same build, the
+   archive wins, because only an archive can be extracted.
+
+**There is no "first asset" fallback.** When nothing matches, the fetch fails
+with `NoMatchingAsset`, which names the host platform and lists every asset the
+release offered:
+
+```
+[Error]: no linux-x86_64 asset for 'Rectangle' — available: Rectangle.pkg,
+Rectangle1.100.dmg, Rectangle106-100.delta (specify a different source or version)
+```
+
+Previously the code matched the literal string `linux-x86_64` — a scheme almost
+no project uses — and fell back to `release.assets.first()`, so `draft` happily
+downloaded a macOS `.dmg` or a `.deb` and reported success (issue #13).
+
+If the download and extraction succeed but no executable is found in the
+extracted tree, the command fails with `NoBinaryFound` rather than warning and
+continuing. Every command that extracts an archive enforces this —
+`draft`, `build`, `substitute` and `update` (both when it installs a newly
+declared dependency and when it upgrades a package) all route the case through
+`Downloader::no_binary_error`:
+
+```
+[Error]: no binary found in extracted package 'ripgrep' v15.2.0 — expected an
+executable for linux in ~/.baller/cache/ripgrep-15.2.0 (archive: ~/.baller/cache/...)
+```
+
+The package is **not** recorded in the roster, no symlink is created, and both
+the extract directory and the cached archive are removed so a retry starts
+clean.
+
+Both variants are **hard errors**. Only `PackageNotFound` is treated as
+skippable during dependency resolution (`core::dep_solver`), so a dependency
+with no usable asset aborts the whole install instead of being silently
+dropped. Inside the multi-source fallback chain, however, a `NoMatchingAsset`
+from GitHub is folded into the aggregated `PackageNotFound` message like any
+other per-source failure:
+
+```
+[Error]: package not found: rxhanson/Rectangle not found. Sources tried:
+  BallerRegistry: network error: ...
+  System: package manager error: apt-cache exited with status exit status: 100
+  Cargo: package manager error: cargo is not installed on this host
+  GitHub: no linux-x86_64 asset for 'Rectangle' — available: Rectangle.pkg, ...
+```
+
+Pin the source (`--source github`) to see the error on its own.
 
 ## Registry Source Aggregation
 
@@ -76,6 +144,22 @@ messages:
   'foo'"` — when `--version` is combined with the Cargo source
 
 See [docs/cargo-registry.md](cargo-registry.md) for the full error table.
+
+## What a Failed Install Leaves Behind
+
+A package that fails one of the hard errors above leaves **nothing** of itself
+on disk or in the database: no symlink, no roster row, no extract directory and
+no cached archive. A retry therefore re-downloads from scratch rather than
+reusing a half-usable cache.
+
+Per command:
+
+| Command | On `NoBinaryFound` |
+|---------|--------------------|
+| `draft` | The package is not linked and not recorded. Packages installed earlier in the same run stay installed |
+| `build` | Nothing is linked (neither the platform default nor `--install-dir`) and no row is written, so the manifest can be fixed and rebuilt |
+| `substitute` | Fails **before** the old package is ejected, so the roster keeps the working package rather than losing it for an unusable replacement |
+| `update` | The upgrade aborts. `update` prunes the old extract directory before unpacking the new archive, so the previously linked binary is gone — re-run `draft --force` (or `update` once upstream ships a usable asset) to restore it |
 
 ## Rollback on Partial Failure
 

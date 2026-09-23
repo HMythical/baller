@@ -343,14 +343,22 @@ mod tests {
     use crate::core::injected::save_injected;
     use clap::CommandFactory;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// A directory no other test can be looking at.
+    ///
+    /// `tag` is a label for the human reading a failure; uniqueness comes from
+    /// the counter, because two tests that pick the same tag would otherwise
+    /// share a path and delete each other's files mid-run.
     fn test_dir(tag: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join("baller_help_tests").join(format!(
-            "{}_{}",
+            "{}_{}_{}",
             std::process::id(),
-            tag
+            tag,
+            n
         ));
-        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.to_string_lossy().to_string()
     }

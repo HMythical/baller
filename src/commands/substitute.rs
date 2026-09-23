@@ -95,14 +95,16 @@ pub fn execute_substitute(
             .download_and_extract(pkg_to_install, !quiet)?;
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-        let bin_path_str = downloaded
-            .binary_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
 
-        if let Some(binary_path) = &downloaded.binary_path {
-            ActiveManager::create_symlink(binary_path, &pkg_to_install.name)?;
-        }
+        // A replacement with no executable is not a replacement: fail before the
+        // old package is ejected, rather than recording an unusable roster entry.
+        let binary_path = match downloaded.binary_path.as_ref() {
+            Some(path) => path.clone(),
+            None => return Err(ctx.downloader.no_binary_error(pkg_to_install, &downloaded)),
+        };
+        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+        ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
 
         let is_root = pkg_to_install.name == pkg.name;
         ctx.db.insert_package(

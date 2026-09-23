@@ -204,24 +204,21 @@ pub fn execute_draft(
         );
 
         let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-        let bin_path_str = downloaded
-            .binary_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
 
-        if let Some(binary_path) = &downloaded.binary_path {
-            ActiveManager::create_symlink(binary_path, &pkg_to_install.name)?;
-            tracing::info!(
-                "{} symlinked to {}",
-                "Linked".green(),
-                binary_path.display().to_string().cyan()
-            );
-        } else {
-            tracing::info!(
-                "{} no binary found in extracted package",
-                "Warning".yellow()
-            );
-        }
+        // An extracted tree with no executable cannot be installed: linking,
+        // recording it on the roster and reporting success would all be lies.
+        let binary_path = match downloaded.binary_path.as_ref() {
+            Some(path) => path.clone(),
+            None => return Err(ctx.downloader.no_binary_error(pkg_to_install, &downloaded)),
+        };
+        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+        ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
+        tracing::info!(
+            "{} symlinked to {}",
+            "Linked".green(),
+            binary_path.display().to_string().cyan()
+        );
 
         // Pass user_installed=true for root packages, false for deps
         let is_root = pkg_to_install.name == pkg.name;
@@ -324,6 +321,7 @@ fn report_plan(
                     "source": source_label(&pkg.source),
                     "role": if pkg.name == root.name { "root" } else { "dependency" },
                     "action": plan_action(pkg, installed, opts),
+                    "download_url": pkg.download_url,
                 })
             })
             .collect();
@@ -359,6 +357,10 @@ fn report_plan(
             role,
             plan_action(pkg, installed, opts)
         );
+        match pkg.download_url.as_deref() {
+            Some(url) => println!("    {} {}", "Download:".yellow(), url),
+            None => println!("    {} <resolved by source>", "Download:".yellow()),
+        }
     }
 
     println!("{} nothing was installed", "Note".yellow());

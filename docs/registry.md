@@ -9,7 +9,12 @@ The `RegistryClient` in `src/core/registry.rs` coordinates all sources.
 
 Queries the GitHub Releases API at `api.github.com/repos/{owner}/{repo}/releases/latest`.
 
-- Matches assets by platform (Linux/Windows) and architecture (x86_64/aarch64)
+- Matches assets by platform (Linux/Windows) and architecture (x86_64/aarch64),
+  understanding Rust target triples, Go-style `os_arch` names and bare arch
+  tokens, and excluding distro packages, checksums, signatures and foreign
+  OS/arch builds. A release with no host build is a hard `NoMatchingAsset`
+  error — there is no arbitrary "first asset" fallback. See
+  [error-handling.md](error-handling.md#github-source-asset-errors)
 - Parses owner/repo from the package source metadata
 - Falls back to search via repository topic tags
 

@@ -140,14 +140,16 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     );
 
                     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-                    let bin_path_str = downloaded
-                        .binary_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string());
 
-                    if let Some(binary_path) = &downloaded.binary_path {
-                        ActiveManager::create_symlink(binary_path, &dep.name)?;
-                    }
+                    // A dependency that extracts without an executable is not
+                    // installed, so it must not reach the database either.
+                    let binary_path = match downloaded.binary_path.as_ref() {
+                        Some(path) => path.clone(),
+                        None => return Err(ctx.downloader.no_binary_error(dep, &downloaded)),
+                    };
+                    let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+                    ActiveManager::create_symlink(&binary_path, &dep.name)?;
 
                     ctx.db.insert_package(
                         dep,
@@ -199,15 +201,18 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                 );
                 let _ = std::fs::remove_dir_all(&old_extract_dir);
 
-                if let Some(binary_path) = &downloaded.binary_path {
-                    ActiveManager::create_symlink(binary_path, &remote_pkg.name)?;
-                }
+                // The old extract dir is already gone; if the new archive holds
+                // no executable there is nothing to link, so fail instead of
+                // recording a version bump the user cannot run.
+                let binary_path = match downloaded.binary_path.as_ref() {
+                    Some(path) => path.clone(),
+                    None => return Err(ctx.downloader.no_binary_error(&remote_pkg, &downloaded)),
+                };
+
+                ActiveManager::create_symlink(&binary_path, &remote_pkg.name)?;
 
                 let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-                let bin_path_str = downloaded
-                    .binary_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string());
+                let bin_path_str = Some(binary_path.to_string_lossy().to_string());
 
                 ctx.db.insert_package(
                     &remote_pkg,

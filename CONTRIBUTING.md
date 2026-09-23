@@ -21,14 +21,15 @@ This guide covers everything you need to submit a contribution: environment setu
 
 1. [Getting Started](#1-getting-started)
 2. [Branch Strategy](#2-branch-strategy)
-3. [Code Contributions](#3-code-contributions)
-4. [Commit Style](#4-commit-style)
-5. [Documentation](#5-documentation)
-6. [Security Issues](#6-security-issues)
-7. [Pull Request Process](#7-pull-request-process)
-8. [Code of Conduct](#8-code-of-conduct)
-9. [License](#9-license)
-10. [Getting Help](#10-getting-help)
+3. [Filing Issues: Bug Reports & Feature Requests](#3-filing-issues-bug-reports-feature-requests)
+4. [Code Contributions](#4-code-contributions)
+5. [Commit Style](#5-commit-style)
+6. [Documentation](#6-documentation)
+7. [Security Issues](#7-security-issues)
+8. [Pull Request Process](#8-pull-request-process)
+9. [Code of Conduct](#9-code-of-conduct)
+10. [License](#10-license)
+11. [Getting Help](#11-getting-help)
 
 ---
 
@@ -148,7 +149,54 @@ git rebase upstream/rootdev
 
 ---
 
-## 3. Code Contributions
+## 3. Filing Issues: Bug Reports & Feature Requests
+
+Baller ships two checked-in issue templates, written in the high-detail
+style of issue #89. Pick the template that matches what you are reporting,
+invoke it with the GitHub CLI, and follow the grounding rules below.
+
+| You want to… | Template | CLI invocation |
+|---|---|---|
+| Report a bug (crash, wrong exit code, corrupted DB, bad install) | `.github/ISSUE_TEMPLATE/bug.md` | `gh issue create --template bug` |
+| Request a feature (new source, command, or enhancement) | `.github/ISSUE_TEMPLATE/baller-feature.md` | `gh issue create --template baller-feature` |
+
+From the web, use the "New issue" chooser and select the matching template.
+Both templates use the same seven-section anchor format as [issue #89](https://github.com/HMythical/baller/issues/89): **Summary** / **Justification**
+(for features) or **Why this happens** (for bugs) / **Reproduction** /
+**Expected behavior** / **Suggested direction** / **Additional context** /
+**Environment**.
+
+### Before You File
+
+- Search open issues first; duplicates are closed. Reference a related issue
+  by number in your body (e.g. *"related to #89"*).
+- Use the template that matches what you are filing — do not put a feature
+  request in the bug template or vice versa.
+- Report security vulnerabilities privately rather than as a public issue —
+  see [Security Issues](#7-security-issues).
+
+### Grounding Rules (apply to every issue)
+
+- **Verified references only.** Every `src/path:line` must be checked against
+  the current working tree before filing. Read the file, correct stale or
+  off-by-N line numbers, and never copy a reference from memory, an older
+  issue, or a closed PR.
+- **No fabricated output.** Never invent terminal output, exit codes, error
+  strings, or timestamps in a Reproduction section. Prefer naming an existing
+  unit test (`filename.rs:line`) or a precise, verifiable static walkthrough;
+  otherwise state clearly what a would-be test would assert.
+- **Sandboxed reproductions.** Keep reproductions offline and local
+  (`HOME=$(mktemp -d)`-style). Avoid live downloads, `sudo`, or installing
+  packages into the system. If a reproduction genuinely requires network or
+  elevated access, say so explicitly and provide the offline or static
+  alternative.
+- **One issue per report.** A single issue should track a single bug or a
+  single feature request so it can be labelled, triaged, and closed
+  independently.
+
+---
+
+## 4. Code Contributions
 
 ### Language Requirements
 
@@ -209,7 +257,7 @@ cargo test test_name        # Run a specific test
 
 ---
 
-## 4. Commit Style
+## 5. Commit Style
 
 ### Format
 
@@ -286,7 +334,7 @@ Refs #58
 
 ---
 
-## 5. Documentation
+## 6. Documentation
 
 ### Code Documentation
 
@@ -315,7 +363,7 @@ Your pull request should stand on its own for a reviewer who has not seen the co
 
 ---
 
-## 6. Security Issues
+## 7. Security Issues
 
 ### Reporting Process
 
@@ -354,7 +402,7 @@ Please give the maintainer a reasonable opportunity to release a fix before disc
 
 ---
 
-## 7. Pull Request Process
+## 8. Pull Request Process
 
 ### Before Submitting
 
@@ -371,7 +419,7 @@ Then confirm the following:
 - [ ] Your branch is rebased on the latest `upstream/rootdev`.
 - [ ] New functionality has tests, and all tests pass.
 - [ ] Documentation is updated for any public API or user-facing change.
-- [ ] Commit messages follow the format in [Commit Style](#4-commit-style).
+- [ ] Commit messages follow the format in [Commit Style](#5-commit-style).
 - [ ] The change contains no unrelated edits, commented-out code, or debug output.
 - [ ] No secrets, credentials, or absolute local paths are committed.
 
@@ -406,7 +454,7 @@ Do not copy code from other projects into this repository, including from Chocol
 
 ---
 
-## 8. Code of Conduct
+## 9. Code of Conduct
 
 This project adopts the [Contributor Covenant Code of Conduct, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 
@@ -456,7 +504,7 @@ This Code of Conduct is adapted from the [Contributor Covenant](https://www.cont
 
 ---
 
-## 9. License
+## 10. License
 
 All contributions to B.A.L.L.E.R. are licensed under the **Apache License 2.0**.
 
@@ -468,12 +516,12 @@ For the full terms, see the [LICENSE](LICENSE) file.
 
 ---
 
-## 10. Getting Help
+## 11. Getting Help
 
 | Need | Where to go |
 |---|---|
-| Report a bug | [GitHub Issues](https://github.com/HMythical/baller/issues) |
-| Request a feature | [GitHub Issues](https://github.com/HMythical/baller/issues) |
+| Report a bug | Open the [bug template](.github/ISSUE_TEMPLATE/bug.md) — see [Filing Issues](#3-filing-issues-bug-reports-feature-requests) |
+| Request a feature | Open the [feature template](.github/ISSUE_TEMPLATE/baller-feature.md) — see [Filing Issues](#3-filing-issues-bug-reports-feature-requests) |
 | Ask a usage or design question | GitHub Discussions |
 | Report a security vulnerability | Discord: **HMythical** |
 | Report a Code of Conduct violation | Discord: **HMythical** |

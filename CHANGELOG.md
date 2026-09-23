@@ -21,6 +21,20 @@ with a custom scheme:
 
 ### Fixed
 
+- **Dependency resolution no longer silently swallows unresolvable dependencies** (Closes #73)
+  `resolve_from` dropped any dependency whose fetch returned `PackageNotFound` — in both the already-installed and plain-fetch branches — with no warning and no record, so `draft` installed whatever subset *did* resolve and printed "Done … drafted!" as if the full set had been satisfied. The gap was invisible: `ResolveResult` had no "unresolved" concept, and nothing surfaced the difference between an optional-only hole and a missing mandatory dependency.
+
+  `ResolveResult` now carries `unresolved: Vec<String>`, populated whenever a non-optional dependency resolves from no source. The old unconditional tolerance is scoped: a missing dependency is skipped **only when every package that depends on it is system-sourced** (a Debian/RPM virtual package the native manager handles); anything else is reported. `draft` and `substitute` abort with a new `UnresolvedDependencies` error instead of installing a subset; `update` keeps its best-effort behavior (it already re-derived `missing_deps`) but warns per unresolved name. The resolver also emits a `tracing::warn!` for every name it could not resolve, so even a tolerated gap is visible under `-v`.
+
+- **Malformed version constraints are an error, not a silent `*`** (Closes #74)
+  `parse_dependency_line` coerced any `VersionReq::parse` failure to `VersionReq::STAR`, so a typo'd constraint like `foo >=1.2..3` accepted any version. It now returns `Result` and raises `VersionConflict` naming the constraint and package; only genuinely empty constraints (`foo`, `? foo`) keep the `*` default. The error threads through `parse_dependencies` → `enqueue_deps` → the resolver, so a bad manifest line fails resolution at parse time instead of being masked downstream.
+
+- **Dependency constraints are enforced regardless of when they are registered** (Closes #75)
+  The resolver checked a package's constraint only on first pop: a package already in `resolved` was skipped wholesale, so a constraint registered later (a second path to the same transitive dep, or a dependee constraining the pinned root) was stored in `constraints` but never compared. The duplicated checks now live in one `enforce_constraints` helper, called on first resolution, on the installed-version path, on re-visiting an already-resolved package, and **at registration time** in `enqueue_deps` when the target is already resolved. A conflicting late constraint — installed `B v1.0.0` vs `C`'s `B >=2.0`, or two fetched branches converging at different depths — now raises `VersionConflict`.
+
+- **Dependency cycles surface as errors unless they are entirely system-sourced** (Closes #76)
+  `resolve_from` discarded `detect_cycles` unconditionally (`let _ =`), so a genuine `a -> b -> c -> a` cycle in any non-system graph produced an arbitrary install order instead of a `DependencyCycle` error. The three-color DFS is now `find_cycle`, and the resolver fails any cycle where at least one node is not a system package; only all-system cycles (`libc6 <-> libgcc-s1`) stay tolerated and fall back to a best-effort ordering. `topological_sort` also re-validates that its output obeys every graph edge, so a cycle can never reach the install plan silently, and packages resolved but absent from a tolerated cycle's ordering are no longer dropped from the result.
+
 - **`draft` no longer installs another platform's release asset and calls it a success** (Closes #13)
   GitHub asset selection matched the literal string `linux-x86_64` — a naming scheme almost no project uses — with a single case-sensitive `contains`, and fell back to `release.assets.first()` when that missed. `baller draft <owner>/<repo> --source github` therefore downloaded whatever asset happened to be listed first: a macOS `.dmg`, a `.deb`, or a `checksums.txt`.
 

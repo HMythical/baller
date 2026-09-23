@@ -135,21 +135,33 @@ See [docs/registry.md](registry.md) for the per-source details.
 1. BFS traversal from the root package
 2. Fetches metadata for each dependency from the registry
 3. Builds a dependency graph
-4. Validates version constraints (using `semver::VersionReq`)
-5. Detects cycles (DFS with White/Gray/Black coloring) — skipped for system packages
-6. Topological sort (DFS post-order) for install order
+4. Validates version constraints (using `semver::VersionReq`) — every
+   registered constraint is enforced, even one registered after its target
+   was already resolved (diamond/transitive deps and pinned roots), and a
+   constraint string `VersionReq::parse` rejects raises `VersionConflict`
+   instead of being relaxed to `*`
+5. Detects cycles (DFS with White/Gray/Black coloring) — cycles are hard
+   errors unless every node on the cycle is a system package
+6. Topological sort (DFS post-order) for install order, validated against the
+   graph's edges so a cyclic graph can never produce an order silently
 7. Returns packages in dependency-first order
 
 **System package resilience**: The resolver tolerates common characteristics
-of system packages:
-- **Virtual packages** (e.g., `default-dbus-session-bus`): `PackageNotFound`
-  errors for individual dependencies are skipped rather than failing the
-  entire resolution. `PackageNotFound` is the **only** skippable variant —
+of system packages, scoped so a genuine resolution failure is never hidden:
+- **Virtual packages** (e.g., `default-dbus-session-bus`): a dependency that
+  resolves from no source is skipped **only when every package that depends
+  on it is itself system-sourced** — a Debian/RPM roll-up name the native
+  manager handles. Anything else lands in `ResolveResult.unresolved`, and
+  `draft`/`substitute` abort with `UnresolvedDependencies` instead of
+  installing a subset; `update` stays best-effort and warns per name.
+  `PackageNotFound` is skippable only through this scoped window —
   every other error, including `NoMatchingAsset` and `NoBinaryFound`, aborts
   the resolution, so a dependency with no usable build can never be silently
   dropped from an install.
-- **Dependency cycles** (e.g., `libc6 ↔ libgcc-s1`): Cycle detection is
-  skipped and the topological sort returns the best available ordering.
+- **Dependency cycles** (e.g., `libc6 ↔ libgcc-s1`): tolerated only when
+  every node on the cycle is system-sourced; the resolver then falls back to
+  a best-effort ordering. A cycle touching any non-system package raises
+  `DependencyCycle` and aborts the install.
 - **Unparseable versions**: If `parse_version_flexible()` cannot normalize
   a version to semver, a `PackageManagerError` is returned.
 

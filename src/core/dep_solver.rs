@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use semver::{Version, VersionReq};
 
-use crate::core::package::Package;
-use crate::core::registry::RegistryClient;
+use crate::core::package::{Package, PackageSource};
+use crate::core::registry::RegistryIndex;
 use crate::error::error::BallError;
 
 #[derive(Debug, Clone)]
@@ -16,11 +16,12 @@ pub struct Dependency {
 #[derive(Debug, Clone)]
 pub struct ResolveResult {
     pub packages: Vec<Package>,
+    pub unresolved: Vec<String>,
 }
 
 pub fn resolve_deps(
     root_name: &str,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     resolve_from(root_name, None, registry, installed)
@@ -32,7 +33,7 @@ pub fn resolve_deps(
 /// so the resolver must not re-fetch (and re-resolve) it from the chain.
 pub fn resolve_deps_with_root(
     root: &Package,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     resolve_from(&root.name, Some(root), registry, installed)
@@ -41,25 +42,44 @@ pub fn resolve_deps_with_root(
 fn resolve_from(
     root_name: &str,
     pinned_root: Option<&Package>,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     let mut resolved: HashMap<String, Package> = HashMap::new();
+    let mut pkg_sources: HashMap<String, PackageSource> = HashMap::new();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    let mut system_nodes: HashSet<String> = HashSet::new();
     let mut constraints: HashMap<String, Vec<(String, VersionReq)>> = HashMap::new();
+    let mut unresolved: Vec<String> = Vec::new();
     let mut queue: VecDeque<String> = VecDeque::new();
 
     queue.push_back(root_name.to_string());
 
     while let Some(name) = queue.pop_front() {
         if resolved.contains_key(&name) {
+            // A constraint registered after this package resolved (a deeper
+            // path in the graph, or a pinned root) must still be enforced —
+            // revalidate against the stored version before skipping (#75).
+            if let Some(pkg) = resolved.get(&name) {
+                if let Some(parsed_ver) = parse_version_flexible(&pkg.version) {
+                    enforce_constraints(&name, &parsed_ver, &constraints)?;
+                }
+            }
             continue;
         }
 
         if let Some(root) = pinned_root {
             if name == root.name {
                 resolved.insert(name.clone(), root.clone());
-                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph);
+                pkg_sources.insert(name.clone(), root.source.clone());
+                enqueue_deps(
+                    root,
+                    &mut queue,
+                    &resolved,
+                    &mut constraints,
+                    &mut graph,
+                    &mut system_nodes,
+                )?;
                 continue;
             }
         }
@@ -68,7 +88,12 @@ fn resolve_from(
             let pkg = match registry.fetch_package(&name) {
                 Ok(p) => p,
                 Err(BallError::PackageNotFound(_)) => {
-                    // Skip unresolvable dependencies (e.g., Debian virtual packages)
+                    // Only tolerated when every depender is a system package
+                    // (Debian virtual packages have no manifest in the chain);
+                    // anything else is a genuine resolution failure (#73).
+                    if !system_virtual_dep(&name, &pkg_sources, &constraints) {
+                        unresolved.push(name);
+                    }
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -80,25 +105,27 @@ fn resolve_from(
                 ))
             })?;
 
-            if let Some(dep_cs) = constraints.get(&name) {
-                for (from_pkg, c) in dep_cs {
-                    if !c.matches(&parsed_ver) {
-                        return Err(BallError::VersionConflict(format!(
-                            "installed version {} of '{}' does not satisfy constraint '{}' required by '{}'",
-                            installed_ver, name, c, from_pkg
-                        )));
-                    }
-                }
-            }
+            enforce_constraints(&name, &parsed_ver, &constraints)?;
 
             resolved.insert(name.clone(), pkg.clone());
-            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph);
+            pkg_sources.insert(name.clone(), pkg.source.clone());
+            enqueue_deps(
+                &pkg,
+                &mut queue,
+                &resolved,
+                &mut constraints,
+                &mut graph,
+                &mut system_nodes,
+            )?;
             continue;
         }
 
         let pkg = match registry.fetch_package(&name) {
             Ok(p) => p,
             Err(BallError::PackageNotFound(_)) => {
+                if !system_virtual_dep(&name, &pkg_sources, &constraints) {
+                    unresolved.push(name);
+                }
                 continue;
             }
             Err(e) => return Err(e),
@@ -114,26 +141,49 @@ fn resolve_from(
             }
         };
 
-        if let Some(dep_cs) = constraints.get(&name) {
-            for (from_pkg, c) in dep_cs {
-                if !c.matches(&parsed_ver) {
-                    return Err(BallError::VersionConflict(format!(
-                        "version {} of '{}' does not satisfy constraint '{}' required by '{}'",
-                        pkg.version, name, c, from_pkg
-                    )));
-                }
-            }
-        }
+        enforce_constraints(&name, &parsed_ver, &constraints)?;
 
         resolved.insert(name.clone(), pkg.clone());
-        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph);
+        pkg_sources.insert(name.clone(), pkg.source.clone());
+        enqueue_deps(
+            &pkg,
+            &mut queue,
+            &resolved,
+            &mut constraints,
+            &mut graph,
+            &mut system_nodes,
+        )?;
     }
 
-    // Skip cycle detection for system packages — Debian/RPM commonly have
-    // mutual dependencies (e.g. libc6 <-> libgcc-s1) that are handled by
-    // native package managers.
-    let _ = detect_cycles(&graph);
-    let order = topological_sort(&graph)?;
+    for name in &unresolved {
+        tracing::warn!(
+            "dependency '{}' could not be resolved from any configured source",
+            name
+        );
+    }
+
+    // Cycles are a hard error unless every node on the cycle is a system package
+    // (Debian/RPM commonly have mutual deps like libc6 <-> libgcc-s1, handled
+    // by the native manager) — see #76.
+    let all_system_cycle = match find_cycle(&graph) {
+        Some(cycle) => {
+            if cycle.iter().any(|n| !system_nodes.contains(n)) {
+                return Err(BallError::DependencyCycle(format!(
+                    "cycle detected: {} -> {}",
+                    cycle.join(" -> "),
+                    cycle.first().cloned().unwrap_or_default()
+                )));
+            }
+            true
+        }
+        None => false,
+    };
+
+    let order = if all_system_cycle {
+        best_effort_order(&graph)
+    } else {
+        topological_sort(&graph)?
+    };
 
     let mut packages = Vec::new();
     for name in &order {
@@ -142,7 +192,57 @@ fn resolve_from(
         }
     }
 
-    Ok(ResolveResult { packages })
+    // Anything resolved but not covered by the ordering (a tolerated
+    // system-sourced cycle cannot be fully sorted) must not silently vanish.
+    packages.extend(resolved.into_values());
+
+    Ok(ResolveResult {
+        packages,
+        unresolved,
+    })
+}
+
+/// Whether a missing dependency is a tolerated system virtual package: it has
+/// no manifest anywhere in the chain, and *every* package that depends on it is
+/// itself system-sourced (Debian/RPM roll-up names the native manager handles).
+fn system_virtual_dep(
+    name: &str,
+    pkg_sources: &HashMap<String, PackageSource>,
+    constraints: &HashMap<String, Vec<(String, VersionReq)>>,
+) -> bool {
+    constraints.get(name).is_some_and(|dependers| {
+        !dependers.is_empty()
+            && dependers
+                .iter()
+                .all(|(from, _)| pkg_sources.get(from).is_some_and(pkg_is_system))
+    })
+}
+
+/// Whether a package's source is the native system package manager.
+fn pkg_is_system(source: &PackageSource) -> bool {
+    matches!(source, PackageSource::System { .. })
+}
+
+/// Reject `name`'s version when any registered constraint does not match.
+///
+/// Shared by every enforcement site — first resolution, installed-version
+/// resolution, the already-resolved skip path, and constraint registration.
+fn enforce_constraints(
+    name: &str,
+    version: &Version,
+    constraints: &HashMap<String, Vec<(String, VersionReq)>>,
+) -> Result<(), BallError> {
+    if let Some(dep_cs) = constraints.get(name) {
+        for (from_pkg, c) in dep_cs {
+            if !c.matches(version) {
+                return Err(BallError::VersionConflict(format!(
+                    "version {} of '{}' does not satisfy constraint '{}' required by '{}'",
+                    version, name, c, from_pkg
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn enqueue_deps(
@@ -151,8 +251,9 @@ fn enqueue_deps(
     resolved: &HashMap<String, Package>,
     constraints: &mut HashMap<String, Vec<(String, VersionReq)>>,
     graph: &mut HashMap<String, Vec<String>>,
-) {
-    let deps = parse_dependencies(pkg);
+    system_nodes: &mut HashSet<String>,
+) -> Result<(), BallError> {
+    let deps = parse_dependencies(pkg)?;
     let dep_names: Vec<String> = deps
         .iter()
         .filter(|d| !d.optional)
@@ -161,27 +262,47 @@ fn enqueue_deps(
 
     graph.insert(pkg.name.clone(), dep_names.clone());
 
-    for dep in &deps {
-        let entry = constraints.entry(dep.name.clone()).or_default();
-        entry.push((pkg.name.clone(), dep.constraint.clone()));
+    if pkg_is_system(&pkg.source) {
+        system_nodes.insert(pkg.name.clone());
+    }
 
-        if !dep.optional && !resolved.contains_key(&dep.name) && !queue.contains(&dep.name) {
+    for dep in &deps {
+        {
+            let entry = constraints.entry(dep.name.clone()).or_default();
+            entry.push((pkg.name.clone(), dep.constraint.clone()));
+        }
+
+        if dep.optional {
+            continue;
+        }
+
+        // A constraint arriving after its target is already resolved must be
+        // enforced now — it can never be re-checked by a later pop (#75).
+        if let Some(existing) = resolved.get(&dep.name) {
+            if let Some(existing_ver) = parse_version_flexible(&existing.version) {
+                enforce_constraints(&dep.name, &existing_ver, constraints)?;
+            }
+        }
+
+        if !resolved.contains_key(&dep.name) && !queue.contains(&dep.name) {
             queue.push_back(dep.name.clone());
         }
     }
+
+    Ok(())
 }
 
-fn parse_dependencies(pkg: &Package) -> Vec<Dependency> {
+fn parse_dependencies(pkg: &Package) -> Result<Vec<Dependency>, BallError> {
     let mut result = Vec::new();
     if let Some(deps) = &pkg.dependencies {
         for dep_str in deps {
-            result.push(parse_dependency_line(dep_str));
+            result.push(parse_dependency_line(dep_str)?);
         }
     }
-    result
+    Ok(result)
 }
 
-pub(crate) fn parse_dependency_line(dep_str: &str) -> Dependency {
+pub(crate) fn parse_dependency_line(dep_str: &str) -> Result<Dependency, BallError> {
     let trimmed = dep_str.trim();
     let optional = trimmed.starts_with('?');
     let cleaned = if optional {
@@ -194,13 +315,21 @@ pub(crate) fn parse_dependency_line(dep_str: &str) -> Dependency {
     let name = parts[0].trim().to_string();
     let constraint_str = parts.get(1).map(|s| s.trim()).unwrap_or("*");
 
-    let constraint = VersionReq::parse(constraint_str).unwrap_or(VersionReq::STAR);
+    let constraint = match VersionReq::parse(constraint_str) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(BallError::VersionConflict(format!(
+                "malformed version constraint '{}' for '{}': {}",
+                constraint_str, name, e
+            )));
+        }
+    };
 
-    Dependency {
+    Ok(Dependency {
         name,
         constraint,
         optional,
-    }
+    })
 }
 
 /// Parse a version string that may use formats other than strict semver.
@@ -256,7 +385,7 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     Version::parse(&normalized).ok()
 }
 
-pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), BallError> {
+fn find_cycle(graph: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
         White,
@@ -274,7 +403,7 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
         graph: &'a HashMap<String, Vec<String>>,
         colors: &mut HashMap<&'a str, Color>,
         path: &mut Vec<&'a str>,
-    ) -> Result<(), BallError> {
+    ) -> Option<Vec<String>> {
         colors.insert(node, Color::Gray);
         path.push(node);
 
@@ -284,13 +413,13 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
                     Color::Gray => {
                         let start = path.iter().position(|n| *n == dep.as_str()).unwrap_or(0);
                         let cycle: Vec<&str> = path[start..].to_vec();
-                        return Err(BallError::DependencyCycle(format!(
-                            "cycle detected: {} -> {}",
-                            cycle.join(" -> "),
-                            dep
-                        )));
+                        return Some(cycle.iter().map(|s| s.to_string()).collect());
                     }
-                    Color::White => visit(dep, graph, colors, path)?,
+                    Color::White => {
+                        if let Some(cycle) = visit(dep, graph, colors, path) {
+                            return Some(cycle);
+                        }
+                    }
                     Color::Black => {}
                 }
             }
@@ -298,23 +427,73 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
 
         path.pop();
         colors.insert(node, Color::Black);
-        Ok(())
+        None
     }
 
     let nodes: Vec<&str> = graph.keys().map(|s| s.as_str()).collect();
     let mut path = Vec::new();
     for name in nodes {
         if colors.get(name) == Some(&Color::White) {
-            visit(name, graph, &mut colors, &mut path)?;
+            if let Some(cycle) = visit(name, graph, &mut colors, &mut path) {
+                return Some(cycle);
+            }
         }
     }
 
-    Ok(())
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), BallError> {
+    match find_cycle(graph) {
+        Some(cycle) => {
+            let first = cycle.first().cloned().unwrap_or_default();
+            Err(BallError::DependencyCycle(format!(
+                "cycle detected: {} -> {}",
+                cycle.join(" -> "),
+                first
+            )))
+        }
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn topological_sort(
     graph: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, BallError> {
+    let order = best_effort_order(graph);
+
+    // Defense-in-depth: every edge must place its dependency before its
+    // dependent. A violation means the DFS ordered a cyclic graph —
+    // `find_cycle` should have caught it first, but a cycle must never reach
+    // the install plan silently (#76).
+    let index: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (node, deps) in graph {
+        for dep in deps {
+            if let (Some(&node_i), Some(&dep_i)) =
+                (index.get(node.as_str()), index.get(dep.as_str()))
+            {
+                if dep_i > node_i {
+                    return Err(BallError::DependencyCycle(format!(
+                        "cycle detected: '{}' must precede '{}'",
+                        dep, node
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(order)
+}
+
+/// Lenient DFS ordering, used only when every cycle on the graph is
+/// system-sourced: such a graph cannot be fully sorted, so a workable order
+/// beats failure and the native package manager resolves the mutual deps.
+fn best_effort_order(graph: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut result: Vec<String> = Vec::new();
 
@@ -344,9 +523,7 @@ pub(crate) fn topological_sort(
         }
     }
 
-    // For system packages, cycles are common (e.g. libc6 <-> libgcc-s1).
-    // Return the best available ordering instead of failing.
-    Ok(result)
+    result
 }
 
 pub fn get_installed_map(db: &crate::core::db::DbManager) -> HashMap<String, String> {
@@ -363,6 +540,28 @@ pub fn get_installed_map(db: &crate::core::db::DbManager) -> HashMap<String, Str
 mod tests {
     use super::*;
     use crate::core::package::PackageSource;
+
+    /// In-memory `RegistryIndex` that serves pre-built packages and reports
+    /// `PackageNotFound` for anything else — the sandboxed stand-in for
+    /// `RegistryClient` used by the resolver regression tests.
+    struct StubIndex {
+        packages: HashMap<String, Package>,
+    }
+
+    impl RegistryIndex for StubIndex {
+        fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
+            self.packages
+                .get(name)
+                .cloned()
+                .ok_or_else(|| BallError::PackageNotFound(name.to_string()))
+        }
+    }
+
+    fn stub_with(packages: Vec<Package>) -> StubIndex {
+        StubIndex {
+            packages: packages.into_iter().map(|p| (p.name.clone(), p)).collect(),
+        }
+    }
 
     fn make_pkg(name: &str, version: &str, deps: Option<Vec<&str>>) -> Package {
         Package {
@@ -383,9 +582,17 @@ mod tests {
         }
     }
 
+    fn make_pkg_system(name: &str, version: &str, deps: Option<Vec<&str>>) -> Package {
+        let mut pkg = make_pkg(name, version, deps);
+        pkg.source = PackageSource::System {
+            manager: "apt".to_string(),
+        };
+        pkg
+    }
+
     #[test]
     fn test_parse_dependency_line_simple() {
-        let dep = parse_dependency_line("foo");
+        let dep = parse_dependency_line("foo").unwrap();
         assert_eq!(dep.name, "foo");
         assert_eq!(dep.constraint, VersionReq::STAR);
         assert!(!dep.optional);
@@ -393,14 +600,14 @@ mod tests {
 
     #[test]
     fn test_parse_dependency_line_with_constraint() {
-        let dep = parse_dependency_line("foo >=1.0");
+        let dep = parse_dependency_line("foo >=1.0").unwrap();
         assert_eq!(dep.name, "foo");
         assert!(!dep.optional);
     }
 
     #[test]
     fn test_parse_dependency_line_optional() {
-        let dep = parse_dependency_line("? foo");
+        let dep = parse_dependency_line("? foo").unwrap();
         assert_eq!(dep.name, "foo");
         assert!(dep.optional);
         assert_eq!(dep.constraint, VersionReq::STAR);
@@ -408,15 +615,36 @@ mod tests {
 
     #[test]
     fn test_parse_dependency_line_optional_with_constraint() {
-        let dep = parse_dependency_line("? bar >=2.0");
+        let dep = parse_dependency_line("? bar >=2.0").unwrap();
         assert_eq!(dep.name, "bar");
         assert!(dep.optional);
     }
 
     #[test]
     fn test_parse_dependency_line_trimmed() {
-        let dep = parse_dependency_line("  baz  ");
+        let dep = parse_dependency_line("  baz  ").unwrap();
         assert_eq!(dep.name, "baz");
+    }
+
+    #[test]
+    fn test_parse_dependency_line_rejects_malformed_constraint() {
+        let result = parse_dependency_line("foo >=1.2..3");
+        match result {
+            Err(BallError::VersionConflict(msg)) => {
+                assert!(msg.contains(">=1.2..3"));
+                assert!(msg.contains("foo"));
+            }
+            other => panic!("expected VersionConflict, got {:?}", other),
+        }
+
+        assert!(parse_dependency_line("? bar ^'").is_err());
+        assert!(parse_dependency_line("baz 1..0").is_err());
+    }
+
+    #[test]
+    fn test_parse_dependency_line_empty_constraint_stays_star() {
+        let dep = parse_dependency_line("foo").unwrap();
+        assert_eq!(dep.constraint, VersionReq::STAR);
     }
 
     #[test]
@@ -517,21 +745,21 @@ mod tests {
     #[test]
     fn test_parse_dependencies_none() {
         let pkg = make_pkg("test", "1.0", None);
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_parse_dependencies_empty_vec() {
         let pkg = make_pkg("test", "1.0", Some(vec![]));
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_parse_dependencies_multiple() {
         let pkg = make_pkg("test", "1.0", Some(vec!["dep1", "? dep2", "dep3 >=2.0"]));
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert_eq!(deps.len(), 3);
         assert_eq!(deps[0].name, "dep1");
         assert!(!deps[0].optional);
@@ -539,6 +767,135 @@ mod tests {
         assert!(deps[1].optional);
         assert_eq!(deps[2].name, "dep3");
         assert!(!deps[2].optional);
+    }
+
+    #[test]
+    fn test_parse_dependencies_propagates_malformed_constraint() {
+        let pkg = make_pkg("test", "1.0", Some(vec!["ok", "bad >=1.2..3"]));
+        assert!(matches!(
+            parse_dependencies(&pkg),
+            Err(BallError::VersionConflict(_))
+        ));
+    }
+
+    #[test]
+    fn test_late_constraint_on_installed_dep_is_enforced() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "1.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+
+        let mut installed = HashMap::new();
+        installed.insert("b".to_string(), "1.0.0".to_string());
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_late_constraint_on_fetched_dep_is_enforced() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "1.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_late_constraint_on_pinned_root_is_enforced() {
+        let root_a = make_pkg("a", "9.9.9", Some(vec!["b"]));
+        let pkg_b = make_pkg("b", "1.0.0", Some(vec!["a <1.0"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_compatible_late_constraint_resolves() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "2.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"b"));
+    }
+
+    #[test]
+    fn test_resolver_errors_on_non_system_cycle() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg("b", "1.0.0", Some(vec!["c"]));
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::DependencyCycle(_))));
+    }
+
+    #[test]
+    fn test_resolver_errors_on_mixed_cycle() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::DependencyCycle(_))));
+    }
+
+    #[test]
+    fn test_resolver_tolerates_system_only_cycle() {
+        let root_a = make_pkg_system("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+    }
+
+    #[test]
+    fn test_unresolved_dependency_is_reported_not_silently_dropped() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["missing"]));
+        let stub = stub_with(vec![]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert_eq!(resolved.unresolved, vec!["missing"]);
+        assert!(resolved.packages.iter().all(|p| p.name != "missing"));
+    }
+
+    #[test]
+    fn test_system_virtual_dependency_is_tolerated() {
+        let root_a = make_pkg_system("a", "1.0.0", Some(vec!["lib-provider"]));
+        let stub = stub_with(vec![]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert!(resolved.unresolved.is_empty());
+        assert!(resolved.packages.iter().all(|p| p.name != "lib-provider"));
+    }
+
+    #[test]
+    fn test_missing_dep_with_non_system_depender_is_reported() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "missing"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["missing"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert!(resolved.unresolved.contains(&"missing".to_string()));
+        assert!(resolved.packages.iter().all(|p| p.name != "missing"));
     }
 
     #[test]
@@ -554,7 +911,10 @@ mod tests {
 
     #[test]
     fn test_resolve_result_debug() {
-        let result = ResolveResult { packages: vec![] };
+        let result = ResolveResult {
+            packages: vec![],
+            unresolved: vec![],
+        };
         let debug = format!("{:?}", result);
         assert!(debug.contains("packages"));
     }

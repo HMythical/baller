@@ -27,8 +27,9 @@ pub enum BallError {
     /// No release asset matches the host platform.
     ///
     /// A hard error: only `PackageNotFound` is skippable during dependency
-    /// resolution (`core::dep_solver`), so this aborts the command rather than
-    /// letting an install proceed with an asset built for another platform.
+    /// resolution (`core::dep_solver`, and only for system virtual packages),
+    /// so this aborts the command rather than letting an install proceed with
+    /// an asset built for another platform.
     NoMatchingAsset {
         /// The package the release belongs to
         package: String,
@@ -51,6 +52,12 @@ pub enum BallError {
         /// The cached archive it came from, when one is known
         archive: Option<String>,
     },
+    /// Non-optional dependencies that could not be resolved from any
+    /// configured source and are not tolerated system virtual packages.
+    ///
+    /// Raised by the `draft`/`substitute` paths, where installing a subset of
+    /// the requested dependency set silently would mask a broken install.
+    UnresolvedDependencies(Vec<String>),
 }
 
 impl fmt::Display for BallError {
@@ -138,6 +145,12 @@ impl fmt::Display for BallError {
                 std::env::consts::OS,
                 dir,
                 archive.as_deref().unwrap_or("<none>")
+            ),
+
+            BallError::UnresolvedDependencies(names) => write!(
+                f,
+                "unresolved dependencies: {} could not be found in any configured registry",
+                names.join(", ")
             ),
         }
     }
@@ -307,6 +320,15 @@ mod tests {
         };
         let msg = format!("{}", err);
         assert!(msg.contains("archive: <none>"));
+    }
+
+    #[test]
+    fn test_unresolved_dependencies_display() {
+        let err = BallError::UnresolvedDependencies(vec!["foo".to_string(), "bar".to_string()]);
+        let msg = format!("{}", err);
+        assert!(msg.contains("unresolved dependencies"));
+        assert!(msg.contains("foo, bar"));
+        assert!(msg.contains("in any configured registry"));
     }
 
     #[test]

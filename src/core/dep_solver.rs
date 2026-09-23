@@ -53,6 +53,14 @@ fn resolve_from(
 
     while let Some(name) = queue.pop_front() {
         if resolved.contains_key(&name) {
+            // A constraint registered after this package resolved (a deeper
+            // path in the graph, or a pinned root) must still be enforced —
+            // revalidate against the stored version before skipping (#75).
+            if let Some(pkg) = resolved.get(&name) {
+                if let Some(parsed_ver) = parse_version_flexible(&pkg.version) {
+                    enforce_constraints(&name, &parsed_ver, &constraints)?;
+                }
+            }
             continue;
         }
 
@@ -80,16 +88,7 @@ fn resolve_from(
                 ))
             })?;
 
-            if let Some(dep_cs) = constraints.get(&name) {
-                for (from_pkg, c) in dep_cs {
-                    if !c.matches(&parsed_ver) {
-                        return Err(BallError::VersionConflict(format!(
-                            "installed version {} of '{}' does not satisfy constraint '{}' required by '{}'",
-                            installed_ver, name, c, from_pkg
-                        )));
-                    }
-                }
-            }
+            enforce_constraints(&name, &parsed_ver, &constraints)?;
 
             resolved.insert(name.clone(), pkg.clone());
             enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
@@ -114,16 +113,7 @@ fn resolve_from(
             }
         };
 
-        if let Some(dep_cs) = constraints.get(&name) {
-            for (from_pkg, c) in dep_cs {
-                if !c.matches(&parsed_ver) {
-                    return Err(BallError::VersionConflict(format!(
-                        "version {} of '{}' does not satisfy constraint '{}' required by '{}'",
-                        pkg.version, name, c, from_pkg
-                    )));
-                }
-            }
-        }
+        enforce_constraints(&name, &parsed_ver, &constraints)?;
 
         resolved.insert(name.clone(), pkg.clone());
         enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
@@ -145,6 +135,28 @@ fn resolve_from(
     Ok(ResolveResult { packages })
 }
 
+/// Reject `name`'s version when any registered constraint does not match.
+///
+/// Shared by every enforcement site — first resolution, installed-version
+/// resolution, the already-resolved skip path, and constraint registration.
+fn enforce_constraints(
+    name: &str,
+    version: &Version,
+    constraints: &HashMap<String, Vec<(String, VersionReq)>>,
+) -> Result<(), BallError> {
+    if let Some(dep_cs) = constraints.get(name) {
+        for (from_pkg, c) in dep_cs {
+            if !c.matches(version) {
+                return Err(BallError::VersionConflict(format!(
+                    "version {} of '{}' does not satisfy constraint '{}' required by '{}'",
+                    version, name, c, from_pkg
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn enqueue_deps(
     pkg: &Package,
     queue: &mut VecDeque<String>,
@@ -162,10 +174,24 @@ fn enqueue_deps(
     graph.insert(pkg.name.clone(), dep_names.clone());
 
     for dep in &deps {
-        let entry = constraints.entry(dep.name.clone()).or_default();
-        entry.push((pkg.name.clone(), dep.constraint.clone()));
+        {
+            let entry = constraints.entry(dep.name.clone()).or_default();
+            entry.push((pkg.name.clone(), dep.constraint.clone()));
+        }
 
-        if !dep.optional && !resolved.contains_key(&dep.name) && !queue.contains(&dep.name) {
+        if dep.optional {
+            continue;
+        }
+
+        // A constraint arriving after its target is already resolved must be
+        // enforced now — it can never be re-checked by a later pop (#75).
+        if let Some(existing) = resolved.get(&dep.name) {
+            if let Some(existing_ver) = parse_version_flexible(&existing.version) {
+                enforce_constraints(&dep.name, &existing_ver, constraints)?;
+            }
+        }
+
+        if !resolved.contains_key(&dep.name) && !queue.contains(&dep.name) {
             queue.push_back(dep.name.clone());
         }
     }
@@ -478,6 +504,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_dependency_line_empty_constraint_stays_star() {
+        let dep = parse_dependency_line("foo").unwrap();
+        assert_eq!(dep.constraint, VersionReq::STAR);
+    }
+
+    #[test]
     fn test_detect_cycles_no_cycle() {
         let mut graph = HashMap::new();
         graph.insert("a".to_string(), vec!["b".to_string()]);
@@ -606,6 +638,56 @@ mod tests {
             parse_dependencies(&pkg),
             Err(BallError::VersionConflict(_))
         ));
+    }
+
+    #[test]
+    fn test_late_constraint_on_installed_dep_is_enforced() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "1.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+
+        let mut installed = HashMap::new();
+        installed.insert("b".to_string(), "1.0.0".to_string());
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_late_constraint_on_fetched_dep_is_enforced() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "1.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_late_constraint_on_pinned_root_is_enforced() {
+        let root_a = make_pkg("a", "9.9.9", Some(vec!["b"]));
+        let pkg_b = make_pkg("b", "1.0.0", Some(vec!["a <1.0"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::VersionConflict(_))));
+    }
+
+    #[test]
+    fn test_compatible_late_constraint_resolves() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "c"]));
+        let pkg_b = make_pkg("b", "2.0.0", None);
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["b >=2.0"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"b"));
     }
 
     #[test]

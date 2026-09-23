@@ -41,7 +41,15 @@ pub fn execute_substitute(
     let packages = if opts.no_deps {
         vec![pkg.clone()]
     } else {
-        resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages
+        let resolved = resolve_deps_with_root(&pkg, &ctx.registry, &installed)?;
+
+        // A subset install is not a substitute: unresolvable dependencies must
+        // abort the command rather than silently vanish (#73).
+        if !resolved.unresolved.is_empty() {
+            return Err(BallError::UnresolvedDependencies(resolved.unresolved));
+        }
+
+        resolved.packages
     };
 
     // Referee Phase A on the replacement, before the old package is touched:

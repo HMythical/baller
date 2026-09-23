@@ -83,10 +83,14 @@ fn system_registry() -> SystemRegistry {
     SystemRegistry::unavailable()
 }
 
-#[allow(dead_code)]
 pub trait RegistryIndex {
     fn fetch_package(&self, name: &str) -> Result<Package, BallError>;
-    fn search(&self, query: &str) -> Result<Vec<Package>, BallError>;
+}
+
+impl RegistryIndex for RegistryClient {
+    fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
+        self.fetch_package(name)
+    }
 }
 
 pub struct RegistryClient {

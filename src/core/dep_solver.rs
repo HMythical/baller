@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use semver::{Version, VersionReq};
 
-use crate::core::package::Package;
+use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistryIndex;
 use crate::error::error::BallError;
 
@@ -46,6 +46,7 @@ fn resolve_from(
 ) -> Result<ResolveResult, BallError> {
     let mut resolved: HashMap<String, Package> = HashMap::new();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    let mut system_nodes: HashSet<String> = HashSet::new();
     let mut constraints: HashMap<String, Vec<(String, VersionReq)>> = HashMap::new();
     let mut queue: VecDeque<String> = VecDeque::new();
 
@@ -67,7 +68,7 @@ fn resolve_from(
         if let Some(root) = pinned_root {
             if name == root.name {
                 resolved.insert(name.clone(), root.clone());
-                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph)?;
+                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
                 continue;
             }
         }
@@ -91,7 +92,7 @@ fn resolve_from(
             enforce_constraints(&name, &parsed_ver, &constraints)?;
 
             resolved.insert(name.clone(), pkg.clone());
-            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
+            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
             continue;
         }
 
@@ -116,14 +117,31 @@ fn resolve_from(
         enforce_constraints(&name, &parsed_ver, &constraints)?;
 
         resolved.insert(name.clone(), pkg.clone());
-        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
+        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
     }
 
-    // Skip cycle detection for system packages — Debian/RPM commonly have
-    // mutual dependencies (e.g. libc6 <-> libgcc-s1) that are handled by
-    // native package managers.
-    let _ = detect_cycles(&graph);
-    let order = topological_sort(&graph)?;
+    // Cycles are a hard error unless every node on the cycle is a system package
+    // (Debian/RPM commonly have mutual deps like libc6 <-> libgcc-s1, handled
+    // by the native manager) — see #76.
+    let all_system_cycle = match find_cycle(&graph) {
+        Some(cycle) => {
+            if cycle.iter().any(|n| !system_nodes.contains(n)) {
+                return Err(BallError::DependencyCycle(format!(
+                    "cycle detected: {} -> {}",
+                    cycle.join(" -> "),
+                    cycle.first().cloned().unwrap_or_default()
+                )));
+            }
+            true
+        }
+        None => false,
+    };
+
+    let order = if all_system_cycle {
+        best_effort_order(&graph)
+    } else {
+        topological_sort(&graph)?
+    };
 
     let mut packages = Vec::new();
     for name in &order {
@@ -132,7 +150,16 @@ fn resolve_from(
         }
     }
 
+    // Anything resolved but not covered by the ordering (a tolerated
+    // system-sourced cycle cannot be fully sorted) must not silently vanish.
+    packages.extend(resolved.into_values());
+
     Ok(ResolveResult { packages })
+}
+
+/// Whether a package's source is the native system package manager.
+fn pkg_is_system(source: &PackageSource) -> bool {
+    matches!(source, PackageSource::System { .. })
 }
 
 /// Reject `name`'s version when any registered constraint does not match.
@@ -163,6 +190,7 @@ fn enqueue_deps(
     resolved: &HashMap<String, Package>,
     constraints: &mut HashMap<String, Vec<(String, VersionReq)>>,
     graph: &mut HashMap<String, Vec<String>>,
+    system_nodes: &mut HashSet<String>,
 ) -> Result<(), BallError> {
     let deps = parse_dependencies(pkg)?;
     let dep_names: Vec<String> = deps
@@ -172,6 +200,10 @@ fn enqueue_deps(
         .collect();
 
     graph.insert(pkg.name.clone(), dep_names.clone());
+
+    if pkg_is_system(&pkg.source) {
+        system_nodes.insert(pkg.name.clone());
+    }
 
     for dep in &deps {
         {
@@ -292,7 +324,7 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     Version::parse(&normalized).ok()
 }
 
-pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), BallError> {
+fn find_cycle(graph: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
         White,
@@ -310,7 +342,7 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
         graph: &'a HashMap<String, Vec<String>>,
         colors: &mut HashMap<&'a str, Color>,
         path: &mut Vec<&'a str>,
-    ) -> Result<(), BallError> {
+    ) -> Option<Vec<String>> {
         colors.insert(node, Color::Gray);
         path.push(node);
 
@@ -320,13 +352,13 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
                     Color::Gray => {
                         let start = path.iter().position(|n| *n == dep.as_str()).unwrap_or(0);
                         let cycle: Vec<&str> = path[start..].to_vec();
-                        return Err(BallError::DependencyCycle(format!(
-                            "cycle detected: {} -> {}",
-                            cycle.join(" -> "),
-                            dep
-                        )));
+                        return Some(cycle.iter().map(|s| s.to_string()).collect());
                     }
-                    Color::White => visit(dep, graph, colors, path)?,
+                    Color::White => {
+                        if let Some(cycle) = visit(dep, graph, colors, path) {
+                            return Some(cycle);
+                        }
+                    }
                     Color::Black => {}
                 }
             }
@@ -334,23 +366,73 @@ pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), 
 
         path.pop();
         colors.insert(node, Color::Black);
-        Ok(())
+        None
     }
 
     let nodes: Vec<&str> = graph.keys().map(|s| s.as_str()).collect();
     let mut path = Vec::new();
     for name in nodes {
         if colors.get(name) == Some(&Color::White) {
-            visit(name, graph, &mut colors, &mut path)?;
+            if let Some(cycle) = visit(name, graph, &mut colors, &mut path) {
+                return Some(cycle);
+            }
         }
     }
 
-    Ok(())
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn detect_cycles(graph: &HashMap<String, Vec<String>>) -> Result<(), BallError> {
+    match find_cycle(graph) {
+        Some(cycle) => {
+            let first = cycle.first().cloned().unwrap_or_default();
+            Err(BallError::DependencyCycle(format!(
+                "cycle detected: {} -> {}",
+                cycle.join(" -> "),
+                first
+            )))
+        }
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn topological_sort(
     graph: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, BallError> {
+    let order = best_effort_order(graph);
+
+    // Defense-in-depth: every edge must place its dependency before its
+    // dependent. A violation means the DFS ordered a cyclic graph —
+    // `find_cycle` should have caught it first, but a cycle must never reach
+    // the install plan silently (#76).
+    let index: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (node, deps) in graph {
+        for dep in deps {
+            if let (Some(&node_i), Some(&dep_i)) =
+                (index.get(node.as_str()), index.get(dep.as_str()))
+            {
+                if dep_i > node_i {
+                    return Err(BallError::DependencyCycle(format!(
+                        "cycle detected: '{}' must precede '{}'",
+                        dep, node
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(order)
+}
+
+/// Lenient DFS ordering, used only when every cycle on the graph is
+/// system-sourced: such a graph cannot be fully sorted, so a workable order
+/// beats failure and the native package manager resolves the mutual deps.
+fn best_effort_order(graph: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut result: Vec<String> = Vec::new();
 
@@ -380,9 +462,7 @@ pub(crate) fn topological_sort(
         }
     }
 
-    // For system packages, cycles are common (e.g. libc6 <-> libgcc-s1).
-    // Return the best available ordering instead of failing.
-    Ok(result)
+    result
 }
 
 pub fn get_installed_map(db: &crate::core::db::DbManager) -> HashMap<String, String> {
@@ -687,6 +767,42 @@ mod tests {
 
         let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
         let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"b"));
+    }
+
+    #[test]
+    fn test_resolver_errors_on_non_system_cycle() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg("b", "1.0.0", Some(vec!["c"]));
+        let pkg_c = make_pkg("c", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b, pkg_c]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::DependencyCycle(_))));
+    }
+
+    #[test]
+    fn test_resolver_errors_on_mixed_cycle() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed);
+        assert!(matches!(result, Err(BallError::DependencyCycle(_))));
+    }
+
+    #[test]
+    fn test_resolver_tolerates_system_only_cycle() {
+        let root_a = make_pkg_system("a", "1.0.0", Some(vec!["b"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["a"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
     }
 

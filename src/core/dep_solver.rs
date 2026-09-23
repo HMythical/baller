@@ -16,6 +16,7 @@ pub struct Dependency {
 #[derive(Debug, Clone)]
 pub struct ResolveResult {
     pub packages: Vec<Package>,
+    pub unresolved: Vec<String>,
 }
 
 pub fn resolve_deps(
@@ -45,9 +46,11 @@ fn resolve_from(
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     let mut resolved: HashMap<String, Package> = HashMap::new();
+    let mut pkg_sources: HashMap<String, PackageSource> = HashMap::new();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     let mut system_nodes: HashSet<String> = HashSet::new();
     let mut constraints: HashMap<String, Vec<(String, VersionReq)>> = HashMap::new();
+    let mut unresolved: Vec<String> = Vec::new();
     let mut queue: VecDeque<String> = VecDeque::new();
 
     queue.push_back(root_name.to_string());
@@ -68,6 +71,7 @@ fn resolve_from(
         if let Some(root) = pinned_root {
             if name == root.name {
                 resolved.insert(name.clone(), root.clone());
+                pkg_sources.insert(name.clone(), root.source.clone());
                 enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
                 continue;
             }
@@ -77,7 +81,12 @@ fn resolve_from(
             let pkg = match registry.fetch_package(&name) {
                 Ok(p) => p,
                 Err(BallError::PackageNotFound(_)) => {
-                    // Skip unresolvable dependencies (e.g., Debian virtual packages)
+                    // Only tolerated when every depender is a system package
+                    // (Debian virtual packages have no manifest in the chain);
+                    // anything else is a genuine resolution failure (#73).
+                    if !system_virtual_dep(&name, &pkg_sources, &constraints) {
+                        unresolved.push(name);
+                    }
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -92,6 +101,7 @@ fn resolve_from(
             enforce_constraints(&name, &parsed_ver, &constraints)?;
 
             resolved.insert(name.clone(), pkg.clone());
+            pkg_sources.insert(name.clone(), pkg.source.clone());
             enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
             continue;
         }
@@ -99,6 +109,9 @@ fn resolve_from(
         let pkg = match registry.fetch_package(&name) {
             Ok(p) => p,
             Err(BallError::PackageNotFound(_)) => {
+                if !system_virtual_dep(&name, &pkg_sources, &constraints) {
+                    unresolved.push(name);
+                }
                 continue;
             }
             Err(e) => return Err(e),
@@ -117,7 +130,15 @@ fn resolve_from(
         enforce_constraints(&name, &parsed_ver, &constraints)?;
 
         resolved.insert(name.clone(), pkg.clone());
+        pkg_sources.insert(name.clone(), pkg.source.clone());
         enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
+    }
+
+    for name in &unresolved {
+        tracing::warn!(
+            "dependency '{}' could not be resolved from any configured source",
+            name
+        );
     }
 
     // Cycles are a hard error unless every node on the cycle is a system package
@@ -154,7 +175,26 @@ fn resolve_from(
     // system-sourced cycle cannot be fully sorted) must not silently vanish.
     packages.extend(resolved.into_values());
 
-    Ok(ResolveResult { packages })
+    Ok(ResolveResult {
+        packages,
+        unresolved,
+    })
+}
+
+/// Whether a missing dependency is a tolerated system virtual package: it has
+/// no manifest anywhere in the chain, and *every* package that depends on it is
+/// itself system-sourced (Debian/RPM roll-up names the native manager handles).
+fn system_virtual_dep(
+    name: &str,
+    pkg_sources: &HashMap<String, PackageSource>,
+    constraints: &HashMap<String, Vec<(String, VersionReq)>>,
+) -> bool {
+    constraints.get(name).is_some_and(|dependers| {
+        !dependers.is_empty()
+            && dependers
+                .iter()
+                .all(|(from, _)| pkg_sources.get(from).is_some_and(pkg_is_system))
+    })
 }
 
 /// Whether a package's source is the native system package manager.
@@ -800,10 +840,44 @@ mod tests {
         let stub = stub_with(vec![pkg_b]);
         let installed = HashMap::new();
 
-        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
         let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
+    }
+
+    #[test]
+    fn test_unresolved_dependency_is_reported_not_silently_dropped() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["missing"]));
+        let stub = stub_with(vec![]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert_eq!(resolved.unresolved, vec!["missing"]);
+        assert!(resolved.packages.iter().all(|p| p.name != "missing"));
+    }
+
+    #[test]
+    fn test_system_virtual_dependency_is_tolerated() {
+        let root_a = make_pkg_system("a", "1.0.0", Some(vec!["lib-provider"]));
+        let stub = stub_with(vec![]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert!(resolved.unresolved.is_empty());
+        assert!(resolved.packages.iter().all(|p| p.name != "lib-provider"));
+    }
+
+    #[test]
+    fn test_missing_dep_with_non_system_depender_is_reported() {
+        let root_a = make_pkg("a", "1.0.0", Some(vec!["b", "missing"]));
+        let pkg_b = make_pkg_system("b", "1.0.0", Some(vec!["missing"]));
+        let stub = stub_with(vec![pkg_b]);
+        let installed = HashMap::new();
+
+        let resolved = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        assert!(resolved.unresolved.contains(&"missing".to_string()));
+        assert!(resolved.packages.iter().all(|p| p.name != "missing"));
     }
 
     #[test]
@@ -819,7 +893,10 @@ mod tests {
 
     #[test]
     fn test_resolve_result_debug() {
-        let result = ResolveResult { packages: vec![] };
+        let result = ResolveResult {
+            packages: vec![],
+            unresolved: vec![],
+        };
         let debug = format!("{:?}", result);
         assert!(debug.contains("packages"));
     }

@@ -108,6 +108,17 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                 let installed = get_installed_map(&ctx.db);
                 let resolve_result = resolve_deps(&remote_pkg.name, &ctx.registry, &installed)?;
 
+                // `update` stays best-effort: it re-derives `missing_deps` from
+                // the subset below, but an unresolvable dependency must at least
+                // be visible, never silent (#73).
+                for name in &resolve_result.unresolved {
+                    tracing::warn!(
+                        "dependency '{}' of '{}' could not be resolved; skipping it",
+                        name,
+                        pkg.name
+                    );
+                }
+
                 let missing_deps: Vec<&Package> = resolve_result
                     .packages
                     .iter()

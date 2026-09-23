@@ -61,12 +61,19 @@ pub fn execute_draft(
         tracing::debug!("dependency resolution skipped (--no-deps)");
         vec![pkg.clone()]
     } else {
-        let resolved = resolve_deps_with_root(&pkg, &ctx.registry, &installed)?.packages;
+        let resolved = resolve_deps_with_root(&pkg, &ctx.registry, &installed)?;
+
+        // A dependency that could not be resolved must never be silently
+        // dropped from the plan: installing a subset is not a success (#73).
+        if !resolved.unresolved.is_empty() {
+            return Err(BallError::UnresolvedDependencies(resolved.unresolved));
+        }
+
         tracing::debug!(
             "dependency resolution produced {} package(s)",
-            resolved.len()
+            resolved.packages.len()
         );
-        resolved
+        resolved.packages
     };
 
     for candidate in &result_packages {

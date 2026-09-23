@@ -59,7 +59,7 @@ fn resolve_from(
         if let Some(root) = pinned_root {
             if name == root.name {
                 resolved.insert(name.clone(), root.clone());
-                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph);
+                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph)?;
                 continue;
             }
         }
@@ -92,7 +92,7 @@ fn resolve_from(
             }
 
             resolved.insert(name.clone(), pkg.clone());
-            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph);
+            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
             continue;
         }
 
@@ -126,7 +126,7 @@ fn resolve_from(
         }
 
         resolved.insert(name.clone(), pkg.clone());
-        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph);
+        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph)?;
     }
 
     // Skip cycle detection for system packages — Debian/RPM commonly have
@@ -151,8 +151,8 @@ fn enqueue_deps(
     resolved: &HashMap<String, Package>,
     constraints: &mut HashMap<String, Vec<(String, VersionReq)>>,
     graph: &mut HashMap<String, Vec<String>>,
-) {
-    let deps = parse_dependencies(pkg);
+) -> Result<(), BallError> {
+    let deps = parse_dependencies(pkg)?;
     let dep_names: Vec<String> = deps
         .iter()
         .filter(|d| !d.optional)
@@ -169,19 +169,21 @@ fn enqueue_deps(
             queue.push_back(dep.name.clone());
         }
     }
+
+    Ok(())
 }
 
-fn parse_dependencies(pkg: &Package) -> Vec<Dependency> {
+fn parse_dependencies(pkg: &Package) -> Result<Vec<Dependency>, BallError> {
     let mut result = Vec::new();
     if let Some(deps) = &pkg.dependencies {
         for dep_str in deps {
-            result.push(parse_dependency_line(dep_str));
+            result.push(parse_dependency_line(dep_str)?);
         }
     }
-    result
+    Ok(result)
 }
 
-pub(crate) fn parse_dependency_line(dep_str: &str) -> Dependency {
+pub(crate) fn parse_dependency_line(dep_str: &str) -> Result<Dependency, BallError> {
     let trimmed = dep_str.trim();
     let optional = trimmed.starts_with('?');
     let cleaned = if optional {
@@ -194,13 +196,21 @@ pub(crate) fn parse_dependency_line(dep_str: &str) -> Dependency {
     let name = parts[0].trim().to_string();
     let constraint_str = parts.get(1).map(|s| s.trim()).unwrap_or("*");
 
-    let constraint = VersionReq::parse(constraint_str).unwrap_or(VersionReq::STAR);
+    let constraint = match VersionReq::parse(constraint_str) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(BallError::VersionConflict(format!(
+                "malformed version constraint '{}' for '{}': {}",
+                constraint_str, name, e
+            )));
+        }
+    };
 
-    Dependency {
+    Ok(Dependency {
         name,
         constraint,
         optional,
-    }
+    })
 }
 
 /// Parse a version string that may use formats other than strict semver.
@@ -418,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_parse_dependency_line_simple() {
-        let dep = parse_dependency_line("foo");
+        let dep = parse_dependency_line("foo").unwrap();
         assert_eq!(dep.name, "foo");
         assert_eq!(dep.constraint, VersionReq::STAR);
         assert!(!dep.optional);
@@ -426,14 +436,14 @@ mod tests {
 
     #[test]
     fn test_parse_dependency_line_with_constraint() {
-        let dep = parse_dependency_line("foo >=1.0");
+        let dep = parse_dependency_line("foo >=1.0").unwrap();
         assert_eq!(dep.name, "foo");
         assert!(!dep.optional);
     }
 
     #[test]
     fn test_parse_dependency_line_optional() {
-        let dep = parse_dependency_line("? foo");
+        let dep = parse_dependency_line("? foo").unwrap();
         assert_eq!(dep.name, "foo");
         assert!(dep.optional);
         assert_eq!(dep.constraint, VersionReq::STAR);
@@ -441,15 +451,30 @@ mod tests {
 
     #[test]
     fn test_parse_dependency_line_optional_with_constraint() {
-        let dep = parse_dependency_line("? bar >=2.0");
+        let dep = parse_dependency_line("? bar >=2.0").unwrap();
         assert_eq!(dep.name, "bar");
         assert!(dep.optional);
     }
 
     #[test]
     fn test_parse_dependency_line_trimmed() {
-        let dep = parse_dependency_line("  baz  ");
+        let dep = parse_dependency_line("  baz  ").unwrap();
         assert_eq!(dep.name, "baz");
+    }
+
+    #[test]
+    fn test_parse_dependency_line_rejects_malformed_constraint() {
+        let result = parse_dependency_line("foo >=1.2..3");
+        match result {
+            Err(BallError::VersionConflict(msg)) => {
+                assert!(msg.contains(">=1.2..3"));
+                assert!(msg.contains("foo"));
+            }
+            other => panic!("expected VersionConflict, got {:?}", other),
+        }
+
+        assert!(parse_dependency_line("? bar ^'").is_err());
+        assert!(parse_dependency_line("baz 1..0").is_err());
     }
 
     #[test]
@@ -550,21 +575,21 @@ mod tests {
     #[test]
     fn test_parse_dependencies_none() {
         let pkg = make_pkg("test", "1.0", None);
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_parse_dependencies_empty_vec() {
         let pkg = make_pkg("test", "1.0", Some(vec![]));
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_parse_dependencies_multiple() {
         let pkg = make_pkg("test", "1.0", Some(vec!["dep1", "? dep2", "dep3 >=2.0"]));
-        let deps = parse_dependencies(&pkg);
+        let deps = parse_dependencies(&pkg).unwrap();
         assert_eq!(deps.len(), 3);
         assert_eq!(deps[0].name, "dep1");
         assert!(!deps[0].optional);
@@ -572,6 +597,15 @@ mod tests {
         assert!(deps[1].optional);
         assert_eq!(deps[2].name, "dep3");
         assert!(!deps[2].optional);
+    }
+
+    #[test]
+    fn test_parse_dependencies_propagates_malformed_constraint() {
+        let pkg = make_pkg("test", "1.0", Some(vec!["ok", "bad >=1.2..3"]));
+        assert!(matches!(
+            parse_dependencies(&pkg),
+            Err(BallError::VersionConflict(_))
+        ));
     }
 
     #[test]

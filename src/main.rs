@@ -220,14 +220,14 @@ mod integration_tests {
 
     #[test]
     fn test_dependency_parsing_edge_cases() {
-        let dep = parse_dependency_line("?");
+        let dep = parse_dependency_line("?").unwrap();
         assert_eq!(dep.name, "");
         assert!(dep.optional);
 
-        let dep = parse_dependency_line("");
+        let dep = parse_dependency_line("").unwrap();
         assert_eq!(dep.name, "");
 
-        let dep = parse_dependency_line("pkg >=1.0.0-alpha.1");
+        let dep = parse_dependency_line("pkg >=1.0.0-alpha.1").unwrap();
         assert_eq!(dep.name, "pkg");
         assert!(!dep.optional);
     }

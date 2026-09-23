@@ -324,10 +324,7 @@ mod tests {
 
     #[test]
     fn test_unresolved_dependencies_display() {
-        let err = BallError::UnresolvedDependencies(vec![
-            "foo".to_string(),
-            "bar".to_string(),
-        ]);
+        let err = BallError::UnresolvedDependencies(vec!["foo".to_string(), "bar".to_string()]);
         let msg = format!("{}", err);
         assert!(msg.contains("unresolved dependencies"));
         assert!(msg.contains("foo, bar"));

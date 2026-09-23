@@ -72,7 +72,14 @@ fn resolve_from(
             if name == root.name {
                 resolved.insert(name.clone(), root.clone());
                 pkg_sources.insert(name.clone(), root.source.clone());
-                enqueue_deps(root, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
+                enqueue_deps(
+                    root,
+                    &mut queue,
+                    &resolved,
+                    &mut constraints,
+                    &mut graph,
+                    &mut system_nodes,
+                )?;
                 continue;
             }
         }
@@ -102,7 +109,14 @@ fn resolve_from(
 
             resolved.insert(name.clone(), pkg.clone());
             pkg_sources.insert(name.clone(), pkg.source.clone());
-            enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
+            enqueue_deps(
+                &pkg,
+                &mut queue,
+                &resolved,
+                &mut constraints,
+                &mut graph,
+                &mut system_nodes,
+            )?;
             continue;
         }
 
@@ -131,7 +145,14 @@ fn resolve_from(
 
         resolved.insert(name.clone(), pkg.clone());
         pkg_sources.insert(name.clone(), pkg.source.clone());
-        enqueue_deps(&pkg, &mut queue, &resolved, &mut constraints, &mut graph, &mut system_nodes)?;
+        enqueue_deps(
+            &pkg,
+            &mut queue,
+            &resolved,
+            &mut constraints,
+            &mut graph,
+            &mut system_nodes,
+        )?;
     }
 
     for name in &unresolved {
@@ -538,10 +559,7 @@ mod tests {
 
     fn stub_with(packages: Vec<Package>) -> StubIndex {
         StubIndex {
-            packages: packages
-                .into_iter()
-                .map(|p| (p.name.clone(), p))
-                .collect(),
+            packages: packages.into_iter().map(|p| (p.name.clone(), p)).collect(),
         }
     }
 
@@ -840,7 +858,7 @@ mod tests {
         let stub = stub_with(vec![pkg_b]);
         let installed = HashMap::new();
 
-let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
+        let result = resolve_deps_with_root(&root_a, &stub, &installed).unwrap();
         let names: Vec<&str> = result.packages.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));

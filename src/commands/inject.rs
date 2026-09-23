@@ -136,6 +136,7 @@ fn validate_manifest(manifest: &BallManifest) -> Result<PathBuf, BallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn manifest_with(name: &str, path: PathBuf) -> BallManifest {
         BallManifest {
@@ -150,11 +151,17 @@ mod tests {
         }
     }
 
+    /// A directory no other test can be looking at.
+    ///
+    /// `tag` is a label for the human reading a failure; uniqueness comes from
+    /// the counter, because two tests that pick the same tag would otherwise
+    /// share a path and delete each other's files mid-run.
     fn test_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir()
             .join("baller_inject_tests")
-            .join(format!("{}_{}", std::process::id(), tag));
-        let _ = std::fs::remove_dir_all(&dir);
+            .join(format!("{}_{}_{}", std::process::id(), tag, n));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -247,7 +254,7 @@ mod tests {
             };
         }
 
-        test_invalid_name!("--json", "name_with_dashes");
+        test_invalid_name!("--json", "double_dash_flag");
         test_invalid_name!("-j", "name_with_single_dash");
         test_invalid_name!("-", "lonely_dash");
         test_invalid_name!("$(rm -rf ~)", "dangerous_shell_subst");

@@ -351,13 +351,22 @@ mod tests {
         (path, dir)
     }
 
+    /// A directory name no other `write_config` call can produce.
+    ///
+    /// The timestamp alone is only as unique as the clock's resolution, so the
+    /// process id and a counter carry the guarantee: every caller gets its own
+    /// directory even when two threads read the same tick.
     fn uuid_like() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("config_test_{}", nanos)
+        format!("config_test_{}_{}_{}", std::process::id(), nanos, n)
     }
 
     #[test]

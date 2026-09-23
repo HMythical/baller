@@ -42,6 +42,7 @@ build/winbuild/dist/
 *.key
 *.pem
 credentials
+/plans
 
 #Local version-bump tooling
 /scripts/update_version.py

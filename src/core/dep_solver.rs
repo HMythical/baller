@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use semver::{Version, VersionReq};
 
 use crate::core::package::Package;
-use crate::core::registry::RegistryClient;
+use crate::core::registry::RegistryIndex;
 use crate::error::error::BallError;
 
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ pub struct ResolveResult {
 
 pub fn resolve_deps(
     root_name: &str,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     resolve_from(root_name, None, registry, installed)
@@ -32,7 +32,7 @@ pub fn resolve_deps(
 /// so the resolver must not re-fetch (and re-resolve) it from the chain.
 pub fn resolve_deps_with_root(
     root: &Package,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     resolve_from(&root.name, Some(root), registry, installed)
@@ -41,7 +41,7 @@ pub fn resolve_deps_with_root(
 fn resolve_from(
     root_name: &str,
     pinned_root: Option<&Package>,
-    registry: &RegistryClient,
+    registry: &impl RegistryIndex,
     installed: &HashMap<String, String>,
 ) -> Result<ResolveResult, BallError> {
     let mut resolved: HashMap<String, Package> = HashMap::new();
@@ -364,6 +364,31 @@ mod tests {
     use super::*;
     use crate::core::package::PackageSource;
 
+    /// In-memory `RegistryIndex` that serves pre-built packages and reports
+    /// `PackageNotFound` for anything else — the sandboxed stand-in for
+    /// `RegistryClient` used by the resolver regression tests.
+    struct StubIndex {
+        packages: HashMap<String, Package>,
+    }
+
+    impl RegistryIndex for StubIndex {
+        fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
+            self.packages
+                .get(name)
+                .cloned()
+                .ok_or_else(|| BallError::PackageNotFound(name.to_string()))
+        }
+    }
+
+    fn stub_with(packages: Vec<Package>) -> StubIndex {
+        StubIndex {
+            packages: packages
+                .into_iter()
+                .map(|p| (p.name.clone(), p))
+                .collect(),
+        }
+    }
+
     fn make_pkg(name: &str, version: &str, deps: Option<Vec<&str>>) -> Package {
         Package {
             name: name.to_string(),
@@ -381,6 +406,14 @@ mod tests {
                 repo: name.to_string(),
             },
         }
+    }
+
+    fn make_pkg_system(name: &str, version: &str, deps: Option<Vec<&str>>) -> Package {
+        let mut pkg = make_pkg(name, version, deps);
+        pkg.source = PackageSource::System {
+            manager: "apt".to_string(),
+        };
+        pkg
     }
 
     #[test]

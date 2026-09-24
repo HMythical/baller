@@ -308,23 +308,23 @@ mod tests {
 
     #[test]
     fn test_parse_bool_true_variants() {
-        assert_eq!(parse_bool("true", 0).unwrap(), true);
-        assert_eq!(parse_bool("yes", 0).unwrap(), true);
-        assert_eq!(parse_bool("1", 0).unwrap(), true);
-        assert_eq!(parse_bool("on", 0).unwrap(), true);
-        assert_eq!(parse_bool("TRUE", 0).unwrap(), true);
-        assert_eq!(parse_bool("YES", 0).unwrap(), true);
-        assert_eq!(parse_bool("ON", 0).unwrap(), true);
+        assert!(parse_bool("true", 0).unwrap());
+        assert!(parse_bool("yes", 0).unwrap());
+        assert!(parse_bool("1", 0).unwrap());
+        assert!(parse_bool("on", 0).unwrap());
+        assert!(parse_bool("TRUE", 0).unwrap());
+        assert!(parse_bool("YES", 0).unwrap());
+        assert!(parse_bool("ON", 0).unwrap());
     }
 
     #[test]
     fn test_parse_bool_false_variants() {
-        assert_eq!(parse_bool("false", 0).unwrap(), false);
-        assert_eq!(parse_bool("no", 0).unwrap(), false);
-        assert_eq!(parse_bool("0", 0).unwrap(), false);
-        assert_eq!(parse_bool("off", 0).unwrap(), false);
-        assert_eq!(parse_bool("FALSE", 0).unwrap(), false);
-        assert_eq!(parse_bool("OFF", 0).unwrap(), false);
+        assert!(!parse_bool("false", 0).unwrap());
+        assert!(!parse_bool("no", 0).unwrap());
+        assert!(!parse_bool("0", 0).unwrap());
+        assert!(!parse_bool("off", 0).unwrap());
+        assert!(!parse_bool("FALSE", 0).unwrap());
+        assert!(!parse_bool("OFF", 0).unwrap());
     }
 
     #[test]
@@ -430,9 +430,9 @@ post_update = off
             config.registry.baller_registry_url,
             "https://custom.registry.com/api"
         );
-        assert_eq!(config.registry.github_enabled, true);
-        assert_eq!(config.registry.baller_enabled, false);
-        assert_eq!(config.registry.chocolatey_enabled, false);
+        assert!(config.registry.github_enabled);
+        assert!(!config.registry.baller_enabled);
+        assert!(!config.registry.chocolatey_enabled);
         assert!(config.hooks.pre_install);
         assert!(!config.hooks.post_install);
         assert!(config.hooks.pre_eject);

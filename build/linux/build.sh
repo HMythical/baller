@@ -40,7 +40,7 @@ function run_test() {
     cargo test
     
     echo "Running clippy..."
-    cargo clippy -- -D warnings
+    cargo clippy --all-targets -- -D warnings
     
     echo "Checking formatting..."
     cargo fmt --check

@@ -21,6 +21,9 @@ with a custom scheme:
 
 ### Fixed
 
+- **`clippy --all-targets -D warnings` is clean; the CI lint gate now covers tests and benches**
+  `cargo clippy -- -D warnings` only linted the library and binary, so the test suite and benchmarks carried 21 warnings (`bool_assert_comparison`, `useless_format`, `needless_borrows_for_generic_args`, `unnecessary_mut_passed`, `unused_mut`) that CI never saw. All are fixed, and the `test` command in `build/linux/build.sh` / `build/winbuild/build.ps1` now runs `cargo clippy --all-targets -- -D warnings` so every target stays gated.
+
 - **`build` no longer runs the `pre_install` hook for a system-source manifest the host cannot install** (closes #66)
   The "needs a native package manager" check for `[source] type = "system"` manifests now runs before the `PreInstall` hook, using the runtime-detected host manager instead of a compile-time `cfg!(target_os = "linux")` guard inside the install path. A build on an unsupported host now fails before any user hook script executes; `--dry-run` and roster checks are unchanged.
 

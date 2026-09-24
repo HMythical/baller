@@ -57,8 +57,14 @@ with a custom scheme:
 
   Per command: `build` links nothing into the platform default or `--install-dir`; `substitute` fails **before** ejecting the old package, so a broken replacement can no longer cost you a working one; `update` aborts the upgrade (note that it prunes the old extract directory before unpacking the new archive, so restoring a package whose new release ships no usable asset needs a `draft --force`).
 
+- **`sweep` propagates directory traversal errors** (PR #88)
+  Cache-size traversal now fails explicitly when a directory, entry, or metadata lookup cannot be read, instead of making a threshold decision from a silent zero or partial byte total. The `FileIoErr` escapes the sweep instead of being swallowed. Closes #85.
+
 - The case-insensitive artifact lookup in `build` passes on Windows
   `test_locate_cargo_binary_scans_for_a_case_insensitive_match` compared `PathBuf`s byte-for-byte, which fails on case-insensitive filesystems: the direct name lookup returns the requested (lowercased) spelling while the scan returns the on-disk spelling. The test now lowercases the compared file names, making it platform-agnostic.
+
+- **The `version` subcommand is wired up and working again** (PR #35)
+  Re-created the `version` command and expanded `build`, replacing stale pieces with working logic, and added local development scripts to `.gitignore`. Closes #29.
 
 ### Changed
 

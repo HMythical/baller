@@ -34,7 +34,7 @@ function Invoke-Test {
     if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 
     Write-Host "Running clippy..." -ForegroundColor Green
-    cargo clippy -- -D warnings
+    cargo clippy --all-targets -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "Clippy failed" }
 
     Write-Host "Checking formatting..." -ForegroundColor Green

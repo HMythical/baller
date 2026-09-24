@@ -41,7 +41,7 @@ pub fn bench_complete_workflow(c: &mut Criterion) {
             let _ = get_installed_map(&db);
             let _ = resolve_deps(
                 &name,
-                &mut baller::core::registry::RegistryClient::new(HttpClient::new().unwrap()),
+                &baller::core::registry::RegistryClient::new(HttpClient::new().unwrap()),
                 &get_installed_map(&db),
             );
 

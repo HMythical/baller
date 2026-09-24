@@ -21,7 +21,7 @@ baller/
 │   │   ├── substitute.rs    # Swap packages
 │   │   ├── update.rs        # Update non-frozen packages
 │   │   ├── sweep.rs         # Clean cache
-│   │   ├── referee.rs       # Audit the roster for known vulnerabilities
+│   │   ├── referee/         # referee group: audit, check, scan, cache, config, sbom
 │   │   └── build.rs         # Assemble a package from a local manifest
 │   ├── config/
 │   │   ├── mod.rs

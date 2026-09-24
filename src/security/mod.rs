@@ -24,6 +24,7 @@
 #[cfg(test)]
 mod integration;
 
+pub mod export;
 pub mod identity;
 pub mod osv;
 pub mod ranges;

@@ -1,3 +1,4 @@
+
 # CLI Reference
 
 ## Overview
@@ -591,20 +592,44 @@ Run it with: baller my-tool
 ## referee — Audit the Roster for Vulnerabilities
 
 ```
-baller referee [package_name] [--refresh] [--no-scan]
+baller referee [package_name] [--refresh] [--no-scan]          # ≡ audit
+baller referee audit  [package...] [--refresh] [--no-scan]
+                      [--fail-on block|warn] [--format json|markdown|sarif] [--out FILE]
+baller referee check  [package...] [--refresh] [--fail-on block|warn]
+baller referee scan   [package...]
+baller referee cache  [--status | --clear | --prune <DAYS>]
+baller referee config
+baller referee sbom   [--out FILE] [--format cyclonedx-json]
 ```
 
-Re-checks installed packages against public vulnerability data and re-scans
-their extracted artifacts. With no argument it audits the whole roster; with a
-package name it audits that one.
+A command group over the Referee security layer. With no subcommand it audits,
+exactly as it always has: every installed package (or the one named) is
+re-checked against public vulnerability data and its extracted artifact is
+re-scanned. A package name and a subcommand cannot be mixed — `baller referee fd`
+audits `fd`; `baller referee audit fd` says the same thing explicitly.
+
+| Subcommand | What it does |
+|------------|--------------|
+| `audit` | Advisory check (Phase A) and artifact re-scan (Phase B). The default |
+| `check` | Advisory data only — the same path as `audit --no-scan`; no extracted tree is walked |
+| `scan` | Artifact re-scan only — no advisory lookup. A swept extract directory reports `artifact not on disk — nothing to re-scan`, distinct from a clean scan |
+| `cache` | Verdict-cache management: `--status` (the default) shows rows per ecosystem and the newest `checked_at`; `--clear` empties the cache; `--prune <DAYS>` drops verdicts older than DAYS days. The three flags are mutually exclusive |
+| `config` | Prints the `[referee]` settings in effect. `enabled` accounts for `--no-referee`; the VirusTotal key is shown only as `set`/`unset` |
+| `sbom` | Writes a CycloneDX 1.5 JSON inventory of the roster to stdout or `--out` |
 
 **Flags:**
-| Flag | Description |
-|------|-------------|
-| `--refresh` | Drop cached verdicts and re-query the advisory service. A `clean` verdict recorded earlier was computed against the advisory data of that day |
-| `--no-scan` | Check advisory data only; skip the artifact re-scan |
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--refresh` | bare, `audit`, `check` | Drop cached verdicts and re-query the advisory service. A `clean` verdict recorded earlier was computed against the advisory data of that day |
+| `--no-scan` | bare, `audit` | Check advisory data only; skip the artifact re-scan |
+| `--fail-on block\|warn` | `audit`, `check` | Exit 1 when any package bands at or above the level (`warn` includes blocked packages). Only the exit code changes — nothing is ejected or updated |
+| `--format json\|markdown\|sarif` | `audit` | Render the report in this format. Without `--out` it replaces the table on stdout |
+| `--out FILE` | `audit`, `sbom` | Write the formatted report (or SBOM) to FILE. On `audit` it requires `--format`, and stdout keeps the normal table or `--json` output |
+| `--format cyclonedx-json` | `sbom` | The SBOM format (the default and only one) |
 
-The audit is read-only — nothing is ejected, updated or modified.
+Every subcommand is read-only with respect to the roster; `cache` writes only
+to the verdict cache. `audit`, `check` and `scan` refuse to run when Referee is
+disabled; `cache`, `config` and `sbom` work either way.
 
 ```
 $ baller referee --refresh
@@ -616,11 +641,17 @@ beta                     2.0.0          clean        —        —
 
 Summary 2 package(s): 1 over the block threshold, 0 warned, 0 not verified
 Note the audit changes nothing — eject or update a flagged package yourself
+
+$ baller referee check --fail-on block -q
+...
+[Error]: referee found 1 package(s) at or above the 'block' band (--fail-on block): alpha v1.0.0
+$ echo $?
+1
 ```
 
 Referee also runs automatically inside `draft`, `update` and `substitute`.
-[referee.md](referee.md) documents the phases, the risk index, the scan rules
-and the `[referee]` config section.
+[referee.md](referee.md) documents the phases, the risk index, the scan rules,
+the SARIF and SBOM output and the `[referee]` config section.
 
 ---
 

@@ -6,7 +6,9 @@ use crate::commands::eject::{execute_eject, EjectOptions};
 use crate::commands::external::execute_external;
 use crate::commands::freeze::{execute_freeze, FreezeMode, FreezeOptions};
 use crate::commands::inject::execute_inject;
-use crate::commands::referee::{execute_referee, RefereeOptions};
+use crate::commands::referee::{
+    execute_referee, AuditFormat, AuditOptions, CacheAction, FailOn, RefereeCommand, SbomFormat,
+};
 use crate::commands::roster::{execute_roster, RosterOptions};
 use crate::commands::substitute::{execute_substitute, SubstituteOptions};
 use crate::commands::sweep::{execute_sweep, SweepOptions};
@@ -16,7 +18,7 @@ use crate::core::injected::resolve_baller_dir;
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
 use clap::error::ErrorKind;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "baller")]
@@ -215,17 +217,8 @@ pub enum CommandTypes {
     /// Injects a custom command described by a .ball file
     Inject { path: String },
     /// Referees (Audits) the roster against public vulnerability data
-    #[command(arg_required_else_help = false)]
-    Referee {
-        /// Package to audit; omit to audit the whole roster
-        package_name: Option<String>,
-        /// Re-query the advisory service instead of reusing cached verdicts
-        #[arg(long)]
-        refresh: bool,
-        /// Skip the artifact re-scan and only check advisory data
-        #[arg(long = "no-scan")]
-        no_scan: bool,
-    },
+    #[command(arg_required_else_help = false, args_conflicts_with_subcommands = true)]
+    Referee(RefereeArgs),
     /// Prints every available command, or details for one of them
     Help {
         /// Built-in or injected command to describe
@@ -236,6 +229,147 @@ pub enum CommandTypes {
     /// Any unknown subcommand: dispatched to an injected command, if one matches
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `baller referee`: a command group whose bare form is `audit`.
+///
+/// `package_name`, `--refresh` and `--no-scan` keep `baller referee [PACKAGE]`
+/// working exactly as it did before the group existed. They conflict with a
+/// subcommand, so `baller referee fd` is an audit of `fd` while
+/// `baller referee audit fd` names the verb explicitly.
+#[derive(Args, Debug)]
+pub struct RefereeArgs {
+    #[command(subcommand)]
+    pub command: Option<RefereeSub>,
+    /// Package to audit; omit to audit the whole roster
+    pub package_name: Option<String>,
+    /// Re-query the advisory service instead of reusing cached verdicts
+    #[arg(long)]
+    pub refresh: bool,
+    /// Skip the artifact re-scan and only check advisory data
+    #[arg(long = "no-scan")]
+    pub no_scan: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RefereeSub {
+    /// Re-checks advisory data and re-scans installed artifacts (the default)
+    Audit {
+        /// Packages to audit; omit to audit the whole roster
+        package_names: Vec<String>,
+        /// Re-query the advisory service instead of reusing cached verdicts
+        #[arg(long)]
+        refresh: bool,
+        /// Skip the artifact re-scan and only check advisory data
+        #[arg(long = "no-scan")]
+        no_scan: bool,
+        /// Exit non-zero when any package reaches this band
+        #[arg(long = "fail-on", value_enum, value_name = "BAND")]
+        fail_on: Option<FailOn>,
+        /// Render the report as json, markdown or sarif
+        #[arg(long, value_enum, value_name = "FORMAT")]
+        format: Option<AuditFormat>,
+        /// Write the formatted report to this file instead of stdout
+        #[arg(long, value_name = "FILE", requires = "format")]
+        out: Option<String>,
+    },
+    /// Checks advisory data only (Phase A); nothing is re-scanned
+    Check {
+        /// Packages to check; omit to check the whole roster
+        package_names: Vec<String>,
+        /// Re-query the advisory service instead of reusing cached verdicts
+        #[arg(long)]
+        refresh: bool,
+        /// Exit non-zero when any package reaches this band
+        #[arg(long = "fail-on", value_enum, value_name = "BAND")]
+        fail_on: Option<FailOn>,
+    },
+    /// Re-scans installed artifacts only (Phase B); no advisory lookup
+    Scan {
+        /// Packages to scan; omit to scan the whole roster
+        package_names: Vec<String>,
+    },
+    /// Shows, clears or prunes the verdict cache
+    Cache {
+        /// Show cached verdicts per ecosystem (the default)
+        #[arg(long, conflicts_with_all = ["clear", "prune"])]
+        status: bool,
+        /// Drop every cached verdict
+        #[arg(long, conflicts_with = "prune")]
+        clear: bool,
+        /// Drop verdicts computed more than DAYS days ago
+        #[arg(long, value_name = "DAYS")]
+        prune: Option<u32>,
+    },
+    /// Prints the [referee] settings in effect
+    Config,
+    /// Writes a CycloneDX SBOM of the roster
+    Sbom {
+        /// Write the SBOM to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// SBOM format
+        #[arg(
+            long,
+            value_enum,
+            value_name = "FORMAT",
+            default_value = "cyclonedx-json"
+        )]
+        format: SbomFormat,
+    },
+}
+
+impl RefereeArgs {
+    /// What to run: the named subcommand, or `audit` for the bare form.
+    pub fn to_command(&self) -> RefereeCommand {
+        match &self.command {
+            None => RefereeCommand::Audit(AuditOptions {
+                package_names: self.package_name.iter().cloned().collect(),
+                refresh: self.refresh,
+                no_scan: self.no_scan,
+                fail_on: None,
+                format: None,
+                out: None,
+            }),
+            Some(RefereeSub::Audit {
+                package_names,
+                refresh,
+                no_scan,
+                fail_on,
+                format,
+                out,
+            }) => RefereeCommand::Audit(AuditOptions {
+                package_names: package_names.clone(),
+                refresh: *refresh,
+                no_scan: *no_scan,
+                fail_on: *fail_on,
+                format: *format,
+                out: out.clone(),
+            }),
+            Some(RefereeSub::Check {
+                package_names,
+                refresh,
+                fail_on,
+            }) => RefereeCommand::Check {
+                package_names: package_names.clone(),
+                refresh: *refresh,
+                fail_on: *fail_on,
+            },
+            Some(RefereeSub::Scan { package_names }) => RefereeCommand::Scan {
+                package_names: package_names.clone(),
+            },
+            Some(RefereeSub::Cache { clear, prune, .. }) => RefereeCommand::Cache(match prune {
+                Some(days) => CacheAction::Prune(*days),
+                None if *clear => CacheAction::Clear,
+                None => CacheAction::Status,
+            }),
+            Some(RefereeSub::Config) => RefereeCommand::Config,
+            Some(RefereeSub::Sbom { out, format }) => RefereeCommand::Sbom {
+                out: out.clone(),
+                format: *format,
+            },
+        }
+    }
 }
 
 impl BallerCommand {
@@ -386,18 +520,7 @@ impl BallerCommand {
                 },
             ),
             CommandTypes::Inject { path } => execute_inject(ctx, path),
-            CommandTypes::Referee {
-                package_name,
-                refresh,
-                no_scan,
-            } => execute_referee(
-                ctx,
-                package_name.as_deref(),
-                &RefereeOptions {
-                    refresh: *refresh,
-                    no_scan: *no_scan,
-                },
-            ),
+            CommandTypes::Referee(args) => execute_referee(ctx, &args.to_command()),
             CommandTypes::Help { command } => {
                 execute_command_help(&resolve_baller_dir(&ctx.config), command.as_deref())
             }
@@ -727,5 +850,178 @@ mod tests {
             CommandTypes::Version => {}
             other => panic!("expected Version, got {:?}", other),
         }
+    }
+
+    fn referee(args: &[&str]) -> RefereeCommand {
+        match parse(args).command {
+            CommandTypes::Referee(referee) => referee.to_command(),
+            other => panic!("expected Referee, got {:?}", other),
+        }
+    }
+
+    fn referee_rejects(args: &[&str]) {
+        assert!(
+            BallerCommand::try_parse_from(args).is_err(),
+            "{:?} should be rejected",
+            args
+        );
+    }
+
+    #[test]
+    fn test_bare_referee_is_an_audit_of_the_roster() {
+        match referee(&["baller", "referee"]) {
+            RefereeCommand::Audit(opts) => {
+                assert!(opts.package_names.is_empty());
+                assert!(!opts.refresh && !opts.no_scan);
+                assert!(opts.fail_on.is_none() && opts.format.is_none() && opts.out.is_none());
+            }
+            _ => panic!("expected an audit"),
+        }
+    }
+
+    #[test]
+    fn test_referee_positional_form_still_audits_one_package() {
+        match referee(&["baller", "referee", "fd", "--refresh", "--no-scan"]) {
+            RefereeCommand::Audit(opts) => {
+                assert_eq!(opts.package_names, vec!["fd".to_string()]);
+                assert!(opts.refresh && opts.no_scan);
+            }
+            _ => panic!("expected an audit"),
+        }
+    }
+
+    #[test]
+    fn test_referee_audit_subcommand_takes_many_packages_and_export_flags() {
+        match referee(&[
+            "baller",
+            "referee",
+            "audit",
+            "fd",
+            "ripgrep",
+            "--fail-on",
+            "warn",
+            "--format",
+            "sarif",
+            "--out",
+            "report.sarif",
+        ]) {
+            RefereeCommand::Audit(opts) => {
+                assert_eq!(
+                    opts.package_names,
+                    vec!["fd".to_string(), "ripgrep".to_string()]
+                );
+                assert_eq!(opts.fail_on, Some(FailOn::Warn));
+                assert_eq!(opts.format, Some(AuditFormat::Sarif));
+                assert_eq!(opts.out.as_deref(), Some("report.sarif"));
+            }
+            _ => panic!("expected an audit"),
+        }
+    }
+
+    #[test]
+    fn test_referee_check_and_scan_subcommands() {
+        match referee(&[
+            "baller",
+            "referee",
+            "check",
+            "fd",
+            "--refresh",
+            "--fail-on",
+            "block",
+        ]) {
+            RefereeCommand::Check {
+                package_names,
+                refresh,
+                fail_on,
+            } => {
+                assert_eq!(package_names, vec!["fd".to_string()]);
+                assert!(refresh);
+                assert_eq!(fail_on, Some(FailOn::Block));
+            }
+            _ => panic!("expected check"),
+        }
+        match referee(&["baller", "referee", "scan"]) {
+            RefereeCommand::Scan { package_names } => assert!(package_names.is_empty()),
+            _ => panic!("expected scan"),
+        }
+    }
+
+    #[test]
+    fn test_referee_cache_actions() {
+        assert!(matches!(
+            referee(&["baller", "referee", "cache"]),
+            RefereeCommand::Cache(CacheAction::Status)
+        ));
+        assert!(matches!(
+            referee(&["baller", "referee", "cache", "--status"]),
+            RefereeCommand::Cache(CacheAction::Status)
+        ));
+        assert!(matches!(
+            referee(&["baller", "referee", "cache", "--clear"]),
+            RefereeCommand::Cache(CacheAction::Clear)
+        ));
+        assert!(matches!(
+            referee(&["baller", "referee", "cache", "--prune", "30"]),
+            RefereeCommand::Cache(CacheAction::Prune(30))
+        ));
+    }
+
+    #[test]
+    fn test_referee_cache_actions_are_mutually_exclusive() {
+        referee_rejects(&["baller", "referee", "cache", "--status", "--clear"]);
+        referee_rejects(&["baller", "referee", "cache", "--status", "--prune", "3"]);
+        referee_rejects(&["baller", "referee", "cache", "--clear", "--prune", "3"]);
+        referee_rejects(&["baller", "referee", "cache", "--prune", "-1"]);
+        referee_rejects(&["baller", "referee", "cache", "--prune", "soon"]);
+    }
+
+    #[test]
+    fn test_referee_config_and_sbom() {
+        assert!(matches!(
+            referee(&["baller", "referee", "config", "--json"]),
+            RefereeCommand::Config
+        ));
+        match referee(&["baller", "referee", "sbom"]) {
+            RefereeCommand::Sbom { out, format } => {
+                assert!(out.is_none());
+                assert_eq!(format, SbomFormat::CyclonedxJson);
+            }
+            _ => panic!("expected sbom"),
+        }
+        match referee(&[
+            "baller",
+            "referee",
+            "sbom",
+            "--out",
+            "bom.json",
+            "--format",
+            "cyclonedx-json",
+        ]) {
+            RefereeCommand::Sbom { out, .. } => assert_eq!(out.as_deref(), Some("bom.json")),
+            _ => panic!("expected sbom"),
+        }
+    }
+
+    #[test]
+    fn test_referee_rejects_invalid_values_and_mixed_forms() {
+        referee_rejects(&["baller", "referee", "audit", "--fail-on", "pass"]);
+        referee_rejects(&["baller", "referee", "check", "--fail-on", "critical"]);
+        referee_rejects(&["baller", "referee", "audit", "--format", "xml"]);
+        referee_rejects(&["baller", "referee", "sbom", "--format", "spdx"]);
+        // --out needs a format to write.
+        referee_rejects(&["baller", "referee", "audit", "--out", "report.json"]);
+        // Export and fail-on flags belong to the subcommands, not the bare form.
+        referee_rejects(&["baller", "referee", "--fail-on", "block"]);
+        // A package and a subcommand cannot be mixed.
+        referee_rejects(&["baller", "referee", "fd", "audit"]);
+        // Once a bare-form flag is given, a subcommand name is just a package.
+        match referee(&["baller", "referee", "--refresh", "check"]) {
+            RefereeCommand::Audit(opts) => {
+                assert_eq!(opts.package_names, vec!["check".to_string()])
+            }
+            _ => panic!("expected an audit of a package named 'check'"),
+        }
+        // scan takes no advisory flags.
+        referee_rejects(&["baller", "referee", "scan", "--refresh"]);
     }
 }

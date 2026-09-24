@@ -1445,3 +1445,79 @@ fn test_a_malformed_response_fails_open() {
     assert_eq!(outcome.reports[0].status(), Verdict::Unverified);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An audit of `serde` against a server answering with one advisory scored
+/// `cvss`, or with none when `cvss` is `None`.
+fn audit_with(label: &str, cvss: Option<&'static str>) -> crate::security::GateOutcome {
+    let server = MockServer::start(move |request| match cvss {
+        Some(cvss) if request.path.starts_with("/v1/vulns/") => (
+            200,
+            record("GHSA-x", "crates.io", "serde", cvss).to_string(),
+        ),
+        Some(_) => (200, batch(&[&["GHSA-x"]])),
+        None => (200, batch(&[&[]])),
+    });
+    let dir = scratch(label);
+    let db = db_in(&dir);
+    let outcome = referee(&server.base_url, FailPolicy::FailOpen)
+        .audit(&db, &[crate_pkg("serde", "1.0.229")], false)
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+#[test]
+fn test_fail_on_block_fails_only_a_blocked_audit() {
+    use crate::commands::referee::{fail_on_error, FailOn};
+
+    let critical = audit_with("fail_on_critical", Some(CRITICAL));
+    match fail_on_error(&critical, Some(FailOn::Block)) {
+        Some(BallError::RefereeAuditFailed { band, packages }) => {
+            assert_eq!(band, "block");
+            assert_eq!(packages, vec!["serde v1.0.229".to_string()]);
+        }
+        other => panic!("expected RefereeAuditFailed, got {:?}", other),
+    }
+
+    let medium = audit_with("fail_on_medium", Some(MEDIUM));
+    assert!(fail_on_error(&medium, Some(FailOn::Block)).is_none());
+
+    // Without --fail-on the audit never fails, whatever it found.
+    assert!(fail_on_error(&critical, None).is_none());
+}
+
+#[test]
+fn test_fail_on_warn_fails_warned_and_blocked_audits() {
+    use crate::commands::referee::{fail_on_error, FailOn};
+
+    let medium = audit_with("fail_on_warn_medium", Some(MEDIUM));
+    assert!(matches!(
+        fail_on_error(&medium, Some(FailOn::Warn)),
+        Some(BallError::RefereeAuditFailed { band: "warn", .. })
+    ));
+
+    let critical = audit_with("fail_on_warn_critical", Some(CRITICAL));
+    assert!(fail_on_error(&critical, Some(FailOn::Warn)).is_some());
+
+    let low = audit_with("fail_on_warn_low", Some(LOW));
+    assert!(fail_on_error(&low, Some(FailOn::Warn)).is_none());
+
+    let clean = audit_with("fail_on_warn_clean", None);
+    assert!(fail_on_error(&clean, Some(FailOn::Warn)).is_none());
+}
+
+#[test]
+fn test_fail_on_ignores_an_unverified_audit() {
+    use crate::commands::referee::{fail_on_error, FailOn};
+
+    // An outage is reported as unverified, never as a failure to gate on.
+    let server = MockServer::start(|_| (503, "down".to_string()));
+    let dir = scratch("fail_on_outage");
+    let db = db_in(&dir);
+    let outcome = referee(&server.base_url, FailPolicy::FailOpen)
+        .audit(&db, &[crate_pkg("serde", "1.0.229")], false)
+        .unwrap();
+    assert_eq!(outcome.reports[0].status(), Verdict::Unverified);
+    assert!(fail_on_error(&outcome, Some(FailOn::Warn)).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

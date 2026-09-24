@@ -27,6 +27,7 @@ the process exits with a non-zero status code.
 | `RefereeBlocked` | Referee's advisory gate refused the plan. Carries every package over the block threshold with its advisories and the reason. Raised before the install loop, so nothing was downloaded, linked or recorded |
 | `RefereeScanBlocked` | Referee's artifact scan refused a downloaded package. Carries the package, version and every finding. Raised after extraction and before linking; the extract directory and cached archive are both purged |
 | `RefereeUnavailable` | The advisory service could not be reached. Fatal only under `fail_policy = fail-closed`; the default fail-open path reports the packages as `unverified` and continues |
+| `RefereeAuditFailed` | `baller referee audit`/`check --fail-on block\|warn` found packages at or above that band. Raised after the report is printed, only to make the exit code non-zero for CI; nothing was changed |
 
 ## GitHub Source Asset Errors
 
@@ -190,6 +191,9 @@ than reusing a rejected archive.
 Both carry the advisories or findings that caused them, and `RefereeBlocked`
 names the escape hatches (`--no-referee`, or raising `referee.block_at`).
 `RefereeUnavailable` is only fatal under `fail_policy = fail-closed`.
+`RefereeAuditFailed` is not an install failure at all: it is how
+`baller referee --fail-on` reports, through the exit code, that the audit found
+something at or above the chosen band.
 See [referee.md](referee.md).
 
 ## Rollback on Partial Failure

@@ -67,7 +67,7 @@ pub enum BallError {
         /// The cached archive it came from, when one is known
         archive: Option<String>,
     },
-/// Referee's advisory gate refused the plan.
+    /// Referee's advisory gate refused the plan.
     ///
     /// Raised before the install loop runs, so nothing has been downloaded,
     /// linked or recorded: the block is all-or-nothing by construction. Every
@@ -91,6 +91,15 @@ pub enum BallError {
     /// path reports the affected packages as `Unverified` and continues.
     RefereeUnavailable {
         message: String,
+    },
+    /// `baller referee --fail-on` found packages at or above the chosen band.
+    ///
+    /// Raised after the report is printed, only to turn it into a non-zero
+    /// exit for CI. The audit itself is read-only: nothing was changed.
+    RefereeAuditFailed {
+        /// The `--fail-on` band, `block` or `warn`
+        band: &'static str,
+        packages: Vec<String>,
     },
     /// Non-optional dependencies that could not be resolved from any
     /// configured source and are not tolerated system virtual packages.
@@ -219,6 +228,15 @@ impl fmt::Display for BallError {
             BallError::RefereeUnavailable { message } => {
                 write!(f, "referee could not verify this install: {}", message)
             }
+
+            BallError::RefereeAuditFailed { band, packages } => write!(
+                f,
+                "referee found {} package(s) at or above the '{}' band (--fail-on {}): {}",
+                packages.len(),
+                band,
+                band,
+                packages.join(", ")
+            ),
 
             BallError::NoBinaryFound {
                 package,
@@ -417,6 +435,18 @@ mod tests {
         assert!(msg.contains("unresolved dependencies"));
         assert!(msg.contains("foo, bar"));
         assert!(msg.contains("in any configured registry"));
+    }
+
+    #[test]
+    fn test_referee_audit_failed_display() {
+        let err = BallError::RefereeAuditFailed {
+            band: "warn",
+            packages: vec!["alpha".to_string(), "beta".to_string()],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("2 package(s)"));
+        assert!(msg.contains("--fail-on warn"));
+        assert!(msg.contains("alpha, beta"));
     }
 
     #[test]

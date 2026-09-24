@@ -614,6 +614,47 @@ impl DbManager {
             })
     }
 
+    /// Cached verdicts per ecosystem, with the newest `checked_at` of each,
+    /// for `referee cache --status`.
+    pub fn referee_cache_stats(&self) -> Result<Vec<RefereeCacheStats>, BallError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT ecosystem, COUNT(*), MAX(checked_at) FROM referee_cache
+                 GROUP BY ecosystem ORDER BY ecosystem",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RefereeCacheStats {
+                    ecosystem: row.get(0)?,
+                    count: row.get(1)?,
+                    newest: row.get(2)?,
+                })
+            })
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to read the referee cache: {}", e))
+            })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            BallError::InvalidConfig(format!("failed to read the referee cache: {}", e))
+        })
+    }
+
+    /// Drop verdicts computed more than `days` days ago, for
+    /// `referee cache --prune`. Returns how many rows were removed.
+    pub fn referee_cache_prune_older_than(&self, days: u32) -> Result<usize, BallError> {
+        self.conn
+            .execute(
+                "DELETE FROM referee_cache WHERE checked_at < datetime('now', ?1)",
+                params![format!("-{} days", days)],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to prune the referee cache: {}", e))
+            })
+    }
+
     #[allow(dead_code)]
     pub fn insert_lock_entry(
         &self,
@@ -771,6 +812,15 @@ pub struct CachedVerdict {
     /// The matched advisories, as the JSON `referee_cache.advisories` holds
     pub advisories: String,
     pub checked_at: String,
+}
+
+/// One ecosystem's share of the verdict cache.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefereeCacheStats {
+    pub ecosystem: String,
+    pub count: i64,
+    /// The most recent `checked_at` in this ecosystem
+    pub newest: Option<String>,
 }
 
 fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
@@ -1041,6 +1091,83 @@ mod tests {
 
         assert_eq!(db.referee_cache_clear().unwrap(), 2);
         assert_eq!(db.referee_cache_count().unwrap(), 0);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Backdate one cached verdict, as if it had been computed `days` ago.
+    fn age_verdict(db: &DbManager, name: &str, days: u32) {
+        db.conn
+            .execute(
+                "UPDATE referee_cache SET checked_at = datetime('now', ?1) WHERE name = ?2",
+                params![format!("-{} days", days), name],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_referee_cache_stats_group_per_ecosystem() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        assert!(db.referee_cache_stats().unwrap().is_empty());
+
+        db.referee_cache_put("crates.io", "a", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "b", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("NuGet", "c", "2.0.0", "vulnerable", Some(4.5), "[]")
+            .unwrap();
+        age_verdict(&db, "a", 10);
+
+        let stats = db.referee_cache_stats().unwrap();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].ecosystem, "NuGet");
+        assert_eq!(stats[0].count, 1);
+        assert_eq!(stats[1].ecosystem, "crates.io");
+        assert_eq!(stats[1].count, 2);
+
+        // The newest crates.io row is `b`, not the backdated `a`.
+        let b = db
+            .referee_cache_get("crates.io", "b", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats[1].newest.as_deref(), Some(b.checked_at.as_str()));
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_prune_drops_only_stale_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "older", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "fresh", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        age_verdict(&db, "old", 10);
+        age_verdict(&db, "older", 40);
+
+        assert_eq!(db.referee_cache_prune_older_than(30).unwrap(), 1);
+        assert!(db
+            .referee_cache_get("crates.io", "older", "1.0.0")
+            .unwrap()
+            .is_none());
+        assert_eq!(db.referee_cache_count().unwrap(), 2);
+
+        assert_eq!(db.referee_cache_prune_older_than(7).unwrap(), 1);
+        assert!(db
+            .referee_cache_get("crates.io", "fresh", "1.0.0")
+            .unwrap()
+            .is_some());
+        assert_eq!(db.referee_cache_count().unwrap(), 1);
+
+        assert_eq!(db.referee_cache_prune_older_than(7).unwrap(), 0);
 
         drop(db);
         let _ = std::fs::remove_file(&path);

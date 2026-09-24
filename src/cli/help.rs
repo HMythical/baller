@@ -142,15 +142,27 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
     BuiltinCommand {
         name: "referee",
         summary: "Referees (Audits) the roster against public vulnerability data",
-        usage: "baller referee [PACKAGE_NAME]",
+        usage: "baller referee [PACKAGE_NAME] | baller referee <SUBCOMMAND>",
         details: &[
-            "[PACKAGE_NAME]  Package to audit; omit to audit the whole roster",
-            "--refresh       Re-query the advisory service instead of reusing cached verdicts",
-            "--no-scan       Skip the artifact re-scan and only check advisory data",
+            "[PACKAGE_NAME]   Package to audit; omit to audit the whole roster (same as 'audit')",
+            "--refresh        Re-query the advisory service instead of reusing cached verdicts",
+            "--no-scan        Skip the artifact re-scan and only check advisory data",
+            "",
+            "Subcommands:",
+            "audit [PKG...]   Advisory check and artifact re-scan (the default)",
+            "                 --refresh, --no-scan, --fail-on <block|warn>,",
+            "                 --format <json|markdown|sarif>, --out <FILE>",
+            "check [PKG...]   Advisory data only: --refresh, --fail-on <block|warn>",
+            "scan [PKG...]    Artifact re-scan only",
+            "cache            --status (default) | --clear | --prune <DAYS>",
+            "config           Print the [referee] settings in effect; the VirusTotal key shows as set/unset",
+            "sbom             CycloneDX 1.5 JSON of the roster: --out <FILE>, --format cyclonedx-json",
         ],
         notes: &[
-            "The audit is read-only: a flagged package stays installed until you",
-            "eject or update it yourself.",
+            "Every subcommand is read-only: a flagged package stays installed until",
+            "you eject or update it yourself. --fail-on only changes the exit code",
+            "(1 when any package reaches the band), for CI. 'cache' writes only to",
+            "the verdict cache; 'cache', 'config' and 'sbom' work with Referee off.",
             "Referee also runs automatically before draft, update and substitute",
             "install anything. Pass --no-referee to skip it for one command, or",
             "set 'enabled = false' under [referee] in baller.conf to turn it off.",
@@ -560,6 +572,26 @@ mod tests {
             assert!(
                 find_builtin(name).is_some(),
                 "'{}' is a subcommand but has no entry in BUILTIN_COMMANDS",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_referee_subcommand_is_documented() {
+        let command = BallerCommand::command();
+        let referee = command
+            .find_subcommand("referee")
+            .expect("referee is a subcommand");
+        let entry = find_builtin("referee").unwrap();
+        for subcommand in referee.get_subcommands() {
+            let name = subcommand.get_name();
+            assert!(
+                entry
+                    .details
+                    .iter()
+                    .any(|line| line.split_whitespace().next() == Some(name)),
+                "'referee {}' is a subcommand but is not described in the referee help entry",
                 name
             );
         }

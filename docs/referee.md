@@ -17,14 +17,15 @@ It is enabled by default. `--no-referee` turns it off for one command;
 3. [Verdicts and the risk index](#verdicts-and-the-risk-index)
 4. [Phase A — the advisory gate](#phase-a--the-advisory-gate)
 5. [Phase B — the artifact scan](#phase-b--the-artifact-scan)
-6. [`baller referee` — auditing the roster](#baller-referee--auditing-the-roster)
-7. [Configuration](#configuration)
-8. [Declaring an advisory identity](#declaring-an-advisory-identity)
-9. [Caching](#caching)
-10. [JSON output](#json-output)
-11. [Errors](#errors)
-12. [Code map](#code-map)
-13. [Scope and limits](#scope-and-limits)
+6. [`baller referee` — the command group](#baller-referee--the-command-group)
+7. [Export formats](#export-formats)
+8. [Configuration](#configuration)
+9. [Declaring an advisory identity](#declaring-an-advisory-identity)
+10. [Caching](#caching)
+11. [JSON output](#json-output)
+12. [Errors](#errors)
+13. [Code map](#code-map)
+14. [Scope and limits](#scope-and-limits)
 
 ---
 
@@ -370,13 +371,33 @@ testable and usable behind a self-hosted proxy.
 
 ---
 
-## `baller referee` — auditing the roster
+## `baller referee` — the command group
 
 ```
-baller referee [PACKAGE_NAME] [--refresh] [--no-scan]
+baller referee [PACKAGE_NAME] [--refresh] [--no-scan]           # ≡ audit
+baller referee audit  [PACKAGE...] [--refresh] [--no-scan]
+                      [--fail-on block|warn] [--format json|markdown|sarif] [--out FILE]
+baller referee check  [PACKAGE...] [--refresh] [--fail-on block|warn]
+baller referee scan   [PACKAGE...]
+baller referee cache  [--status | --clear | --prune <DAYS>]
+baller referee config
+baller referee sbom   [--out FILE] [--format cyclonedx-json]
 ```
 
-Rebuilds each installed package from its roster row — including the advisory
+Every subcommand is read-only with respect to the roster: nothing is ejected,
+updated, linked or unlinked. `cache` writes only to the verdict cache. `audit`,
+`check` and `scan` refuse to run with Referee disabled; `cache`, `config` and
+`sbom` do not consult it and work either way.
+
+A package name is resolved against the roster in three forms — the exact name,
+the part after the last `/`, and the part after the last `:` — so `ripgrep`,
+`BurntSushi/ripgrep` and `cargo:ripgrep` all find the same row. `audit`,
+`check` and `scan` accept several names; a name given twice is audited once.
+
+### `audit` — Phase A and Phase B
+
+The bare `baller referee [PACKAGE_NAME]` runs `audit` with unchanged behavior.
+It rebuilds each installed package from its roster row — including the advisory
 identity it was installed under — checks it against advisory data, and re-scans
 its extracted tree where one is still on disk.
 
@@ -397,15 +418,109 @@ Note the audit changes nothing — eject or update a flagged package yourself
 |---|---|
 | `--refresh` | Clears the verdict cache and re-queries the advisory service |
 | `--no-scan` | Checks advisory data only; skips the artifact re-scan |
-
-The audit is read-only: nothing is ejected, updated, linked or unlinked.
-
-A package name is resolved against the roster in three forms — the exact name,
-the part after the last `/`, and the part after the last `:` — so `ripgrep`,
-`BurntSushi/ripgrep` and `cargo:ripgrep` all find the same row.
+| `--fail-on block\|warn` | Exit code for CI (see below) |
+| `--format json\|markdown\|sarif` | Renders the report in another format (see [Export formats](#export-formats)) |
+| `--out FILE` | Writes the formatted report to FILE; requires `--format` |
 
 A package whose extract directory has been swept reports `artifact not on disk —
 nothing to re-scan`, which is distinct from a clean scan.
+
+### `check` — Phase A only
+
+The same path `audit --no-scan` takes, as its own verb: advisory data is
+checked (honoring `--refresh` and `--fail-on`) and no extracted tree is walked.
+
+### `scan` — Phase B only
+
+Re-scans each installed package's extracted tree without any advisory lookup,
+and reports per package `clean`, `N finding(s)`, `not on disk` (the extract
+directory was swept) or `not scanned` (no install path recorded). `--json`
+prints `{"command": "referee", "subcommand": "scan", "packages": [...]}` with
+the same `scan` object `audit --json` uses.
+
+### `--fail-on` exit codes
+
+`--fail-on` turns the report into a CI gate without changing what the audit
+does. It uses the install gate's own banding, so `block` fails on exactly the
+packages an install would refuse.
+
+| Flag | Exit 1 when |
+|---|---|
+| (none) | never — the audit always exits 0 when it runs |
+| `--fail-on block` | any package is at or above `block_at` |
+| `--fail-on warn` | any package is at or above `warn_at` (blocked packages included) |
+
+The report (table, `--json` document or `--format` output) is printed first;
+the failure is a `RefereeAuditFailed` error on stderr naming the packages.
+`unverified` and `unknown` packages never trip `--fail-on`: they have no band.
+Artifact-scan findings are reported but do not affect the exit code.
+
+### `cache` — the verdict cache
+
+| Flag | Effect |
+|---|---|
+| `--status` (default) | Row count per ecosystem and the newest `checked_at` (UTC) |
+| `--clear` | Empties the cache — what `--refresh` does before an audit |
+| `--prune <DAYS>` | Deletes verdicts computed more than DAYS days ago |
+
+The flags are mutually exclusive. `--prune` is the manual answer to verdict
+staleness; there is no automatic TTL.
+
+### `config` — effective settings
+
+Prints the `[referee]` settings actually in effect: `enabled` (which accounts
+for `--no-referee`), `warn_at`, `block_at`, `fail_policy`, `osv_base_url`,
+`virustotal_base_url` (`<default>` / `null` when unset) and
+`virustotal_api_key: set|unset`. The key's value is never printed.
+`--json` prints `{"command": "referee", "subcommand": "config", "config": {...}}`.
+
+### `sbom` — CycloneDX inventory
+
+Emits a CycloneDX 1.5 JSON document built from the roster alone — nothing is
+fetched:
+
+- one `components[]` entry per installed package: `type: application`,
+  `bom-ref` (`name@version`), `name`, `version`, `description`, a `purl` for
+  Cargo (`pkg:cargo/…`) and GitHub (`pkg:github/…`) packages, `hashes`
+  (`SHA-256`, only when the roster holds a 64-hex digest),
+  `externalReferences` (`distribution` = `download_url`, `vcs` = repository)
+  and `properties` `baller:source` / `baller:user_installed`;
+- one `dependencies[]` entry per component, with `dependsOn` built from the
+  `package_dependencies` table. An edge to a package baller did not install (a
+  system library, a virtual package) has no component and is left out.
+
+SPDX output and license data are not produced: the roster stores no license.
+
+---
+
+## Export formats
+
+`audit --format` renders the same audit three ways. With no `--out` the
+rendered document replaces the table on stdout; with `--out FILE` it is written
+to the file and stdout keeps the normal table (or `--json` document).
+
+- **`json`** — the `baller referee --json` document described in
+  [JSON output](#json-output).
+- **`markdown`** — a `# Referee audit` document with the thresholds and fail
+  policy, one table row per package (package, version, status, band, risk,
+  advisories), a `## Details` section per package with advisories, unverified
+  identities and scan findings, and the closing summary.
+- **`sarif`** — a SARIF 2.1.0 log with one run whose `tool.driver` is
+  `baller-referee`. `tool.driver.rules` holds one rule per advisory id
+  (`helpUri` pointing at `osv.dev`), one per scan rule (`scan/<rule>`), and
+  `referee/unverified`. `results` holds one result per matched advisory, per
+  scan finding, and per unverified/unknown package; each carries `ruleId`,
+  `ruleIndex`, a package `logicalLocation` (plus the file's
+  `physicalLocation` for a scan finding) and `package`/`version`/`source`
+  properties.
+
+| Source | SARIF `level` |
+|---|---|
+| Advisory banded `block` on its own CVSS | `error` |
+| Advisory banded `warn` (including unscored) | `warning` |
+| Advisory banded `pass` | `note` |
+| Scan finding `block` / `warn` | `error` / `warning` |
+| Unverified or unknown package | `note` |
 
 ---
 
@@ -529,7 +644,9 @@ CREATE TABLE referee_cache (
   the verdict was computed.
 - A row whose `verdict` this build does not recognise is read as `unknown` and
   re-queried.
-- `baller referee --refresh` empties the table.
+- `baller referee --refresh` and `baller referee cache --clear` empty the
+  table; `baller referee cache --prune <DAYS>` drops rows older than DAYS days
+  and `baller referee cache` shows row counts per ecosystem.
 
 Cache rows survive `baller sweep`, which clears downloads rather than database
 state.
@@ -598,9 +715,10 @@ directory is no longer on disk.
 | `RefereeBlocked` | A package crosses `block_at` in Phase A | Nothing written: no download, no symlink, no roster row |
 | `RefereeScanBlocked` | Phase B finds a block-severity issue | Extract directory and cached archive both purged |
 | `RefereeUnavailable` | The advisory service is unreachable under `fail-closed` | Nothing written |
+| `RefereeAuditFailed` | `baller referee audit/check --fail-on` found a package at or above the band | Nothing written — the report is printed first; only the exit code changes |
 
 `RefereeBlocked` lists every package over the threshold with its advisories and
-reason, and names the escape hatches. All three exit non-zero, like any other
+reason, and names the escape hatches. All four exit non-zero, like any other
 failed command. See [error-handling.md](error-handling.md#referee-errors).
 
 ---
@@ -612,6 +730,7 @@ Referee lives in `src/security/`:
 | File | Contents |
 |---|---|
 | `mod.rs` | `Referee` (the service on `AppContext`), `Referee::gate`, `Referee::audit`, `Referee::screen_artifact`, `GateOutcome`, `FailPolicy` |
+| `export.rs` | `ScanOutcome`, `render_markdown`, `render_sarif` — the audit's Markdown and SARIF 2.1.0 writers |
 | `identity.rs` | `AdvisoryIdentity`, `IdentityScope`, `advisory_identities(&Package)` |
 | `osv.rs` | `OsvClient` (`query_batch`, `vuln`), and the wire types `Vulnerability`, `Severity`, `Affected`, `Range`, `Event` |
 | `ranges.rs` | `affects`, `entry_affects`, `entry_is_about` — affected-version interval matching |
@@ -629,10 +748,11 @@ Entry points elsewhere:
 | `src/commands/draft.rs` | Phase A before the install loop; `screen_artifact()` wraps Phase B and purges on a block |
 | `src/commands/update.rs` | Phase A on the upgrade plan; Phase B before the old extract directory is pruned |
 | `src/commands/substitute.rs` | Phase A before the old package is ejected; Phase B before linking |
-| `src/commands/referee.rs` | The `baller referee` audit command |
-| `src/core/db.rs` | `referee_cache_get` / `_put` / `_clear` / `_count`, the `advisory` roster column, `InstalledPackage::to_package` |
+| `src/commands/referee/` | The `baller referee` group: `mod.rs` (dispatcher, roster resolution, re-scan, table, `fail_on_error`), `audit.rs`, `check.rs`, `scan.rs`, `cache.rs`, `config.rs`, `sbom.rs` (CycloneDX writer), `export.rs` (stdout / `--out` delivery) |
+| `src/cli/parse.rs` | `RefereeArgs` / `RefereeSub` — the clap group and the bare-form back-compat |
+| `src/core/db.rs` | `referee_cache_get` / `_put` / `_clear` / `_count` / `_stats` / `_prune_older_than`, the `advisory` roster column, `InstalledPackage::to_package` |
 | `src/core/package.rs` | `AdvisoryDeclaration`, `Package::advisory_identities`, `Package::declared_aliases` |
-| `src/error/error.rs` | `RefereeBlocked`, `RefereeScanBlocked`, `RefereeUnavailable`, `BlockedPackage` |
+| `src/error/error.rs` | `RefereeBlocked`, `RefereeScanBlocked`, `RefereeUnavailable`, `RefereeAuditFailed`, `BlockedPackage` |
 | `src/http/mod.rs` | `HttpClient::post_json`, `HttpClient::get_json_optional_with_headers` |
 
 ### Tests
@@ -641,7 +761,8 @@ Unit tests sit beside each module. `src/security/integration.rs` runs the whole
 service against a mock advisory server built on `TcpListener`: banding,
 blocking, fail-open and fail-closed, cache hits and misses, batch chunking and
 result alignment, hydration, withdrawn and out-of-range advisories, declared
-aliases, registry-native records, and both Phase B outcomes.
+aliases, registry-native records, both Phase B outcomes, and the `--fail-on`
+exit-code banding.
 
 `src/benches/workflow.rs` carries `referee_phase_a_cached` (a 25-package cached
 gate) and `referee_phase_b_scan` (a small extracted tree).
@@ -652,7 +773,8 @@ gate) and `referee_phase_b_scan` (a small extracted tree).
 
 Referee reports known vulnerabilities and a small set of artifact signals. It is
 not an antivirus, not a guarantee against a novel supply-chain attack, and not
-an SBOM or license scanner.
+a license scanner. `baller referee sbom` inventories what is installed, but
+carries no license data and produces CycloneDX only (no SPDX).
 
 Known gaps:
 

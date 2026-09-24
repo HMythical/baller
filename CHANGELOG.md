@@ -21,6 +21,9 @@ with a custom scheme:
 
 ### Fixed
 
+- **`build` no longer runs the `pre_install` hook for a system-source manifest the host cannot install** (closes #66)
+  The "needs a native package manager" check for `[source] type = "system"` manifests now runs before the `PreInstall` hook, using the runtime-detected host manager instead of a compile-time `cfg!(target_os = "linux")` guard inside the install path. A build on an unsupported host now fails before any user hook script executes; `--dry-run` and roster checks are unchanged.
+
 - **Dependency resolution no longer silently swallows unresolvable dependencies** (Closes #73)
   `resolve_from` dropped any dependency whose fetch returned `PackageNotFound` — in both the already-installed and plain-fetch branches — with no warning and no record, so `draft` installed whatever subset *did* resolve and printed "Done … drafted!" as if the full set had been satisfied. The gap was invisible: `ResolveResult` had no "unresolved" concept, and nothing surfaced the difference between an optional-only hole and a missing mandatory dependency.
 

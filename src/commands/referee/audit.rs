@@ -24,7 +24,7 @@ pub struct AuditOptions {
     pub refresh: bool,
     /// Check advisory data only; do not re-scan installed artifacts
     pub no_scan: bool,
-    /// Exit non-zero when a package reaches this band
+    /// Exit non-zero when an advisory or a re-scan finding reaches this level
     pub fail_on: Option<FailOn>,
     /// Render the report in this format instead of the table
     pub format: Option<AuditFormat>,
@@ -99,7 +99,7 @@ pub fn execute_audit(ctx: &AppContext, opts: &AuditOptions) -> Result<(), BallEr
         print_default(ctx, installed.is_empty(), &outcome, &scans, &document)?;
     }
 
-    match fail_on_error(&outcome, opts.fail_on) {
+    match fail_on_error(&outcome, &scans, opts.fail_on) {
         Some(err) => Err(err),
         None => Ok(()),
     }

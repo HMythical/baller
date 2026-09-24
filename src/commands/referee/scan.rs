@@ -7,15 +7,23 @@
 use colored::Colorize;
 use serde_json::{json, Value};
 
-use super::{print_scan_lines, report_empty, require_enabled, rescan, select_roster};
+use super::{
+    print_scan_lines, report_empty, require_enabled, rescan, scan_fail_on_error, select_roster,
+    FailOn,
+};
 use crate::commands::draft::source_label;
 use crate::context::AppContext;
+use crate::core::package::Package;
 use crate::error::error::BallError;
 use crate::security::export::ScanOutcome;
 use crate::security::scan::has_blocking;
 use crate::utils::output::print_json;
 
-pub fn execute_scan(ctx: &AppContext, package_names: &[String]) -> Result<(), BallError> {
+pub fn execute_scan(
+    ctx: &AppContext,
+    package_names: &[String],
+    fail_on: Option<FailOn>,
+) -> Result<(), BallError> {
     require_enabled(ctx)?;
 
     let installed = select_roster(ctx, package_names)?;
@@ -50,11 +58,12 @@ pub fn execute_scan(ctx: &AppContext, package_names: &[String]) -> Result<(), Ba
                 })
             })
             .collect();
-        return print_json(&json!({
+        print_json(&json!({
             "command": "referee",
             "subcommand": "scan",
             "packages": packages,
-        }));
+        }))?;
+        return fail_result(&results, fail_on);
     }
 
     println!(
@@ -108,5 +117,16 @@ pub fn execute_scan(ctx: &AppContext, package_names: &[String]) -> Result<(), Ba
         "{} the scan changes nothing — eject or update a flagged package yourself",
         "Note".yellow()
     );
-    Ok(())
+    fail_result(&results, fail_on)
+}
+
+/// The report is printed either way; `--fail-on` only decides the exit code.
+fn fail_result(
+    results: &[(Package, ScanOutcome)],
+    fail_on: Option<FailOn>,
+) -> Result<(), BallError> {
+    match scan_fail_on_error(results, fail_on) {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }

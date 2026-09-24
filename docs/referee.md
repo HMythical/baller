@@ -378,7 +378,7 @@ baller referee [PACKAGE_NAME] [--refresh] [--no-scan]           # ≡ audit
 baller referee audit  [PACKAGE...] [--refresh] [--no-scan]
                       [--fail-on block|warn] [--format json|markdown|sarif] [--out FILE]
 baller referee check  [PACKAGE...] [--refresh] [--fail-on block|warn]
-baller referee scan   [PACKAGE...]
+baller referee scan   [PACKAGE...] [--fail-on block|warn]
 baller referee cache  [--status | --clear | --prune <DAYS>]
 baller referee config
 baller referee sbom   [--out FILE] [--format cyclonedx-json]
@@ -434,26 +434,33 @@ checked (honoring `--refresh` and `--fail-on`) and no extracted tree is walked.
 
 Re-scans each installed package's extracted tree without any advisory lookup,
 and reports per package `clean`, `N finding(s)`, `not on disk` (the extract
-directory was swept) or `not scanned` (no install path recorded). `--json`
+directory was swept) or `not scanned` (no install path recorded). It accepts
+`--fail-on block|warn` (see below). `--json`
 prints `{"command": "referee", "subcommand": "scan", "packages": [...]}` with
 the same `scan` object `audit --json` uses.
 
 ### `--fail-on` exit codes
 
-`--fail-on` turns the report into a CI gate without changing what the audit
-does. It uses the install gate's own banding, so `block` fails on exactly the
-packages an install would refuse.
+`--fail-on` (on `audit`, `check` and `scan`) turns the report into a CI gate
+without changing what the command does. A package trips it through either
+phase, judged the way an install would judge it: advisories by the gate's own
+banding, re-scan findings by their severity.
 
 | Flag | Exit 1 when |
 |---|---|
-| (none) | never — the audit always exits 0 when it runs |
-| `--fail-on block` | any package is at or above `block_at` |
-| `--fail-on warn` | any package is at or above `warn_at` (blocked packages included) |
+| (none) | never — the command always exits 0 when it runs |
+| `--fail-on block` | an advisory is at or above `block_at`, or a re-scan found a block-severity finding |
+| `--fail-on warn` | an advisory is at or above `warn_at`, or a re-scan found any finding (everything `block` catches included) |
+
+`check` never re-scans, so only advisories count there; `scan` consults no
+advisory data, so only findings count; `audit --no-scan` behaves like `check`.
 
 The report (table, `--json` document or `--format` output) is printed first;
-the failure is a `RefereeAuditFailed` error on stderr naming the packages.
-`unverified` and `unknown` packages never trip `--fail-on`: they have no band.
-Artifact-scan findings are reported but do not affect the exit code.
+the failure is a `RefereeAuditFailed` error on stderr naming each package and
+the phase(s) that tripped it, e.g. `alpha v1.0.0 (advisory), epsilon v5.0.0
+(scan)`. `unverified` and `unknown` packages never trip `--fail-on`: they have
+no band. Nor does a package whose artifact is not on disk — there was nothing
+to scan.
 
 ### `cache` — the verdict cache
 
@@ -715,7 +722,7 @@ directory is no longer on disk.
 | `RefereeBlocked` | A package crosses `block_at` in Phase A | Nothing written: no download, no symlink, no roster row |
 | `RefereeScanBlocked` | Phase B finds a block-severity issue | Extract directory and cached archive both purged |
 | `RefereeUnavailable` | The advisory service is unreachable under `fail-closed` | Nothing written |
-| `RefereeAuditFailed` | `baller referee audit/check --fail-on` found a package at or above the band | Nothing written — the report is printed first; only the exit code changes |
+| `RefereeAuditFailed` | `baller referee audit/check/scan --fail-on` found an advisory or re-scan finding at or above the level | Nothing written — the report is printed first; only the exit code changes |
 
 `RefereeBlocked` lists every package over the threshold with its advisories and
 reason, and names the escape hatches. All four exit non-zero, like any other

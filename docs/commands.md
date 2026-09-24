@@ -596,7 +596,7 @@ baller referee [package_name] [--refresh] [--no-scan]          # ≡ audit
 baller referee audit  [package...] [--refresh] [--no-scan]
                       [--fail-on block|warn] [--format json|markdown|sarif] [--out FILE]
 baller referee check  [package...] [--refresh] [--fail-on block|warn]
-baller referee scan   [package...]
+baller referee scan   [package...] [--fail-on block|warn]
 baller referee cache  [--status | --clear | --prune <DAYS>]
 baller referee config
 baller referee sbom   [--out FILE] [--format cyclonedx-json]
@@ -622,7 +622,7 @@ audits `fd`; `baller referee audit fd` says the same thing explicitly.
 |------|------------|-------------|
 | `--refresh` | bare, `audit`, `check` | Drop cached verdicts and re-query the advisory service. A `clean` verdict recorded earlier was computed against the advisory data of that day |
 | `--no-scan` | bare, `audit` | Check advisory data only; skip the artifact re-scan |
-| `--fail-on block\|warn` | `audit`, `check` | Exit 1 when any package bands at or above the level (`warn` includes blocked packages). Only the exit code changes — nothing is ejected or updated |
+| `--fail-on block\|warn` | `audit`, `check`, `scan` | Exit 1 when any package reaches the level through an advisory (banded at or above `block_at`/`warn_at`) or a re-scan finding (`block`: a block-severity finding; `warn`: any finding). `warn` includes everything `block` catches. `check` never scans, so only advisories count there; `scan` has no advisories, so only findings count. Only the exit code changes — nothing is ejected or updated |
 | `--format json\|markdown\|sarif` | `audit` | Render the report in this format. Without `--out` it replaces the table on stdout |
 | `--out FILE` | `audit`, `sbom` | Write the formatted report (or SBOM) to FILE. On `audit` it requires `--format`, and stdout keeps the normal table or `--json` output |
 | `--format cyclonedx-json` | `sbom` | The SBOM format (the default and only one) |

@@ -30,7 +30,7 @@ use crate::core::db::InstalledPackage;
 use crate::core::package::Package;
 use crate::error::error::BallError;
 use crate::security::export::{scan_for, ScanOutcome};
-use crate::security::scan::ScanSeverity;
+use crate::security::scan::{has_blocking, ScanSeverity};
 use crate::security::scoring::Band;
 use crate::security::verdict::{PackageReport, Verdict};
 use crate::security::GateOutcome;
@@ -42,9 +42,9 @@ pub use cache::CacheAction;
 /// The band `--fail-on` turns into a non-zero exit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum FailOn {
-    /// Fail when any package crosses `block_at`
+    /// Fail on an advisory at or above `block_at`, or a block-severity finding
     Block,
-    /// Fail when any package crosses `warn_at` (blocked packages included)
+    /// Fail on an advisory at or above `warn_at`, or any finding
     Warn,
 }
 
@@ -85,6 +85,7 @@ pub enum RefereeCommand {
     },
     Scan {
         package_names: Vec<String>,
+        fail_on: Option<FailOn>,
     },
     Cache(CacheAction),
     Config,
@@ -102,7 +103,10 @@ pub fn execute_referee(ctx: &AppContext, command: &RefereeCommand) -> Result<(),
             refresh,
             fail_on,
         } => check::execute_check(ctx, package_names, *refresh, *fail_on),
-        RefereeCommand::Scan { package_names } => scan::execute_scan(ctx, package_names),
+        RefereeCommand::Scan {
+            package_names,
+            fail_on,
+        } => scan::execute_scan(ctx, package_names, *fail_on),
         RefereeCommand::Cache(action) => cache::execute_cache(ctx, *action),
         RefereeCommand::Config => config::execute_config(ctx),
         RefereeCommand::Sbom { out, format } => sbom::execute_sbom(ctx, out.as_deref(), *format),
@@ -192,26 +196,81 @@ fn rescan(ctx: &AppContext, pkg: &Package, install_path: &str) -> ScanOutcome {
     }
 }
 
-/// The error `--fail-on` turns an audit into, when anything reached its band.
+/// The error `--fail-on` turns an audit into, when anything reached its level.
 ///
-/// Uses the gate's own banding, so `--fail-on block` fails on exactly the
-/// packages an install would refuse, and `--fail-on warn` adds the warned ones.
-pub(crate) fn fail_on_error(outcome: &GateOutcome, fail_on: Option<FailOn>) -> Option<BallError> {
+/// A package trips it through either phase. Advisories use the gate's own
+/// banding, so `--fail-on block` fails on exactly the packages an install
+/// would refuse, and `--fail-on warn` adds the warned ones. A re-scan trips it
+/// the way Phase B would: a block-severity finding at `block`, any finding at
+/// `warn`. Each package is named with the phase(s) that tripped it.
+pub(crate) fn fail_on_error(
+    outcome: &GateOutcome,
+    scans: &[(String, ScanOutcome)],
+    fail_on: Option<FailOn>,
+) -> Option<BallError> {
     let fail_on = fail_on?;
-    let mut failing = outcome.blocked();
-    if fail_on == FailOn::Warn {
-        failing.extend(outcome.warned());
+    let packages = outcome
+        .reports
+        .iter()
+        .filter_map(|report| {
+            let mut phases = Vec::new();
+            let advisory = match report.band(&outcome.thresholds) {
+                Band::Block => true,
+                Band::Warn => fail_on == FailOn::Warn,
+                Band::Pass => false,
+            };
+            if advisory {
+                phases.push("advisory");
+            }
+            if scan_for(scans, &report.name).is_some_and(|scan| scan_trips(scan, fail_on)) {
+                phases.push("scan");
+            }
+            (!phases.is_empty()).then(|| {
+                format!(
+                    "{} v{} ({})",
+                    report.name,
+                    report.version,
+                    phases.join(", ")
+                )
+            })
+        })
+        .collect();
+    audit_failure(fail_on, packages)
+}
+
+/// `--fail-on` for `baller referee scan`, which has no advisory outcome.
+pub(crate) fn scan_fail_on_error(
+    results: &[(Package, ScanOutcome)],
+    fail_on: Option<FailOn>,
+) -> Option<BallError> {
+    let fail_on = fail_on?;
+    let packages = results
+        .iter()
+        .filter(|(_, scan)| scan_trips(scan, fail_on))
+        .map(|(pkg, _)| format!("{} v{} (scan)", pkg.name, pkg.version))
+        .collect();
+    audit_failure(fail_on, packages)
+}
+
+/// Whether a re-scan reached the `--fail-on` level. A package that was not
+/// scanned, or whose artifact is gone, has nothing to fail on.
+fn scan_trips(scan: &ScanOutcome, fail_on: FailOn) -> bool {
+    match scan {
+        ScanOutcome::Scanned(findings) => match fail_on {
+            FailOn::Block => has_blocking(findings),
+            FailOn::Warn => !findings.is_empty(),
+        },
+        ScanOutcome::Skipped | ScanOutcome::Missing => false,
     }
-    if failing.is_empty() {
+}
+
+fn audit_failure(fail_on: FailOn, packages: Vec<String>) -> Option<BallError> {
+    if packages.is_empty() {
         return None;
     }
-
     Some(BallError::RefereeAuditFailed {
         band: fail_on.label(),
-        packages: failing
-            .iter()
-            .map(|report| format!("{} v{}", report.name, report.version))
-            .collect(),
+        packages,
     })
 }
 
@@ -424,5 +483,91 @@ mod tests {
     fn test_unrecognised_roster_source_yields_no_identity() {
         let pkg = row("quantum-registry", Some("whatever")).to_package();
         assert!(crate::security::identity::advisory_identities(&pkg).is_empty());
+    }
+
+    fn scanned(severities: &[ScanSeverity]) -> ScanOutcome {
+        ScanOutcome::Scanned(
+            severities
+                .iter()
+                .map(|severity| crate::security::scan::ScanFinding {
+                    path: std::path::PathBuf::from("install.sh"),
+                    rule: crate::security::scan::ScanRule::SuspiciousPayload,
+                    severity: *severity,
+                    evidence: "curl | sh".to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    /// A package with no advisory band at all, so only its scan can trip.
+    fn unbanded(name: &str) -> GateOutcome {
+        GateOutcome::new(
+            vec![PackageReport::unknown(name, "1.0.0", "github:o/r")],
+            crate::security::scoring::RefereeThresholds::default(),
+        )
+    }
+
+    #[test]
+    fn test_scan_trips_block_only_on_a_blocking_finding() {
+        let warn = scanned(&[ScanSeverity::Warn]);
+        let block = scanned(&[ScanSeverity::Warn, ScanSeverity::Block]);
+        assert!(!scan_trips(&warn, FailOn::Block));
+        assert!(scan_trips(&block, FailOn::Block));
+        assert!(scan_trips(&warn, FailOn::Warn));
+        assert!(!scan_trips(&scanned(&[]), FailOn::Warn));
+        assert!(!scan_trips(&ScanOutcome::Missing, FailOn::Warn));
+        assert!(!scan_trips(&ScanOutcome::Skipped, FailOn::Warn));
+    }
+
+    #[test]
+    fn test_audit_fail_on_counts_a_blocking_scan_finding() {
+        let outcome = unbanded("gamma");
+        let scans = vec![("gamma".to_string(), scanned(&[ScanSeverity::Block]))];
+        match fail_on_error(&outcome, &scans, Some(FailOn::Block)) {
+            Some(BallError::RefereeAuditFailed { band, packages }) => {
+                assert_eq!(band, "block");
+                assert_eq!(packages, vec!["gamma v1.0.0 (scan)".to_string()]);
+            }
+            other => panic!("expected RefereeAuditFailed, got {:?}", other),
+        }
+        assert!(fail_on_error(&outcome, &scans, None).is_none());
+    }
+
+    #[test]
+    fn test_audit_fail_on_warn_counts_a_warn_finding_but_block_does_not() {
+        let outcome = unbanded("gamma");
+        let scans = vec![("gamma".to_string(), scanned(&[ScanSeverity::Warn]))];
+        assert!(fail_on_error(&outcome, &scans, Some(FailOn::Block)).is_none());
+        assert!(fail_on_error(&outcome, &scans, Some(FailOn::Warn)).is_some());
+        // Without a re-scan (check, --no-scan) there is nothing to trip on.
+        assert!(fail_on_error(&outcome, &[], Some(FailOn::Warn)).is_none());
+    }
+
+    #[test]
+    fn test_scan_fail_on_names_only_tripping_packages() {
+        let pkg = |name: &str| Package::new(name, "2.0.0");
+        let results = vec![
+            (pkg("clean"), scanned(&[])),
+            (pkg("warned"), scanned(&[ScanSeverity::Warn])),
+            (pkg("blocked"), scanned(&[ScanSeverity::Block])),
+            (pkg("gone"), ScanOutcome::Missing),
+        ];
+        match scan_fail_on_error(&results, Some(FailOn::Block)) {
+            Some(BallError::RefereeAuditFailed { packages, .. }) => {
+                assert_eq!(packages, vec!["blocked v2.0.0 (scan)".to_string()])
+            }
+            other => panic!("expected RefereeAuditFailed, got {:?}", other),
+        }
+        match scan_fail_on_error(&results, Some(FailOn::Warn)) {
+            Some(BallError::RefereeAuditFailed { packages, .. }) => assert_eq!(
+                packages,
+                vec![
+                    "warned v2.0.0 (scan)".to_string(),
+                    "blocked v2.0.0 (scan)".to_string()
+                ]
+            ),
+            other => panic!("expected RefereeAuditFailed, got {:?}", other),
+        }
+        assert!(scan_fail_on_error(&results, None).is_none());
     }
 }

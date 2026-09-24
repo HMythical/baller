@@ -1471,19 +1471,19 @@ fn test_fail_on_block_fails_only_a_blocked_audit() {
     use crate::commands::referee::{fail_on_error, FailOn};
 
     let critical = audit_with("fail_on_critical", Some(CRITICAL));
-    match fail_on_error(&critical, Some(FailOn::Block)) {
+    match fail_on_error(&critical, &[], Some(FailOn::Block)) {
         Some(BallError::RefereeAuditFailed { band, packages }) => {
             assert_eq!(band, "block");
-            assert_eq!(packages, vec!["serde v1.0.229".to_string()]);
+            assert_eq!(packages, vec!["serde v1.0.229 (advisory)".to_string()]);
         }
         other => panic!("expected RefereeAuditFailed, got {:?}", other),
     }
 
     let medium = audit_with("fail_on_medium", Some(MEDIUM));
-    assert!(fail_on_error(&medium, Some(FailOn::Block)).is_none());
+    assert!(fail_on_error(&medium, &[], Some(FailOn::Block)).is_none());
 
     // Without --fail-on the audit never fails, whatever it found.
-    assert!(fail_on_error(&critical, None).is_none());
+    assert!(fail_on_error(&critical, &[], None).is_none());
 }
 
 #[test]
@@ -1492,18 +1492,18 @@ fn test_fail_on_warn_fails_warned_and_blocked_audits() {
 
     let medium = audit_with("fail_on_warn_medium", Some(MEDIUM));
     assert!(matches!(
-        fail_on_error(&medium, Some(FailOn::Warn)),
+        fail_on_error(&medium, &[], Some(FailOn::Warn)),
         Some(BallError::RefereeAuditFailed { band: "warn", .. })
     ));
 
     let critical = audit_with("fail_on_warn_critical", Some(CRITICAL));
-    assert!(fail_on_error(&critical, Some(FailOn::Warn)).is_some());
+    assert!(fail_on_error(&critical, &[], Some(FailOn::Warn)).is_some());
 
     let low = audit_with("fail_on_warn_low", Some(LOW));
-    assert!(fail_on_error(&low, Some(FailOn::Warn)).is_none());
+    assert!(fail_on_error(&low, &[], Some(FailOn::Warn)).is_none());
 
     let clean = audit_with("fail_on_warn_clean", None);
-    assert!(fail_on_error(&clean, Some(FailOn::Warn)).is_none());
+    assert!(fail_on_error(&clean, &[], Some(FailOn::Warn)).is_none());
 }
 
 #[test]
@@ -1518,6 +1518,6 @@ fn test_fail_on_ignores_an_unverified_audit() {
         .audit(&db, &[crate_pkg("serde", "1.0.229")], false)
         .unwrap();
     assert_eq!(outcome.reports[0].status(), Verdict::Unverified);
-    assert!(fail_on_error(&outcome, Some(FailOn::Warn)).is_none());
+    assert!(fail_on_error(&outcome, &[], Some(FailOn::Warn)).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -288,6 +288,9 @@ pub enum RefereeSub {
     Scan {
         /// Packages to scan; omit to scan the whole roster
         package_names: Vec<String>,
+        /// Exit non-zero on a block-severity finding (block) or any finding (warn)
+        #[arg(long = "fail-on", value_enum, value_name = "BAND")]
+        fail_on: Option<FailOn>,
     },
     /// Shows, clears or prunes the verdict cache
     Cache {
@@ -355,8 +358,12 @@ impl RefereeArgs {
                 refresh: *refresh,
                 fail_on: *fail_on,
             },
-            Some(RefereeSub::Scan { package_names }) => RefereeCommand::Scan {
+            Some(RefereeSub::Scan {
+                package_names,
+                fail_on,
+            }) => RefereeCommand::Scan {
                 package_names: package_names.clone(),
+                fail_on: *fail_on,
             },
             Some(RefereeSub::Cache { clear, prune, .. }) => RefereeCommand::Cache(match prune {
                 Some(days) => CacheAction::Prune(*days),
@@ -941,7 +948,23 @@ mod tests {
             _ => panic!("expected check"),
         }
         match referee(&["baller", "referee", "scan"]) {
-            RefereeCommand::Scan { package_names } => assert!(package_names.is_empty()),
+            RefereeCommand::Scan {
+                package_names,
+                fail_on,
+            } => {
+                assert!(package_names.is_empty());
+                assert!(fail_on.is_none());
+            }
+            _ => panic!("expected scan"),
+        }
+        match referee(&["baller", "referee", "scan", "gamma", "--fail-on", "warn"]) {
+            RefereeCommand::Scan {
+                package_names,
+                fail_on,
+            } => {
+                assert_eq!(package_names, vec!["gamma".to_string()]);
+                assert_eq!(fail_on, Some(FailOn::Warn));
+            }
             _ => panic!("expected scan"),
         }
     }
@@ -1023,5 +1046,6 @@ mod tests {
         }
         // scan takes no advisory flags.
         referee_rejects(&["baller", "referee", "scan", "--refresh"]);
+        referee_rejects(&["baller", "referee", "scan", "--fail-on", "pass"]);
     }
 }

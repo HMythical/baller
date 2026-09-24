@@ -92,7 +92,8 @@ pub enum BallError {
     RefereeUnavailable {
         message: String,
     },
-    /// `baller referee --fail-on` found packages at or above the chosen band.
+    /// `baller referee --fail-on` found packages at or above the chosen level,
+    /// through an advisory or an artifact-scan finding.
     ///
     /// Raised after the report is printed, only to turn it into a non-zero
     /// exit for CI. The audit itself is read-only: nothing was changed.
@@ -231,7 +232,7 @@ impl fmt::Display for BallError {
 
             BallError::RefereeAuditFailed { band, packages } => write!(
                 f,
-                "referee found {} package(s) at or above the '{}' band (--fail-on {}): {}",
+                "referee found {} package(s) at or above the '{}' level (--fail-on {}): {}",
                 packages.len(),
                 band,
                 band,

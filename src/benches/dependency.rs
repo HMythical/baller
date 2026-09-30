@@ -9,11 +9,11 @@ pub fn bench_dependency_operations(c: &mut Criterion) {
 
     group.bench_function("resolve_deps", |b| {
         let client = HttpClient::new().unwrap();
-        let mut registry = RegistryClient::new(client);
+        let registry = RegistryClient::new(client);
         let installed_map = HashMap::new();
 
         b.iter(|| {
-            let result = resolve_deps("test-pkg", &mut registry, &installed_map);
+            let result = resolve_deps("test-pkg", &registry, &installed_map);
             let _ = black_box(result);
         });
     });

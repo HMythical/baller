@@ -46,6 +46,15 @@ with a custom scheme:
 - **Distro versions with zero-padded segments are no longer unreadable**
   `parse_version_flexible` normalised `2:8.1.0875-5ubuntu2` down to `8.1.0875` and then handed it to semver, which rejects leading zeros on a numeric identifier — so the whole version parsed as `None`. Every caller treats that as unparseable, which meant an apt package with a zero-padded segment could fail dependency resolution outright with "system package format not supported by semver". Leading zeros are now stripped per segment (`8.1.0875` → `8.1.875`, `1.00.0` → `1.0.0`) before the semver parse, which is also what lets Referee place a Debian version on an advisory's affected range.
 
+- **Release workflow builds and uploads the Windows artifact** (closes #14)
+  The `build-windows` job in `.github/workflows/release.yml` called `build/winbuild/build.ps1 -Profile Release`, which isn't a parameter the script accepts, so every tagged release failed before `cargo` ran and shipped without a Windows build. The job now calls `-Command release`. It also named its artifact from `needs.build-linux.outputs.version` without depending on `build-linux`, which gave an empty version. The job now reads the version from `Cargo.toml` in its own step, as the Linux job does. A new step fails the job if `build/winbuild/dist/baller.exe` is missing.
+
+- **`clippy --all-targets -D warnings` is clean; the CI lint gate now covers tests and benches**
+  `cargo clippy -- -D warnings` only linted the library and binary, so the test suite and benchmarks carried 21 warnings (`bool_assert_comparison`, `useless_format`, `needless_borrows_for_generic_args`, `unnecessary_mut_passed`, `unused_mut`) that CI never saw. All are fixed, and the `test` command in `build/linux/build.sh` / `build/winbuild/build.ps1` now runs `cargo clippy --all-targets -- -D warnings` so every target stays gated.
+
+- **`build` no longer runs the `pre_install` hook for a system-source manifest the host cannot install** (closes #66)
+  The "needs a native package manager" check for `[source] type = "system"` manifests now runs before the `PreInstall` hook, using the runtime-detected host manager instead of a compile-time `cfg!(target_os = "linux")` guard inside the install path. A build on an unsupported host now fails before any user hook script executes; `--dry-run` and roster checks are unchanged.
+
 - **Dependency resolution no longer silently swallows unresolvable dependencies** (Closes #73)
   `resolve_from` dropped any dependency whose fetch returned `PackageNotFound` — in both the already-installed and plain-fetch branches — with no warning and no record, so `draft` installed whatever subset *did* resolve and printed "Done … drafted!" as if the full set had been satisfied. The gap was invisible: `ResolveResult` had no "unresolved" concept, and nothing surfaced the difference between an optional-only hole and a missing mandatory dependency.
 
@@ -76,8 +85,14 @@ with a custom scheme:
 
   Per command: `build` links nothing into the platform default or `--install-dir`; `substitute` fails **before** ejecting the old package, so a broken replacement can no longer cost you a working one; `update` aborts the upgrade (note that it prunes the old extract directory before unpacking the new archive, so restoring a package whose new release ships no usable asset needs a `draft --force`).
 
+- **`sweep` propagates directory traversal errors** (PR #88)
+  Cache-size traversal now fails explicitly when a directory, entry, or metadata lookup cannot be read, instead of making a threshold decision from a silent zero or partial byte total. The `FileIoErr` escapes the sweep instead of being swallowed. Closes #85.
+
 - The case-insensitive artifact lookup in `build` passes on Windows
   `test_locate_cargo_binary_scans_for_a_case_insensitive_match` compared `PathBuf`s byte-for-byte, which fails on case-insensitive filesystems: the direct name lookup returns the requested (lowercased) spelling while the scan returns the on-disk spelling. The test now lowercases the compared file names, making it platform-agnostic.
+
+- **The `version` subcommand is wired up and working again** (PR #35)
+  Re-created the `version` command and expanded `build`, replacing stale pieces with working logic, and added local development scripts to `.gitignore`. Closes #29.
 
 ### Changed
 

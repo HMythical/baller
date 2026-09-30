@@ -85,6 +85,10 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         )));
     }
 
+    if let PackageSource::System { manager } = &pkg.source {
+        ensure_system_source_supported(ctx.registry.system_manager_name(), manager, &pkg.name)?;
+    }
+
     run_hook(
         &HookType::PreInstall,
         &pkg.name,
@@ -348,6 +352,22 @@ fn report_plan(
     Ok(())
 }
 
+/// Pre-flight: a system source is only buildable when the host has a native
+/// package manager. Gated before any lifecycle hook so a guaranteed-failing
+/// build never runs user scripts (#66).
+fn ensure_system_source_supported(
+    host_manager: Option<&'static str>,
+    requested_manager: &str,
+    origin: &str,
+) -> Result<(), BallError> {
+    if host_manager.is_none() {
+        return Err(BallError::UnsupportedOs(format!(
+            "'{origin}' needs the {requested_manager} system package manager, which is only available on Linux hosts"
+        )));
+    }
+    Ok(())
+}
+
 /// Install a manifest that names a system package via the native manager
 fn build_system_package(
     ctx: &AppContext,
@@ -355,13 +375,6 @@ fn build_system_package(
     manager: &str,
     manifest_path: &str,
 ) -> Result<(), BallError> {
-    if !cfg!(target_os = "linux") {
-        return Err(BallError::UnsupportedOs(format!(
-            "'{}' needs the {} system package manager, which is Linux only",
-            pkg.name, manager
-        )));
-    }
-
     tracing::info!("{} installing via {}...", "System".green(), manager.cyan(),);
     install_system_package(manager, &pkg.name)?;
 
@@ -874,6 +887,26 @@ fn announce_dependencies(pkg: &Package) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_source_rejected_without_host_manager() {
+        let err = ensure_system_source_supported(None, "apt", "vim").unwrap_err();
+        assert!(matches!(err, BallError::UnsupportedOs(_)));
+    }
+
+    #[test]
+    fn system_source_accepted_with_host_manager() {
+        assert!(ensure_system_source_supported(Some("apt"), "apt", "vim").is_ok());
+    }
+
+    #[test]
+    fn guard_accepts_registry_manager_name_type() {
+        // Signature drift guard: must accept Registry::system_manager_name()'s return type
+        let _: fn(&crate::core::registry::RegistryClient) -> Option<&'static str> =
+            crate::core::registry::RegistryClient::system_manager_name;
+        let _: fn(Option<&'static str>, &str, &str) -> Result<(), BallError> =
+            ensure_system_source_supported;
+    }
 
     fn test_dir(tag: &str) -> PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};

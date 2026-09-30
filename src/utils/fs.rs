@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename_truncate_preserves_extension() {
-        let long = format!("{}", "a".repeat(250)) + ".tar.gz";
+        let long = "a".repeat(250).to_string() + ".tar.gz";
         let result = sanitize_filename(&long);
         assert!(result.len() <= 200);
         assert!(result.ends_with(".gz") || result.ends_with(".tar.gz"));
@@ -345,10 +345,10 @@ mod tests {
     fn test_ensure_parent_single() {
         let dir = std::env::temp_dir().join("baller_test_parent").join("sub");
         let file_path = dir.join("test.txt");
-        let _ = std::fs::remove_dir_all(&dir.parent().unwrap());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
         ensure_parent(&file_path).unwrap();
         assert!(dir.exists());
-        let _ = std::fs::remove_dir_all(&dir.parent().unwrap());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]

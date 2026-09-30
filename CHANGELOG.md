@@ -21,6 +21,9 @@ with a custom scheme:
 
 ### Fixed
 
+- **Release workflow builds and uploads the Windows artifact** (closes #14)
+  The `build-windows` job in `.github/workflows/release.yml` called `build/winbuild/build.ps1 -Profile Release`, which isn't a parameter the script accepts, so every tagged release failed before `cargo` ran and shipped without a Windows build. The job now calls `-Command release`. It also named its artifact from `needs.build-linux.outputs.version` without depending on `build-linux`, which gave an empty version. The job now reads the version from `Cargo.toml` in its own step, as the Linux job does. A new step fails the job if `build/winbuild/dist/baller.exe` is missing.
+
 - **`clippy --all-targets -D warnings` is clean; the CI lint gate now covers tests and benches**
   `cargo clippy -- -D warnings` only linted the library and binary, so the test suite and benchmarks carried 21 warnings (`bool_assert_comparison`, `useless_format`, `needless_borrows_for_generic_args`, `unnecessary_mut_passed`, `unused_mut`) that CI never saw. All are fixed, and the `test` command in `build/linux/build.sh` / `build/winbuild/build.ps1` now runs `cargo clippy --all-targets -- -D warnings` so every target stays gated.
 

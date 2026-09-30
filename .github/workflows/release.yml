@@ -68,6 +68,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up GitHub Actions variables
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -75,12 +82,20 @@ jobs:
 
       - name: Build Windows release
         shell: pwsh
-        run: ./build/winbuild/build.ps1 -Profile Release
+        run: ./build/winbuild/build.ps1 -Command release
+
+      - name: Verify Windows binary exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/winbuild/dist/baller.exe)) {
+            Write-Error "build/winbuild/dist/baller.exe was not produced"
+            exit 1
+          }
 
       - name: Upload Windows release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: baller-windows-${{ needs.build-linux.outputs.version }}
+          name: baller-windows-${{ steps.version.outputs.value }}
           path: build/winbuild/dist/
           retention-days: 7
 

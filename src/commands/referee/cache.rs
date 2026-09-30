@@ -62,6 +62,8 @@ fn status(ctx: &AppContext) -> Result<(), BallError> {
     let total: i64 = stats.iter().map(|row| row.count).sum();
     // `checked_at` is `YYYY-MM-DD HH:MM:SS`, so the string maximum is the newest.
     let newest = stats.iter().filter_map(|row| row.newest.clone()).max();
+    let ttl_days = ctx.config.referee.cache_ttl_days;
+    let stale = ctx.db.referee_cache_stale_count(ttl_days)?;
 
     if ctx.flags.json {
         return print_json(&json!({
@@ -70,6 +72,8 @@ fn status(ctx: &AppContext) -> Result<(), BallError> {
             "action": "status",
             "total": total,
             "newest": newest,
+            "cache_ttl_days": ttl_days,
+            "stale": stale,
             "ecosystems": stats
                 .iter()
                 .map(|row| json!({
@@ -107,5 +111,29 @@ fn status(ctx: &AppContext) -> Result<(), BallError> {
         total,
         newest.as_deref().unwrap_or("—")
     );
+    println!("{} {}", "Freshness".bold(), freshness_note(ttl_days, stale));
     Ok(())
+}
+
+/// What the TTL means for the rows in the cache right now.
+fn freshness_note(ttl_days: Option<u32>, stale: i64) -> String {
+    match ttl_days {
+        None => "cache_ttl_days is off, so cached verdicts never age out".to_string(),
+        Some(days) => format!(
+            "{} clean verdict(s) older than {} day(s) will be re-queried on the next install",
+            stale, days
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_freshness_note_says_the_cache_never_ages_out_without_a_ttl() {
+        assert!(freshness_note(None, 0).contains("never age out"));
+        let note = freshness_note(Some(7), 3);
+        assert!(note.starts_with("3 clean verdict(s) older than 7 day(s)"));
+    }
 }

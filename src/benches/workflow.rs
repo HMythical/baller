@@ -99,6 +99,7 @@ pub fn bench_complete_workflow(c: &mut Criterion) {
             true,
             RefereeThresholds::default(),
             FailPolicy::FailOpen,
+            None,
             // Unreachable on purpose: a cache hit must never dial out, and a
             // benchmark that silently started doing so would show it here.
             "http://127.0.0.1:1".to_string(),

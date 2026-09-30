@@ -192,10 +192,38 @@ fn referee(base_url: &str, policy: FailPolicy) -> Referee {
         true,
         RefereeThresholds::default(),
         policy,
+        None,
         base_url.to_string(),
         None,
         None,
     )
+}
+
+fn referee_with_ttl(base_url: &str, policy: FailPolicy, ttl_days: Option<u32>) -> Referee {
+    Referee::new(
+        HttpClient::new().unwrap(),
+        true,
+        RefereeThresholds::default(),
+        policy,
+        ttl_days,
+        base_url.to_string(),
+        None,
+        None,
+    )
+}
+
+/// Seed a cache row for `serde` and age it by a SQLite modifier.
+fn seed_serde(db: &DbManager, verdict: &str, age: &str) {
+    let risk = (verdict == "vulnerable").then_some(4.9);
+    let advisories = if verdict == "vulnerable" {
+        json!([{ "id": "GHSA-old", "aliases": [], "cvss": 9.8, "summary": null }]).to_string()
+    } else {
+        "[]".to_string()
+    };
+    db.referee_cache_put("crates.io", "serde", "1.0.229", verdict, risk, &advisories)
+        .unwrap();
+    db.referee_cache_age_for_test("crates.io", "serde", "1.0.229", age)
+        .unwrap();
 }
 
 fn crate_pkg(name: &str, version: &str) -> Package {
@@ -877,6 +905,7 @@ fn test_a_disabled_referee_checks_nothing() {
         false,
         RefereeThresholds::default(),
         FailPolicy::FailOpen,
+        None,
         server.base_url.clone(),
         None,
         None,
@@ -927,6 +956,7 @@ fn test_custom_thresholds_change_the_outcome() {
             block_at: 3.0,
         },
         FailPolicy::FailOpen,
+        None,
         server.base_url.clone(),
         None,
         None,
@@ -1005,6 +1035,7 @@ fn referee_with_vt(base_url: &str) -> Referee {
         true,
         RefereeThresholds::default(),
         FailPolicy::FailOpen,
+        None,
         base_url.to_string(),
         Some("test-key".to_string()),
         Some(format!("{}/vt", base_url)),
@@ -1519,5 +1550,145 @@ fn test_fail_on_ignores_an_unverified_audit() {
         .unwrap();
     assert_eq!(outcome.reports[0].status(), Verdict::Unverified);
     assert!(fail_on_error(&outcome, &[], Some(FailOn::Warn)).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_stale_clean_verdict_is_re_queried() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlstale");
+    let db = db_in(&dir);
+    seed_serde(&db, "clean", "-40 days");
+
+    let outcome = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(7))
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    assert_eq!(server.request_count(), 1);
+    assert_eq!(outcome.reports[0].status(), Verdict::Clean);
+    assert!(!outcome.reports[0].all_cached());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_fresh_clean_verdict_is_not_re_queried() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlfresh");
+    let db = db_in(&dir);
+    seed_serde(&db, "clean", "-1 days");
+
+    let outcome = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(7))
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    assert_eq!(server.request_count(), 0);
+    assert!(outcome.reports[0].all_cached());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_stale_vulnerable_verdict_is_not_re_queried() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlvuln");
+    let db = db_in(&dir);
+    seed_serde(&db, "vulnerable", "-400 days");
+
+    let outcome = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(7))
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    assert_eq!(server.request_count(), 0);
+    assert!(matches!(
+        outcome.reports[0].status(),
+        Verdict::Vulnerable { .. }
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_zero_ttl_re_asks_every_clean_verdict() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlzero");
+    let db = db_in(&dir);
+    let referee = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(0));
+    let plan = [crate_pkg("serde", "1.0.229")];
+
+    referee.gate(&db, &plan).unwrap();
+    // Written this second, and still re-asked.
+    referee.gate(&db, &plan).unwrap();
+
+    assert_eq!(server.request_count(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_stale_clean_verdict_fails_open_as_unverified() {
+    let server = MockServer::start(|_| (500, "{\"error\":\"boom\"}".to_string()));
+    let dir = scratch("ttloutage");
+    let db = db_in(&dir);
+    seed_serde(&db, "clean", "-40 days");
+
+    let outcome = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(7))
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    // The stale `clean` must not stand in for an answer nobody could give.
+    assert_eq!(outcome.reports[0].status(), Verdict::Unverified);
+    assert!(outcome.block_error().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_stale_vulnerable_verdict_still_blocks_when_closed() {
+    let server = MockServer::start(|_| (500, "{\"error\":\"boom\"}".to_string()));
+    let dir = scratch("ttlclosed");
+    let db = db_in(&dir);
+    seed_serde(&db, "vulnerable", "-400 days");
+
+    let outcome = referee_with_ttl(&server.base_url, FailPolicy::FailClosed, Some(7))
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    assert_eq!(server.request_count(), 0);
+    assert!(matches!(
+        outcome.reports[0].status(),
+        Verdict::Vulnerable { .. }
+    ));
+    assert!(outcome.block_error().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_no_ttl_never_re_asks() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlnone");
+    let db = db_in(&dir);
+    seed_serde(&db, "clean", "-400 days");
+
+    referee_with_ttl(&server.base_url, FailPolicy::FailOpen, None)
+        .gate(&db, &[crate_pkg("serde", "1.0.229")])
+        .unwrap();
+
+    assert_eq!(server.request_count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_a_stale_clean_re_query_updates_the_cache_row() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let dir = scratch("ttlupdate");
+    let db = db_in(&dir);
+    seed_serde(&db, "clean", "-40 days");
+    let referee = referee_with_ttl(&server.base_url, FailPolicy::FailOpen, Some(7));
+    let plan = [crate_pkg("serde", "1.0.229")];
+
+    referee.gate(&db, &plan).unwrap();
+    referee.gate(&db, &plan).unwrap();
+
+    assert_eq!(
+        server.request_count(),
+        1,
+        "the re-query refreshed checked_at"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -561,6 +561,89 @@ impl DbManager {
         }
     }
 
+    /// A cached verdict that may still be acted on, and how long it has stood.
+    ///
+    /// `ttl_days` bounds how old a `clean` verdict may be. A `vulnerable` row
+    /// is exempt: re-querying one could only confirm the block it already
+    /// causes, so the answer is used whatever its age. `None` keeps every row,
+    /// which is baller's historical behaviour.
+    pub fn referee_cache_get_fresh(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        ttl_days: Option<u32>,
+    ) -> Result<Option<CachedVerdict>, BallError> {
+        // Strictly newer than the cutoff: a row written this second is not
+        // fresh under a TTL of `0`, which must re-ask every time.
+        let cutoff: Option<String> = ttl_days.map(|days| format!("-{} days", days));
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT verdict, risk, advisories, checked_at FROM referee_cache
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3
+                   AND (verdict = 'vulnerable' OR ?4 IS NULL
+                        OR checked_at > datetime('now', ?4))",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let row = stmt.query_row(params![ecosystem, name, version, cutoff], |row| {
+            Ok(CachedVerdict {
+                verdict: row.get(0)?,
+                risk: row.get(1)?,
+                advisories: row.get(2)?,
+                checked_at: row.get(3)?,
+            })
+        });
+
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(BallError::InvalidConfig(format!(
+                "failed to read the referee cache: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Whole days since `checked_at`, as SQLite counts them.
+    ///
+    /// `checked_at` is SQLite's own `datetime('now')` text, so the arithmetic
+    /// stays in SQLite rather than pulling in a date crate.
+    pub fn referee_age_days(&self, checked_at: &str) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT CAST(julianday('now') - julianday(?1) AS INTEGER)",
+                params![checked_at],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Age a cached verdict by a SQLite datetime modifier, e.g. `-40 days`.
+    ///
+    /// Lets the Referee tests prove a row has aged past the TTL without
+    /// sleeping or reaching for a date crate.
+    #[cfg(test)]
+    pub fn referee_cache_age_for_test(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        modifier: &str,
+    ) -> Result<usize, BallError> {
+        self.conn
+            .execute(
+                "UPDATE referee_cache SET checked_at = datetime('now', ?4)
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3",
+                params![ecosystem, name, version, modifier],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to age the referee cache: {}", e))
+            })
+    }
+
     /// Record a verdict, replacing any earlier one for the same key.
     #[allow(clippy::too_many_arguments)]
     pub fn referee_cache_put(
@@ -653,6 +736,23 @@ impl DbManager {
             .map_err(|e| {
                 BallError::InvalidConfig(format!("failed to prune the referee cache: {}", e))
             })
+    }
+
+    /// How many `clean` verdicts are older than `ttl_days` and will therefore
+    /// be re-queried on the next install. `None` is always `0`: with no TTL
+    /// nothing ages out.
+    pub fn referee_cache_stale_count(&self, ttl_days: Option<u32>) -> Result<i64, BallError> {
+        let Some(days) = ttl_days else {
+            return Ok(0);
+        };
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM referee_cache
+                 WHERE verdict = 'clean' AND checked_at <= datetime('now', ?1)",
+                params![format!("-{} days", days)],
+                |row| row.get(0),
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("failed to count stale verdicts: {}", e)))
     }
 
     #[allow(dead_code)]
@@ -1585,6 +1685,91 @@ mod tests {
         assert_eq!(retrieved.source_detail, Some("apt".to_string()));
         assert_eq!(retrieved.description.unwrap(), "From system PM");
 
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn put_verdict(db: &DbManager, name: &str, verdict: &str) {
+        let risk = (verdict == "vulnerable").then_some(4.9);
+        db.referee_cache_put("crates.io", name, "1.0.0", verdict, risk, "[]")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_referee_cache_get_fresh_without_a_ttl_keeps_every_row() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "old", "clean");
+        db.referee_cache_age_for_test("crates.io", "old", "1.0.0", "-400 days")
+            .unwrap();
+
+        assert!(db
+            .referee_cache_get_fresh("crates.io", "old", "1.0.0", None)
+            .unwrap()
+            .is_some());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_get_fresh_excludes_only_a_stale_clean_row() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "fresh", "clean");
+        put_verdict(&db, "stale", "clean");
+        put_verdict(&db, "flagged", "vulnerable");
+        db.referee_cache_age_for_test("crates.io", "fresh", "1.0.0", "-1 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "stale", "1.0.0", "-40 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "flagged", "1.0.0", "-400 days")
+            .unwrap();
+
+        let get = |name: &str| {
+            db.referee_cache_get_fresh("crates.io", name, "1.0.0", Some(7))
+                .unwrap()
+        };
+        assert!(get("fresh").is_some());
+        assert!(get("stale").is_none());
+        let flagged = get("flagged").expect("a vulnerable row is never aged out");
+        assert_eq!(flagged.verdict, "vulnerable");
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_stale_count_counts_only_stale_clean_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "fresh", "clean");
+        put_verdict(&db, "stale", "clean");
+        put_verdict(&db, "flagged", "vulnerable");
+        db.referee_cache_age_for_test("crates.io", "stale", "1.0.0", "-40 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "flagged", "1.0.0", "-40 days")
+            .unwrap();
+
+        assert_eq!(db.referee_cache_stale_count(Some(7)).unwrap(), 1);
+        assert_eq!(db.referee_cache_stale_count(None).unwrap(), 0);
+        assert_eq!(db.referee_cache_stale_count(Some(0)).unwrap(), 2);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_age_days_counts_whole_days() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "old", "clean");
+        db.referee_cache_age_for_test("crates.io", "old", "1.0.0", "-40 days")
+            .unwrap();
+        let row = db
+            .referee_cache_get("crates.io", "old", "1.0.0")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(db.referee_age_days(&row.checked_at), Some(40));
+        assert_eq!(db.referee_age_days("not a date"), None);
         drop(db);
         let _ = std::fs::remove_file(&path);
     }

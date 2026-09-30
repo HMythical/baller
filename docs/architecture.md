@@ -247,7 +247,9 @@ phases:
 
 Verdicts are cached in the `referee_cache` table of the same SQLite database,
 keyed by `(ecosystem, name, version)`; only `clean` and `vulnerable` are
-stored. The `installed_packages` table carries an `advisory` column (added by
+stored. Rows are durable unless `[referee] cache_ttl_days` is set, in which
+case a `clean` row older than the TTL is re-queried; `vulnerable` rows are
+exempt. The `installed_packages` table carries an `advisory` column (added by
 migration on open) holding a package's declared advisory identity, so
 `baller referee` re-checks it under the same identity the install used.
 

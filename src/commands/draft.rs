@@ -403,6 +403,18 @@ fn report_plan(
             report.version.yellow(),
             report.block_reason(&gate.thresholds)
         );
+        if let Some(age) = report
+            .verdicts
+            .iter()
+            .filter_map(|v| v.age_days(&ctx.db))
+            .max()
+        {
+            println!(
+                "    {} replayed from the verdict cache, {} day(s) old",
+                "Cached:".yellow(),
+                age
+            );
+        }
         for advisory in report.advisories() {
             println!("    {} {}", "•".red(), advisory.describe());
         }

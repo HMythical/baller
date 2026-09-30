@@ -88,16 +88,20 @@ pub struct Referee {
     osv: OsvClient,
     thresholds: RefereeThresholds,
     fail_policy: FailPolicy,
+    /// How old a cached `clean` verdict may be before it is re-queried
+    cache_ttl_days: Option<u32>,
     scanner: ArtifactScanner,
     virustotal: Option<virustotal::VirusTotalClient>,
 }
 
 impl Referee {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         http: HttpClient,
         enabled: bool,
         thresholds: RefereeThresholds,
         fail_policy: FailPolicy,
+        cache_ttl_days: Option<u32>,
         osv_base_url: String,
         virustotal_api_key: Option<String>,
         virustotal_base_url: Option<String>,
@@ -117,6 +121,7 @@ impl Referee {
             osv: OsvClient::new(http, osv_base_url),
             thresholds,
             fail_policy,
+            cache_ttl_days,
             scanner: ArtifactScanner::new(),
             virustotal,
         }
@@ -199,7 +204,12 @@ impl Referee {
                 }
 
                 if !refresh {
-                    match db.referee_cache_get(&identity.ecosystem, &identity.name, &pkg.version) {
+                    match db.referee_cache_get_fresh(
+                        &identity.ecosystem,
+                        &identity.name,
+                        &pkg.version,
+                        self.cache_ttl_days,
+                    ) {
                         Ok(Some(cached)) => {
                             tracing::debug!(
                                 "referee: cache hit for {} v{} (checked {})",
@@ -263,6 +273,7 @@ impl Referee {
                         resolved.insert(
                             (*index, *slot),
                             AdvisoryVerdict {
+                                checked_at: None,
                                 identity,
                                 status: Verdict::Unverified,
                                 matched: Vec::new(),
@@ -393,6 +404,7 @@ impl Referee {
         };
 
         Some(AdvisoryVerdict {
+            checked_at: None,
             identity,
             status,
             matched,
@@ -485,6 +497,7 @@ impl Referee {
         };
 
         AdvisoryVerdict {
+            checked_at: None,
             identity: identity.clone(),
             status,
             matched,
@@ -557,6 +570,7 @@ impl Referee {
         };
 
         AdvisoryVerdict {
+            checked_at: None,
             identity: identity.clone(),
             status,
             matched,
@@ -1071,6 +1085,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 source: "cargo:safe".to_string(),
                 verdicts: vec![AdvisoryVerdict {
+                    checked_at: None,
                     identity: crates_identity("safe"),
                     status: Verdict::Clean,
                     matched: Vec::new(),
@@ -1081,6 +1096,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 source: "cargo:warned".to_string(),
                 verdicts: vec![AdvisoryVerdict {
+                    checked_at: None,
                     identity: crates_identity("warned"),
                     status: Verdict::Vulnerable { risk: Some(3.0) },
                     matched: vec![MatchedAdvisory {
@@ -1096,6 +1112,7 @@ mod tests {
                 version: "2.0.0".to_string(),
                 source: "cargo:blocked".to_string(),
                 verdicts: vec![AdvisoryVerdict {
+                    checked_at: None,
                     identity: crates_identity("blocked"),
                     status: Verdict::Vulnerable { risk: Some(4.9) },
                     matched: vec![MatchedAdvisory {

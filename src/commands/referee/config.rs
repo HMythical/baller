@@ -30,6 +30,10 @@ pub fn execute_config(ctx: &AppContext) -> Result<(), BallError> {
         ),
         ("osv_base_url", ctx.config.referee.osv_base_url.clone()),
         (
+            "cache_ttl_days",
+            ttl_label(ctx.config.referee.cache_ttl_days),
+        ),
+        (
             "virustotal_base_url",
             ctx.config
                 .referee
@@ -67,9 +71,18 @@ fn effective_settings(ctx: &AppContext) -> Value {
         "block_at": referee.block_at,
         "fail_policy": referee.fail_policy.label(),
         "osv_base_url": referee.osv_base_url,
+        "cache_ttl_days": referee.cache_ttl_days,
         "virustotal_base_url": referee.virustotal_base_url,
         "virustotal_api_key": key_state(referee.virustotal_api_key.as_deref()),
     })
+}
+
+/// The TTL as `referee config` prints it: `off` when unset, so an inert
+/// setting is visibly inert.
+fn ttl_label(ttl_days: Option<u32>) -> String {
+    ttl_days
+        .map(|days| days.to_string())
+        .unwrap_or_else(|| "off".to_string())
 }
 
 /// Whether a key is configured, without ever revealing it.
@@ -83,6 +96,13 @@ fn key_state(key: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ttl_label_is_off_when_unset() {
+        assert_eq!(ttl_label(None), "off");
+        assert_eq!(ttl_label(Some(0)), "0");
+        assert_eq!(ttl_label(Some(7)), "7");
+    }
 
     #[test]
     fn test_key_state_never_echoes_the_key() {

@@ -41,6 +41,13 @@ with a custom scheme:
 - **`build` compiles and installs Rust projects from source** (Refs #9)
   `baller build <dir>` now falls back to a Cargo build when the directory holds no `baller.toml`/`baller.json` but does hold a `Cargo.toml`: the crate name, version and first `[[bin]]` name are read from the manifest, `cargo build --release` runs in the project directory, and the artifact found in `target/release` is linked into the platform default bin directory (`~/.local/bin` on Linux, `%LOCALAPPDATA%\baller\bin` on Windows) or into `--install-dir`. The package is recorded with `source = cargo` and the `Cargo.toml` as its manifest path, and the `pre_install`/`post_install` hooks run as they do for a manifest build. `--dry-run`, `--force`, `--install-dir`, `--json` and `--quiet` are supported; `--source` and `--no-deps` are rejected because cargo resolves the project's dependencies itself. Manifest-driven builds are unchanged.
 
+- **Referee — opt-in freshness bound for cached verdicts (`cache_ttl_days`)**
+  The verdict cache has never expired, so an advisory published after a package version was first checked stayed invisible to `draft` / `update` / `substitute` on every later install of that version. A new `[referee] cache_ttl_days` setting bounds how old a cached `clean` verdict may be before OSV is asked again. It is **opt-in**: unset keeps today's durable cache byte-for-byte; `0` re-queries every `clean` verdict on every install (CI). Negative and non-numeric values are rejected at parse time.
+  - **`vulnerable` rows are exempt** — re-querying could only confirm the block, so a cached block is used whatever its age. The block reason now names the cached `checked_at`, and `draft --dry-run` prints the verdict's age, so a refusal on old data reads as such.
+  - **Fail-open interaction** — a stale `clean` is never acted on. If the re-query cannot reach OSV, the package is `unverified` (fail-open) or the plan is refused (fail-closed), exactly as for an uncached package.
+  - **New output** — JSON identities carry `cached` and `checked_at`; package reports carry `all_cached` and `oldest_checked_at`; the Markdown export gains a `Checked` column (plus a footnote when any verdict was replayed); SARIF results carry `cached` and `checkedAt` in `properties`. `referee config` shows `cache_ttl_days` (`off` when unset) and `referee cache --status` reports how many `clean` rows the TTL has aged out (`cache_ttl_days` and `stale` in `--json`).
+  - No schema migration, no new `Verdict` variant and no new error variant. Freshness is strict: a row written in the same second as a `0`-TTL lookup is still re-queried.
+
 ### Fixed
 
 - **Distro versions with zero-padded segments are no longer unreadable**

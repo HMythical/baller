@@ -63,8 +63,8 @@ pub fn render_markdown(
         thresholds.warn_at, thresholds.block_at, fail_policy
     ));
 
-    doc.push_str("| Package | Version | Status | Band | Risk | Advisories |\n");
-    doc.push_str("|---|---|---|---|---|---|\n");
+    doc.push_str("| Package | Version | Status | Band | Risk | Advisories | Checked |\n");
+    doc.push_str("|---|---|---|---|---|---|---|\n");
     for report in &outcome.reports {
         let advisories = report.advisories();
         let ids = if advisories.is_empty() {
@@ -77,13 +77,14 @@ pub fn render_markdown(
                 .join(", ")
         };
         doc.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
             cell(&report.name),
             cell(&report.version),
             report.status().label(),
             report.band(thresholds).label(),
             risk_cell(report.risk()),
-            cell(&ids)
+            cell(&ids),
+            checked_cell(report)
         ));
     }
 
@@ -110,7 +111,25 @@ pub fn render_markdown(
         outcome.warned().len(),
         outcome.unchecked().len()
     ));
+    if outcome.reports.iter().any(PackageReport::all_cached) {
+        doc.push_str(
+            "\n_A `Checked` time means that verdict was replayed from the local cache \
+             rather than asked of the advisory service during this audit._\n",
+        );
+    }
     doc
+}
+
+/// `now` when the advisory service answered this run, otherwise when the
+/// replayed verdict was originally computed.
+fn checked_cell(report: &PackageReport) -> String {
+    if !report.all_cached() {
+        return "now".to_string();
+    }
+    report
+        .oldest_checked_at()
+        .map(|at| format!("{} UTC", at))
+        .unwrap_or_else(|| "—".to_string())
 }
 
 /// Everything the terminal report prints under a package's row.
@@ -183,6 +202,8 @@ pub fn render_sarif(outcome: &GateOutcome, scans: &[(String, ScanOutcome)]) -> V
             "version": report.version,
             "source": report.source,
             "status": report.status().label(),
+            "cached": report.all_cached(),
+            "checkedAt": report.oldest_checked_at(),
         });
 
         for advisory in report.advisories() {
@@ -304,6 +325,7 @@ mod tests {
             version: "1.0.0".to_string(),
             source: format!("cargo:{}", name),
             verdicts: vec![AdvisoryVerdict {
+                checked_at: None,
                 identity: AdvisoryIdentity::new("crates.io", name, IdentityScope::Primary),
                 status,
                 matched,
@@ -509,5 +531,29 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_markdown_and_sarif_mark_a_replayed_verdict() {
+        let mut replayed = report(
+            "old",
+            Verdict::Vulnerable { risk: Some(4.9) },
+            vec![advisory("GHSA-old", Some(9.8))],
+        );
+        replayed.verdicts[0].checked_at = Some("2026-01-01 00:00:00".to_string());
+        let live = report("new", Verdict::Clean, Vec::new());
+        let outcome = GateOutcome::new(vec![replayed, live], RefereeThresholds::default());
+
+        let doc = render_markdown(&outcome, &[], "fail-open");
+        assert!(doc.contains("| Advisories | Checked |"));
+        assert!(doc.contains("|---|---|---|---|---|---|---|"));
+        assert!(doc.contains("| 2026-01-01 00:00:00 UTC |"));
+        assert!(doc.contains("| now |"));
+        assert!(doc.contains("replayed from the local cache"));
+
+        let sarif = render_sarif(&outcome, &[]);
+        let result = &sarif["runs"][0]["results"][0];
+        assert_eq!(result["properties"]["cached"], true);
+        assert_eq!(result["properties"]["checkedAt"], "2026-01-01 00:00:00");
     }
 }

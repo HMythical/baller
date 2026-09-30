@@ -75,6 +75,7 @@ impl AppContext {
             config.referee.enabled && !flags.no_referee,
             config.referee.thresholds(),
             config.referee.fail_policy,
+            config.referee.cache_ttl_days,
             config.referee.osv_base_url.clone(),
             config.referee.virustotal_api_key.clone(),
             config.referee.virustotal_base_url.clone(),

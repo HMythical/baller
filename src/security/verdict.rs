@@ -126,6 +126,7 @@ impl CachedVerdict {
             identity,
             status,
             matched,
+            checked_at: Some(self.checked_at),
         }
     }
 }
@@ -152,6 +153,12 @@ pub struct AdvisoryVerdict {
     pub identity: AdvisoryIdentity,
     pub status: Verdict,
     pub matched: Vec<MatchedAdvisory>,
+    /// The `checked_at` of the cache row this came from.
+    ///
+    /// `None` means OSV was asked during this run and the answer is current.
+    /// `Some` means the answer is a replay, and the value is how old the data
+    /// behind it is.
+    pub checked_at: Option<String>,
 }
 
 impl AdvisoryVerdict {
@@ -163,7 +170,15 @@ impl AdvisoryVerdict {
             "status": self.status.label(),
             "risk": round_to(self.status.risk(), 2),
             "advisories": self.matched.iter().map(MatchedAdvisory::to_json).collect::<Vec<_>>(),
+            "cached": self.checked_at.is_some(),
+            "checked_at": self.checked_at,
         })
+    }
+
+    /// Whole days between when this verdict was computed and SQLite's `now`,
+    /// or `None` when it was computed this run.
+    pub fn age_days(&self, db: &crate::core::db::DbManager) -> Option<i64> {
+        db.referee_age_days(self.checked_at.as_deref()?)
     }
 }
 
@@ -279,14 +294,39 @@ impl PackageReport {
     }
 
     /// One line explaining why this package was blocked.
+    ///
+    /// A block that rests on a replayed verdict says so, with the time the
+    /// advisory data behind it was fetched: a refusal on months-old data should
+    /// read as such, not as an unexplained one.
     pub fn block_reason(&self, thresholds: &RefereeThresholds) -> String {
-        match self.risk() {
+        let reason = match self.risk() {
             Some(risk) => format!(
                 "risk index {:.2} is at or above the block threshold of {:.2}",
                 risk, thresholds.block_at
             ),
             None => "a matched advisory crossed the block threshold".to_string(),
+        };
+        match self.oldest_checked_at() {
+            Some(at) => format!("{} (cached verdict, checked at {} UTC)", reason, at),
+            None => reason,
         }
+    }
+
+    /// True when every identity that produced an answer replayed the cache.
+    pub fn all_cached(&self) -> bool {
+        !self.verdicts.is_empty() && self.verdicts.iter().all(|v| v.checked_at.is_some())
+    }
+
+    /// The oldest `checked_at` among the verdicts, if any was cached.
+    ///
+    /// `checked_at` is fixed-width `YYYY-MM-DD HH:MM:SS`, so the lexicographic
+    /// minimum is the chronological one.
+    pub fn oldest_checked_at(&self) -> Option<String> {
+        self.verdicts
+            .iter()
+            .filter_map(|v| v.checked_at.as_deref())
+            .min()
+            .map(str::to_string)
     }
 
     pub fn to_json(&self) -> Value {
@@ -299,6 +339,8 @@ impl PackageReport {
             "risk": round_to(self.risk(), 2),
             "advisories": self.advisories().iter().map(|a| a.to_json()).collect::<Vec<_>>(),
             "identities": self.verdicts.iter().map(AdvisoryVerdict::to_json).collect::<Vec<_>>(),
+            "all_cached": self.all_cached(),
+            "oldest_checked_at": self.oldest_checked_at(),
         })
     }
 }
@@ -332,6 +374,7 @@ mod tests {
 
     fn verdict(status: Verdict, matched: Vec<MatchedAdvisory>) -> AdvisoryVerdict {
         AdvisoryVerdict {
+            checked_at: None,
             identity: identity("tool"),
             status,
             matched,
@@ -606,5 +649,72 @@ mod tests {
         assert!(Verdict::Unverified.is_unchecked());
         assert!(!Verdict::Clean.is_unchecked());
         assert!(Verdict::Vulnerable { risk: None }.is_vulnerable());
+    }
+
+    fn cached(verdict: &str, checked_at: &str) -> CachedVerdict {
+        CachedVerdict {
+            verdict: verdict.to_string(),
+            risk: None,
+            advisories: "[]".to_string(),
+            checked_at: checked_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_into_verdict_carries_checked_at() {
+        let replayed = cached("clean", "2026-01-02 03:04:05").into_verdict(identity("tool"));
+        assert_eq!(replayed.checked_at.as_deref(), Some("2026-01-02 03:04:05"));
+    }
+
+    #[test]
+    fn test_verdict_json_reports_its_provenance() {
+        let fresh = verdict(Verdict::Clean, Vec::new()).to_json();
+        assert_eq!(fresh["cached"], false);
+        assert!(fresh["checked_at"].is_null());
+
+        let replayed = cached("clean", "2026-01-02 03:04:05")
+            .into_verdict(identity("tool"))
+            .to_json();
+        assert_eq!(replayed["cached"], true);
+        assert_eq!(replayed["checked_at"], "2026-01-02 03:04:05");
+    }
+
+    #[test]
+    fn test_all_cached_and_oldest_checked_at_across_mixed_verdicts() {
+        let older = cached("clean", "2026-01-01 00:00:00").into_verdict(identity("a"));
+        let newer = cached("clean", "2026-03-01 00:00:00").into_verdict(identity("b"));
+        let fresh = verdict(Verdict::Clean, Vec::new());
+
+        let replay = report(vec![newer.clone(), older.clone()]);
+        assert!(replay.all_cached());
+        assert_eq!(
+            replay.oldest_checked_at().as_deref(),
+            Some("2026-01-01 00:00:00")
+        );
+
+        let mixed = report(vec![fresh.clone(), newer]);
+        assert!(!mixed.all_cached());
+        assert_eq!(
+            mixed.oldest_checked_at().as_deref(),
+            Some("2026-03-01 00:00:00")
+        );
+
+        let live = report(vec![fresh]);
+        assert!(!live.all_cached());
+        assert!(live.oldest_checked_at().is_none());
+        assert!(!report(Vec::new()).all_cached());
+
+        let json = replay.to_json();
+        assert_eq!(json["all_cached"], true);
+        assert_eq!(json["oldest_checked_at"], "2026-01-01 00:00:00");
+    }
+
+    #[test]
+    fn test_a_block_on_a_replayed_verdict_says_when_it_was_checked() {
+        let mut replayed =
+            cached("vulnerable", "2026-01-01 00:00:00").into_verdict(identity("tool"));
+        replayed.status = Verdict::Vulnerable { risk: Some(4.9) };
+        let reason = report(vec![replayed]).block_reason(&RefereeThresholds::default());
+        assert!(reason.contains("cached verdict, checked at 2026-01-01 00:00:00 UTC"));
     }
 }

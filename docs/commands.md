@@ -613,8 +613,8 @@ audits `fd`; `baller referee audit fd` says the same thing explicitly.
 | `audit` | Advisory check (Phase A) and artifact re-scan (Phase B). The default |
 | `check` | Advisory data only — the same path as `audit --no-scan`; no extracted tree is walked |
 | `scan` | Artifact re-scan only — no advisory lookup. A swept extract directory reports `artifact not on disk — nothing to re-scan`, distinct from a clean scan |
-| `cache` | Verdict-cache management: `--status` (the default) shows rows per ecosystem and the newest `checked_at`; `--clear` empties the cache; `--prune <DAYS>` drops verdicts older than DAYS days. The three flags are mutually exclusive |
-| `config` | Prints the `[referee]` settings in effect. `enabled` accounts for `--no-referee`; the VirusTotal key is shown only as `set`/`unset` |
+| `cache` | Verdict-cache management: `--status` (the default) shows rows per ecosystem, the newest `checked_at` and how many `clean` verdicts `cache_ttl_days` has aged out (`stale` in `--json`); `--clear` empties the cache; `--prune <DAYS>` drops verdicts older than DAYS days. The three flags are mutually exclusive |
+| `config` | Prints the `[referee]` settings in effect. `enabled` accounts for `--no-referee`; `cache_ttl_days` shows `off` when unset; the VirusTotal key is shown only as `set`/`unset` |
 | `sbom` | Writes a CycloneDX 1.5 JSON inventory of the roster to stdout or `--out` |
 
 **Flags:**

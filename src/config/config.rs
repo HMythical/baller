@@ -54,6 +54,12 @@ pub struct RefereeConfig {
     /// `osv_base_url` does: a service baller cannot be pointed somewhere else
     /// is a service nobody can verify baller talks to correctly.
     pub virustotal_base_url: Option<String>,
+    /// How old a cached `clean` verdict may be before it is re-queried.
+    ///
+    /// `None` keeps every cached verdict for as long as it stands, which is
+    /// what baller has always done. `Some(days)` bounds it; `Some(0)` re-asks
+    /// OSV on every install and is what CI wants.
+    pub cache_ttl_days: Option<u32>,
 }
 
 impl Default for RefereeConfig {
@@ -70,6 +76,7 @@ impl Default for RefereeConfig {
             osv_base_url: "https://api.osv.dev".to_string(),
             virustotal_api_key: None,
             virustotal_base_url: None,
+            cache_ttl_days: None,
         }
     }
 }
@@ -295,6 +302,17 @@ impl BallerConfig {
                 "osv_base_url" => {
                     config.referee.osv_base_url = value;
                 }
+                "cache_ttl_days" => {
+                    config.referee.cache_ttl_days = Some(value.trim().parse::<u32>().map_err(
+                        |_| {
+                            BallError::InvalidConfig(format!(
+                                "invalid cache_ttl_days '{}' at line[{}]: expected a whole number of days",
+                                value,
+                                line + 1
+                            ))
+                        },
+                    )?);
+                }
                 "virustotal_api_key" => {
                     config.referee.virustotal_api_key = Some(value);
                 }
@@ -506,6 +524,7 @@ mod tests {
         assert_eq!(config.referee.osv_base_url, "https://api.osv.dev");
         assert!(config.referee.virustotal_api_key.is_none());
         assert!(config.referee.virustotal_base_url.is_none());
+        assert!(config.referee.cache_ttl_days.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -580,6 +599,38 @@ virustotal_api_key = deadbeef
         let err = BallerConfig::parse_config(&path).unwrap_err();
         assert!(format!("{}", err).contains("invalid fail_policy"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_parses_cache_ttl_days() {
+        let (path, dir) = write_config("[referee]\ncache_ttl_days = 7\n");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(config.referee.cache_ttl_days, Some(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_accepts_a_zero_cache_ttl() {
+        let (path, dir) = write_config("[referee]\ncache_ttl_days = 0\n");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(config.referee.cache_ttl_days, Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_a_bad_cache_ttl() {
+        for bad in ["-1", "week", "1.5"] {
+            let (path, dir) = write_config(&format!("[referee]\ncache_ttl_days = {}\n", bad));
+            let err = BallerConfig::parse_config(&path).unwrap_err();
+            let message = format!("{}", err);
+            assert!(
+                message.contains(&format!("invalid cache_ttl_days '{}'", bad)),
+                "{}",
+                message
+            );
+            assert!(message.contains("expected a whole number of days"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

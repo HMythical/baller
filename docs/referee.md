@@ -466,18 +466,24 @@ to scan.
 
 | Flag | Effect |
 |---|---|
-| `--status` (default) | Row count per ecosystem and the newest `checked_at` (UTC) |
+| `--status` (default) | Row count per ecosystem, the newest `checked_at` (UTC), and how many `clean` verdicts `cache_ttl_days` has aged out |
 | `--clear` | Empties the cache — what `--refresh` does before an audit |
 | `--prune <DAYS>` | Deletes verdicts computed more than DAYS days ago |
 
-The flags are mutually exclusive. `--prune` is the manual answer to verdict
-staleness; there is no automatic TTL.
+The flags are mutually exclusive. Verdict staleness has two complementary
+answers: `cache_ttl_days` (opt-in, see [Configuration](#configuration)) decides
+which rows are no longer *acted on* — a `clean` verdict older than the TTL is
+re-queried on the next install — while `--prune` *deletes* rows. With the TTL
+unset, cached verdicts never age out and `--prune` is the only answer.
+
+`--status --json` carries `cache_ttl_days` and `stale`, the number of `clean`
+verdicts the next install will re-query (`0` when the TTL is unset).
 
 ### `config` — effective settings
 
 Prints the `[referee]` settings actually in effect: `enabled` (which accounts
 for `--no-referee`), `warn_at`, `block_at`, `fail_policy`, `osv_base_url`,
-`virustotal_base_url` (`<default>` / `null` when unset) and
+`cache_ttl_days` (`off` / `null` when unset), `virustotal_base_url` (`<default>` / `null` when unset) and
 `virustotal_api_key: set|unset`. The key's value is never printed.
 `--json` prints `{"command": "referee", "subcommand": "config", "config": {...}}`.
 
@@ -540,6 +546,7 @@ warn_at = 2.5
 block_at = 4.0
 fail_policy = fail-open
 osv_base_url = https://api.osv.dev
+# cache_ttl_days = 7
 # virustotal_api_key = <your key>
 # virustotal_base_url = https://www.virustotal.com/api/v3
 ```
@@ -551,6 +558,7 @@ osv_base_url = https://api.osv.dev
 | `block_at` | float 0–5 | `4.0` | Risk index at or above which the plan is aborted |
 | `fail_policy` | `fail-open` / `fail-closed` | `fail-open` | What an unreachable advisory service means. `open` and `closed` are accepted, and `_` is read as `-` |
 | `osv_base_url` | string | `https://api.osv.dev` | Advisory API base URL, for self-hosting and tests |
+| `cache_ttl_days` | whole number ≥ 0 | unset | How old a cached `clean` verdict may be before it is re-queried. Unset keeps cached verdicts indefinitely; `0` re-queries every `clean` verdict on every install (what CI wants). A cached `vulnerable` verdict is never re-queried |
 | `virustotal_api_key` | string | unset | Enables the hash-only VirusTotal lookup |
 | `virustotal_base_url` | string | `https://www.virustotal.com/api/v3` | VirusTotal API base URL, for tests and self-hosted proxies |
 
@@ -649,6 +657,18 @@ CREATE TABLE referee_cache (
   cached.
 - A cache hit makes no network request; `--verbose` logs the hit and the date
   the verdict was computed.
+- `checked_at` drives freshness when `cache_ttl_days` is set: a `clean` row
+  older than the TTL is not used, and the identity is re-queried. If that
+  re-query cannot reach the advisory service, the package is `unverified`
+  (under `fail-open`) — the stale `clean` never stands in for an answer.
+- A `vulnerable` row is exempt from the TTL and is used whatever its age:
+  re-querying it could only confirm the block it already causes. Because such a
+  block may rest on old data, it says so — the block reason names the
+  `checked_at` of the cached verdict, and `draft --dry-run` prints its age.
+- Every replayed verdict is identifiable: JSON identities carry `cached` and
+  `checked_at` (packages carry `all_cached` and `oldest_checked_at`), the
+  Markdown export has a `Checked` column, and SARIF results carry `cached` and
+  `checkedAt` in `properties`.
 - A row whose `verdict` this build does not recognise is read as `unknown` and
   re-queried.
 - `baller referee --refresh` and `baller referee cache --clear` empty the

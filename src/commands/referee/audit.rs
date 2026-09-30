@@ -129,7 +129,7 @@ fn audit_json(ctx: &AppContext, outcome: &GateOutcome, scans: &[(String, ScanOut
         .reports
         .iter()
         .map(|report| {
-            let mut value = report.to_json();
+            let mut value = report.to_json(&outcome.thresholds);
             value["scan"] = scan_for(scans, &report.name)
                 .unwrap_or(&ScanOutcome::Skipped)
                 .to_json();

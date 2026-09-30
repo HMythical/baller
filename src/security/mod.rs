@@ -859,7 +859,11 @@ impl GateOutcome {
             "enabled": !self.skipped,
             "warn_at": self.thresholds.warn_at,
             "block_at": self.thresholds.block_at,
-            "packages": self.reports.iter().map(PackageReport::to_json).collect::<Vec<_>>(),
+            "packages": self
+                .reports
+                .iter()
+                .map(|report| report.to_json(&self.thresholds))
+                .collect::<Vec<_>>(),
         })
     }
 }

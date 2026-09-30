@@ -717,6 +717,8 @@ state.
 
 `enabled` is `false` when Referee was skipped. `risk` and `cvss` are `null` when
 nothing was scored, and are rounded to two and one decimal places respectively.
+Each package's `band` is computed against the `warn_at` / `block_at` in effect —
+the same values the document reports at its top level.
 `advisories` is flattened across identities, worst first; `identities` keeps the
 per-identity breakdown.
 

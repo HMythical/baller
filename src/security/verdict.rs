@@ -329,13 +329,14 @@ impl PackageReport {
             .map(str::to_string)
     }
 
-    pub fn to_json(&self) -> Value {
+    /// The package as JSON, banded against the thresholds actually in effect.
+    pub fn to_json(&self, thresholds: &RefereeThresholds) -> Value {
         json!({
             "name": self.name,
             "version": self.version,
             "source": self.source,
             "status": self.status().label(),
-            "band": self.band(&RefereeThresholds::default()).label(),
+            "band": self.band(thresholds).label(),
             "risk": round_to(self.risk(), 2),
             "advisories": self.advisories().iter().map(|a| a.to_json()).collect::<Vec<_>>(),
             "identities": self.verdicts.iter().map(AdvisoryVerdict::to_json).collect::<Vec<_>>(),
@@ -533,7 +534,7 @@ mod tests {
             Verdict::Vulnerable { risk: Some(3.75) },
             vec![advisory("GHSA-a", Some(7.5))],
         )]);
-        let json = report.to_json();
+        let json = report.to_json(&RefereeThresholds::default());
         assert_eq!(json["name"], "tool");
         assert_eq!(json["version"], "1.0.0");
         assert_eq!(json["source"], "cargo:tool");
@@ -546,12 +547,30 @@ mod tests {
     }
 
     #[test]
+    fn test_report_json_bands_against_the_thresholds_in_effect() {
+        let report = report(vec![verdict(
+            Verdict::Vulnerable { risk: Some(3.0) },
+            vec![advisory("GHSA-a", Some(6.0))],
+        )]);
+        let strict = RefereeThresholds {
+            warn_at: 1.0,
+            block_at: 3.0,
+        };
+        assert_eq!(
+            report.to_json(&RefereeThresholds::default())["band"],
+            "warn"
+        );
+        assert_eq!(report.to_json(&strict)["band"], "block");
+    }
+
+    #[test]
     fn test_json_scores_are_rounded_to_their_published_precision() {
         let report = report(vec![verdict(
             Verdict::Vulnerable { risk: Some(4.9) },
             vec![advisory("GHSA-a", Some(9.8))],
         )]);
-        let rendered = serde_json::to_string(&report.to_json()).unwrap();
+        let rendered =
+            serde_json::to_string(&report.to_json(&RefereeThresholds::default())).unwrap();
         assert!(rendered.contains("\"cvss\":9.8"), "{}", rendered);
         assert!(rendered.contains("\"risk\":4.9"), "{}", rendered);
         assert!(!rendered.contains("9.80000"), "{}", rendered);
@@ -565,7 +584,8 @@ mod tests {
 
     #[test]
     fn test_unknown_report_json_has_a_null_risk() {
-        let json = PackageReport::unknown("tool", "1.0.0", "baller").to_json();
+        let json = PackageReport::unknown("tool", "1.0.0", "baller")
+            .to_json(&RefereeThresholds::default());
         assert_eq!(json["status"], "unknown");
         assert!(json["risk"].is_null());
     }
@@ -704,7 +724,7 @@ mod tests {
         assert!(live.oldest_checked_at().is_none());
         assert!(!report(Vec::new()).all_cached());
 
-        let json = replay.to_json();
+        let json = replay.to_json(&RefereeThresholds::default());
         assert_eq!(json["all_cached"], true);
         assert_eq!(json["oldest_checked_at"], "2026-01-01 00:00:00");
     }

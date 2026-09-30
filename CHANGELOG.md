@@ -101,6 +101,9 @@ with a custom scheme:
 - **The `version` subcommand is wired up and working again** (PR #35)
   Re-created the `version` command and expanded `build`, replacing stale pieces with working logic, and added local development scripts to `.gitignore`. Closes #29.
 
+- **Referee JSON `band` honours custom thresholds**
+  `PackageReport::to_json` banded every package against `RefereeThresholds::default()`, so with a custom `warn_at` / `block_at` the per-package `band` in `draft --json` and `baller referee --json` could disagree with the top-level `warn_at` / `block_at` in the same document and with the terminal report. For example, with `block_at = 3.0` a package whose risk was 3.0 was blocked but its JSON said `"band": "warn"`. `to_json` now takes the thresholds in effect, as `band` and `block_reason` already did. Output is unchanged when the thresholds are left at their defaults.
+
 ### Changed
 
 - **`--verbose` is now a real verbosity switch, backed by `tracing`**

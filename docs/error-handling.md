@@ -40,12 +40,19 @@ command at startup with a single `InvalidConfig` error naming the step:
 | Open the file | `failed to open database at <path>` |
 | Apply pragmas | `failed to set pragmas` (a file that is not a SQLite database fails here) |
 | Create missing tables | `failed to create schema` |
-| Migrate the schema | `failed to inspect installed_packages schema for user_installed column` or `failed to migrate installed_packages: could not add user_installed column` |
+| Migrate the schema | `failed to inspect installed_packages schema for <column> column` or `failed to migrate installed_packages: could not add <column> column`, where `<column>` is `user_installed` or `advisory` |
 
-The migration adds the `user_installed` column to databases created before it
-existed; a healthy one is migrated silently. A database that gets past startup
-is fully migrated, so a later `query error` from an unrelated command points at
-a real defect, not at a migration that silently did not happen.
+Two migrations run at that step, each independent and each reported by its own
+name. `migrate_user_installed` adds the `user_installed` column to databases
+created before it existed. `migrate_advisory` adds the `advisory` column to
+databases created before Referee existed; existing rows migrate to NULL, which
+reads as "declared nothing" rather than an empty declaration. A healthy database
+is migrated silently by both, and each is idempotent.
+
+A database that gets past startup is fully migrated, so a later `query error`
+from an unrelated command — `no such column: user_installed` or
+`no such column: advisory` — points at a real defect, not at a migration that
+silently did not happen.
 
 ## GitHub Source Asset Errors
 

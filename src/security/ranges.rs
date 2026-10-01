@@ -18,7 +18,24 @@
 use semver::Version;
 
 use crate::core::dep_solver::parse_version_flexible;
+use crate::security::identity::{ECOSYSTEM_DEBIAN, ECOSYSTEM_FEDORA};
 use crate::security::osv::{Affected, Event, Range};
+
+/// OSV ecosystems whose versions are distribution revisions rather than
+/// semver. A Debian `1.2.3-7` *parses* as semver — with `7` read as a
+/// pre-release — so these ecosystems must never reach the precise parser:
+/// `1.2.3-7` is the seventh packaging of 1.2.3, not a release candidate of it.
+const DISTRO_ECOSYSTEMS: &[&str] = &[
+    ECOSYSTEM_DEBIAN,
+    ECOSYSTEM_FEDORA,
+    "Ubuntu",
+    "Alpine",
+    "Red Hat",
+    "AlmaLinux",
+    "Rocky Linux",
+    "openSUSE",
+    "SUSE",
+];
 
 /// Where a range stops: `fixed` excludes its own version, `last_affected`
 /// includes it.
@@ -60,7 +77,8 @@ pub fn affects(affected: &[Affected], ecosystem: &str, name: &str, version: &str
 
 /// Whether one `affected` entry covers this version, and is about this package.
 pub fn entry_affects(entry: &Affected, ecosystem: &str, name: &str, version: &str) -> bool {
-    entry_is_about(entry, ecosystem, name) && entry_covers_version(entry, version)
+    entry_is_about(entry, ecosystem, name)
+        && covers_version(entry, version, !is_distro_ecosystem(ecosystem))
 }
 
 /// Whether an entry's versions and ranges include this version.
@@ -69,13 +87,33 @@ pub fn entry_affects(entry: &Affected, ecosystem: &str, name: &str, version: &st
 /// used on its own when the package is already known to be the subject — a
 /// self-declared advisory alias, where the author has asserted that the record
 /// applies and the only open question is which versions it applies to.
+///
+/// With no query ecosystem to go on, the entry's own `package.ecosystem`
+/// decides whether the installed version is read as semver or as a
+/// distribution revision.
 pub fn entry_covers_version(entry: &Affected, version: &str) -> bool {
+    let precise = entry
+        .package
+        .as_ref()
+        .is_none_or(|package| !is_distro_ecosystem(&package.ecosystem));
+    covers_version(entry, version, precise)
+}
+
+/// The body of [`entry_covers_version`], with the parser choice made by the
+/// caller. `precise` selects [`parse_advisory_version`] for the installed
+/// version; distro ecosystems pass `false` and keep the lossy parser.
+fn covers_version(entry: &Affected, version: &str, precise: bool) -> bool {
     // The publisher naming exact releases outranks anything computed.
     if version_listed(&entry.versions, version) {
         return true;
     }
 
-    let parsed = match parse_version_flexible(version) {
+    let parsed = if precise {
+        parse_advisory_version(version)
+    } else {
+        parse_version_flexible(version)
+    };
+    let parsed = match parsed {
         Some(parsed) => parsed,
         // Nothing comparable to compare against: the explicit list above was
         // this version's only chance of a match.
@@ -120,6 +158,32 @@ pub fn entry_is_about(entry: &Affected, ecosystem: &str, name: &str) -> bool {
     ecosystem_root(&package.ecosystem).eq_ignore_ascii_case(ecosystem_root(ecosystem))
 }
 
+/// Whether an ecosystem versions packages as distribution revisions.
+fn is_distro_ecosystem(ecosystem: &str) -> bool {
+    let root = ecosystem_root(ecosystem);
+    DISTRO_ECOSYSTEMS
+        .iter()
+        .any(|distro| distro.eq_ignore_ascii_case(root))
+}
+
+/// Parse an installed version for advisory matching, keeping its pre-release.
+///
+/// [`parse_version_flexible`] strips pre-release and build metadata because a
+/// distro version is not comparable as semver at all. For advisory matching
+/// that trade is backwards: `1.2.3-rc1` and `1.2.3` are different releases,
+/// and collapsing them puts an rc *outside* a range that is `fixed` at 1.2.3 —
+/// reporting `clean` for a version inside the vulnerable window. A strict
+/// semver parse that carries a pre-release is therefore returned as-is; every
+/// other input, including bare `1.2.3+build` and every distro shape, takes the
+/// lossy path it always took.
+pub(crate) fn parse_advisory_version(raw: &str) -> Option<Version> {
+    let trimmed = raw.trim();
+    match Version::parse(trimmed) {
+        Ok(version) if !version.pre.is_empty() => Some(version),
+        _ => parse_version_flexible(trimmed),
+    }
+}
+
 /// `Debian:11` and `Debian` are the same ecosystem for Referee's purposes.
 fn ecosystem_root(ecosystem: &str) -> &str {
     ecosystem.split(':').next().unwrap_or(ecosystem).trim()
@@ -129,6 +193,14 @@ fn ecosystem_root(ecosystem: &str) -> &str {
 ///
 /// Compared as written first, then as both sides normalise, so that a record
 /// listing `1.21-76` still matches an installed `1.21`.
+///
+/// This deliberately stays on the lossy [`parse_version_flexible`] rather than
+/// [`parse_advisory_version`]. A precise comparison could only *remove* hits —
+/// a record listing `1.2.3` would stop matching an installed `1.2.3-rc1` — and
+/// an explicit list is the publisher's own statement, so losing a hit from it
+/// would loosen a block. Two versions equal under the precise parser are
+/// always equal under the lossy one, so the lossy comparison alone already
+/// matches "either way".
 fn version_listed(versions: &[String], version: &str) -> bool {
     if versions
         .iter()
@@ -601,5 +673,84 @@ mod tests {
     fn test_ecosystem_root_strips_the_release_suffix() {
         assert_eq!(ecosystem_root("Debian:11"), "Debian");
         assert_eq!(ecosystem_root("crates.io"), "crates.io");
+    }
+
+    #[test]
+    fn test_prerelease_of_a_fixed_version_is_inside_the_range() {
+        // The rc precedes the fix, so it is inside `[0, 1.2.3)`. Before the
+        // precise parser it collapsed to 1.2.3 and was reported clean.
+        let affected = entry(
+            vec![semver_range(vec![
+                event(Some("0"), None, None),
+                event(None, Some("1.2.3"), None),
+            ])],
+            &[],
+        );
+        assert!(hit(&affected, "1.2.3-rc1"));
+        assert!(!hit(&affected, "1.2.3"));
+        // Build metadata carries no ordering, so it still reads as 1.2.3.
+        assert!(!hit(&affected, "1.2.3+build"));
+        assert!(hit(&affected, "1.2.2+build"));
+    }
+
+    #[test]
+    fn test_distro_revisions_keep_the_lossy_parser() {
+        // `1.2.3-7` parses as semver with a `7` pre-release, which would put a
+        // patched Debian package inside a range fixed at `1.2.3-6`.
+        let mut affected = entry(
+            vec![Range {
+                kind: "ECOSYSTEM".to_string(),
+                events: vec![
+                    event(Some("0"), None, None),
+                    event(None, Some("1.2.3-6"), None),
+                ],
+            }],
+            &[],
+        );
+        affected.package = Some(AffectedPackage {
+            ecosystem: "Debian:12".to_string(),
+            name: "vim".to_string(),
+            purl: None,
+        });
+        assert!(!entry_affects(&affected, "Debian", "vim", "1.2.3-7"));
+        assert!(!entry_affects(&affected, "Debian", "vim", "2:1.2.3-7"));
+        assert!(entry_affects(&affected, "Debian", "vim", "1.2.2-9"));
+        // The declared-alias path has no query ecosystem; the entry's own
+        // ecosystem makes the same call.
+        assert!(!entry_covers_version(&affected, "1.2.3-7"));
+    }
+
+    #[test]
+    fn test_parse_advisory_version_keeps_only_semver_prereleases() {
+        let rc = parse_advisory_version(" 1.2.3-rc1 ").unwrap();
+        assert_eq!(rc.pre.as_str(), "rc1");
+        let built = parse_advisory_version("1.2.3-rc.1+abc").unwrap();
+        assert_eq!(built.build.as_str(), "abc");
+        // Distro revisions on a three-part version *do* parse as semver
+        // pre-releases. This is why distro ecosystems never reach this parser.
+        let fedora = parse_advisory_version("8.2.2637-20.fc36").unwrap();
+        assert_eq!(fedora.pre.as_str(), "20.fc36");
+        // Everything else matches the lossy parser exactly.
+        for raw in [
+            "1.2.3",
+            "1.2.3+build",
+            "2:8.1.0875-5ubuntu2",
+            "1.21-76",
+            "1.21",
+        ] {
+            assert_eq!(
+                parse_advisory_version(raw),
+                parse_version_flexible(raw),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explicit_list_still_matches_an_rc_of_a_listed_version() {
+        // A precise comparison would lose this hit; the list stays lossy so
+        // the publisher's own enumeration can only ever add matches.
+        let affected = entry(Vec::new(), &["1.2.3"]);
+        assert!(hit(&affected, "1.2.3-rc1"));
     }
 }

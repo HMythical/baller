@@ -1,5 +1,6 @@
 use colored::Colorize;
 use serde_json::json;
+use std::path::Path;
 
 use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
@@ -392,9 +393,18 @@ fn report_plan(
         }
     }
 
-    // A dry run reports the block it would hit rather than returning it: the
-    // point of the command is to show the plan, and a plan that would be
-    // refused is the most important thing it can show.
+    report_blocked(ctx, gate);
+
+    println!("{} nothing was installed", "Note".yellow());
+    Ok(())
+}
+
+/// The blocked-packages section of a `--dry-run` report, shared with `build`.
+///
+/// A dry run reports the block it would hit rather than returning it: the
+/// point of the command is to show the plan, and a plan that would be refused
+/// is the most important thing it can show.
+pub(crate) fn report_blocked(ctx: &AppContext, gate: &GateOutcome) {
     for report in gate.blocked() {
         println!(
             "  {} {} v{} would be blocked — {}",
@@ -419,9 +429,6 @@ fn report_plan(
             println!("    {} {}", "•".red(), advisory.describe());
         }
     }
-
-    println!("{} nothing was installed", "Note".yellow());
-    Ok(())
 }
 
 /// Run Referee's artifact scan and act on the result.
@@ -444,6 +451,23 @@ pub(crate) fn screen_artifact(
             Err(e)
         }
     }
+}
+
+/// Run Referee's artifact scan over one file the user built themselves.
+///
+/// The counterpart of [`screen_artifact`] for `build`'s cargo-project path,
+/// and deliberately **not** purging on a block: the scanned file is the
+/// binary `cargo build --release` left in the user's own `target/release`,
+/// not a download baller fetched. Purging it would delete the user's build
+/// output. The error says the binary was left in place, and nothing is linked.
+pub(crate) fn screen_binary(
+    ctx: &AppContext,
+    pkg: &Package,
+    binary: &Path,
+) -> Result<(), BallError> {
+    let findings = ctx.referee.screen_binary(pkg, binary)?;
+    ctx.referee.report_scan_findings(pkg, &findings);
+    Ok(())
 }
 
 fn plan_action(
@@ -542,5 +566,16 @@ mod tests {
             ..options()
         };
         assert_eq!(plan_action(&pkg, &installed, &opts), "reinstall");
+    }
+
+    #[test]
+    fn test_screen_binary_never_purges() {
+        // The cargo-path wrapper scans the user's own build output; a purge
+        // here would delete it. Pinned on the source, as the wrapper needs a
+        // full `AppContext` to run.
+        let source = include_str!("draft.rs");
+        let start = source.find("pub(crate) fn screen_binary(").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        assert!(!body.contains("purge"));
     }
 }

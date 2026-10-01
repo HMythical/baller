@@ -1,26 +1,9 @@
 #!/usr/bin/env bash
+# Convenience wrapper. The uninstall logic lives in `build.sh` so that this
+# script and `./build.sh uninstall` can never disagree about where the binary
+# was put; delegating is the whole point of keeping this file.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.sh"
 
-function run_uninstall() {
-    local binary_name="baller"
-    local install_binary="$BALLER_INSTALL_DIR/$binary_name"
-    
-    if [ -f "$install_binary" ]; then
-        echo "Removing $install_binary"
-        rm -f "$install_binary"
-        
-        if command -v ldconfig >/dev/null 2>&1; then
-            echo "Running ldconfig..."
-            ldconfig
-        fi
-        
-        echo "Uninstalled successfully"
-    else
-        echo "Binary not found at $install_binary"
-    fi
-}
-
-run_uninstall
+exec "$SCRIPT_DIR/build.sh" uninstall

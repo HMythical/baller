@@ -1,9 +1,9 @@
 use colored::Colorize;
 use serde_json::json;
 
+use crate::commands::update::{is_distro_versioned, is_newer_release};
 use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
-use crate::core::dep_solver::parse_version_flexible;
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
 use crate::utils::fs::truncate_str;
@@ -191,12 +191,11 @@ fn report_outdated(ctx: &AppContext, pkgs: &[InstalledPackage]) -> Result<(), Ba
     for pkg in pkgs {
         match ctx.registry.fetch_package(&pkg.name) {
             Ok(remote) => {
-                let installed = parse_version_flexible(&pkg.version);
-                let available = parse_version_flexible(&remote.version);
-                let is_stale = match (installed, available) {
-                    (Some(cur), Some(rem)) => rem > cur,
-                    _ => remote.version != pkg.version,
-                };
+                let is_stale = is_newer_release(
+                    &pkg.version,
+                    &remote.version,
+                    is_distro_versioned(&pkg.source, &remote.source),
+                );
 
                 if is_stale {
                     stale.push(json!({

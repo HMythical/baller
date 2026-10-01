@@ -234,7 +234,9 @@ built from `config.referee` and `GlobalFlags::no_referee`. It runs in two
 phases:
 
 - **Phase A** (`Referee::gate`) runs in `draft`, `update` and `substitute` on
-  the fully resolved plan, before the install loop and before the
+  the fully resolved plan, and in `build` on its one package (after the
+  download URL — and so the installed version — is resolved, or before a Cargo
+  project is compiled), before the install loop and before the
   `pre_install` hook. Because no package in the plan has been fetched at that
   point, a block leaves zero symlinks, zero roster rows and an empty cache
   wherever in the plan the offending package sits.
@@ -243,7 +245,9 @@ phases:
   `Downloader::purge_download` — the cleanup `no_binary_error` also uses — so
   the extract directory and the cached archive are both removed. In `update`
   it runs before the old extract directory is pruned, leaving a rejected
-  upgrade's predecessor linked and runnable.
+  upgrade's predecessor linked and runnable. `build`'s Cargo-project path uses
+  `Referee::screen_binary` instead: one file, the compiled binary, scanned
+  without purging, because it is the user's own build output.
 
 Verdicts are cached in the `referee_cache` table of the same SQLite database,
 keyed by `(ecosystem, name, version)`; only `clean` and `vulnerable` are

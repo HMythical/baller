@@ -187,6 +187,12 @@ than reusing a rejected archive.
 | `draft` | The package is not linked and not recorded; earlier packages in the same run stay installed |
 | `substitute` | Fails before the old package is ejected |
 | `update` | The scan runs **before** the old extract directory is pruned, so a rejected upgrade leaves the previously linked binary intact and still runnable |
+| `build` (manifest) | Same as `draft`: the download is purged and nothing is linked or recorded |
+| `build` (Cargo project) | The scan covers the one compiled binary. It is **not** deleted — it is the user's own build output — so the error reads "…the compiled binary … was left in place and nothing was linked" instead of "the download was discarded" |
+
+Each finding in the error is prefixed with its severity in capitals —
+`• BLOCK: [rule] path — evidence` or `• WARN: …` — and block findings, including
+a VirusTotal detection, are listed first.
 
 Both carry the advisories or findings that caused them, and `RefereeBlocked`
 names the escape hatches (`--no-referee`, or raising `referee.block_at`).

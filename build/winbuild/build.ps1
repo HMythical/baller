@@ -58,14 +58,60 @@ function Invoke-Dist {
 function Invoke-Install {
     $releaseDir = if ($Target) { "$ProjectRoot\target\$Target\release" } else { "$ProjectRoot\target\release" }
     if (-not (Test-Path $releaseDir\baller.exe)) { Invoke-Release }
-    if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force }
-    Copy-Item "$releaseDir\baller.exe" "$InstallDir\baller.exe"
-    Write-Host "Installed baller.exe to $InstallDir" -ForegroundColor Green
+    $source = "$releaseDir\baller.exe"
+    if (-not (Test-Path $source)) { throw "No release binary at $source" }
+
+    # A failure per directory is a privilege problem, not a build problem: the
+    # per-machine directory needs elevation, the per-user one never does. So
+    # install to whichever we can and name the ones we could not, rather than
+    # letting one unwritable directory abandon the rest.
+    $installed = 0
+    $skipped = @()
+
+    foreach ($dir in $InstallDirs) {
+        try {
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+            Copy-Item $source "$dir\baller.exe" -Force -ErrorAction Stop
+            $installed++
+            Write-Host "Installed $dir\baller.exe" -ForegroundColor Green
+        } catch {
+            $skipped += $dir
+        }
+    }
+
+    if ($skipped.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Skipped (needs elevated privileges): $($skipped -join ', ')" -ForegroundColor Yellow
+        if ($installed -eq 0) { throw "Nothing was installed" }
+        Write-Host "Re-run from an elevated PowerShell to install per-machine as well." -ForegroundColor Yellow
+    }
 }
 
 function Invoke-Uninstall {
-    $path = "$InstallDir\baller.exe"
-    if (Test-Path $path) { Remove-Item $path -Force; Write-Host "Removed $path" -ForegroundColor Yellow }
+    $removed = 0
+    $skipped = @()
+
+    foreach ($dir in $InstallDirs) {
+        $path = "$dir\baller.exe"
+        if (Test-Path $path) {
+            try {
+                Remove-Item $path -Force -ErrorAction Stop
+                $removed++
+                Write-Host "Removed $path" -ForegroundColor Yellow
+            } catch {
+                $skipped += $path
+            }
+        }
+    }
+
+    if ($skipped.Count -gt 0) {
+        Write-Host "Skipped (needs elevated privileges): $($skipped -join ', ')" -ForegroundColor Yellow
+    }
+    if ($removed -eq 0) {
+        Write-Host "No baller.exe found in: $($InstallDirs -join ', ')" -ForegroundColor Gray
+        return
+    }
+    Write-Host "Uninstalled successfully" -ForegroundColor Green
 }
 
 switch ($Command) {

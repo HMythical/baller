@@ -1,21 +1,16 @@
 #!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+    Installs baller.exe.
+
+.DESCRIPTION
+    Convenience wrapper. The install logic lives in build.ps1 so that this
+    script and `build.ps1 -Command install` can never disagree about where the
+    binary goes; delegating is the whole point of keeping this file.
+#>
 [CmdletBinding()]
 param(
     [string]$Target = ''
 )
 
-. "$PSScriptRoot\config.ps1"
-
-function Invoke-Install {
-    $releaseDir = if ($Target) { "$ProjectRoot\target\$Target\release" } else { "$ProjectRoot\target\release" }
-    if (-not (Test-Path $releaseDir\baller.exe)) {
-        Write-Host "Binary not found. Running release build first..." -ForegroundColor Yellow
-        $targetFlag = if ($Target) { "--target $Target" } else { "" }
-        cargo build --release $targetFlag
-    }
-    if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force }
-    Copy-Item "$releaseDir\baller.exe" "$InstallDir\baller.exe"
-    Write-Host "Installed baller.exe to $InstallDir" -ForegroundColor Green
-}
-
-Invoke-Install
+& "$PSScriptRoot\build.ps1" -Command install -Target $Target

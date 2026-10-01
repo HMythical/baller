@@ -6,9 +6,11 @@ use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
 use crate::core::hooks::{run_hook, HookType};
-use crate::core::package::Package;
+use crate::core::package::{Package, PackageSource};
+use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
+use crate::security::ranges::parse_advisory_version;
 use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
@@ -49,12 +51,11 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
         match ctx.registry.fetch_package(&pkg.name) {
             Ok(remote_pkg) => {
                 // U1: Use semver-aware version comparison with fallback to string
-                let current_version = parse_version_flexible(&pkg.version);
-                let remote = parse_version_flexible(&remote_pkg.version);
-                let needs_update = match (current_version, remote) {
-                    (Some(cur), Some(rem)) => rem > cur,
-                    _ => remote_pkg.version != pkg.version, // fallback to string comparison
-                };
+                let needs_update = is_newer_release(
+                    &pkg.version,
+                    &remote_pkg.version,
+                    is_distro_versioned(&pkg.source, &remote_pkg.source),
+                );
 
                 tracing::debug!(
                     "{}: installed v{}, registry v{} from {} -> {}",
@@ -344,6 +345,33 @@ fn select_packages(
     Ok(selected)
 }
 
+/// Whether the registry's version is newer than the installed one.
+///
+/// Upstream releases are compared with [`parse_advisory_version`], so an
+/// installed `1.0.0-rc1` sees `1.0.0` as the newer release — the lossy parser
+/// collapses both to 1.0.0 and the rc was never offered its final release.
+/// Distribution versions keep [`parse_version_flexible`]: a Debian
+/// `1.2.3-5ubuntu10` also parses as a semver pre-release, and semver compares
+/// `5ubuntu10` below `5ubuntu2` lexically, which would offer a downgrade as an
+/// update. Anything unparseable falls back to a plain string comparison.
+pub(crate) fn is_newer_release(installed: &str, remote: &str, distro: bool) -> bool {
+    let parse = if distro {
+        parse_version_flexible
+    } else {
+        parse_advisory_version
+    };
+    match (parse(installed), parse(remote)) {
+        (Some(cur), Some(rem)) => rem > cur,
+        _ => remote != installed,
+    }
+}
+
+/// Whether either side of a comparison is a system package manager's version.
+pub(crate) fn is_distro_versioned(installed_source: &str, remote_source: &PackageSource) -> bool {
+    installed_source == RegistrySource::System.db_name()
+        || matches!(remote_source, PackageSource::System { .. })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +386,34 @@ mod tests {
         assert!(opts.packages.is_empty());
         assert!(!opts.check);
         assert!(!opts.include_frozen);
+    }
+
+    #[test]
+    fn test_final_release_is_newer_than_its_rc() {
+        assert!(is_newer_release("1.0.0-rc1", "1.0.0", false));
+        assert!(is_newer_release("1.0.0-rc1", "1.0.0-rc2", false));
+        assert!(!is_newer_release("1.0.0", "1.0.0-rc1", false));
+        assert!(!is_newer_release("1.0.0", "1.0.0", false));
+    }
+
+    #[test]
+    fn test_distro_versions_keep_the_lossy_comparison() {
+        // Lexically `5ubuntu2` > `5ubuntu10`; the lossy parser sees no change
+        // rather than offering a downgrade.
+        assert!(!is_newer_release("1.2.3-5ubuntu10", "1.2.3-5ubuntu2", true));
+        assert!(is_newer_release("1.2.3-5ubuntu10", "1.2.4-1", true));
+        assert!(is_distro_versioned("system", &PackageSource::default()));
+        assert!(!is_distro_versioned(
+            "github",
+            &PackageSource::Cargo {
+                crate_name: String::new()
+            }
+        ));
+    }
+
+    #[test]
+    fn test_unparseable_versions_compare_as_strings() {
+        assert!(is_newer_release("nightly", "nightly-2", false));
+        assert!(!is_newer_release("nightly", "nightly", false));
     }
 }

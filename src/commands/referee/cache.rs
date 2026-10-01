@@ -7,6 +7,7 @@ use colored::Colorize;
 use serde_json::json;
 
 use crate::context::AppContext;
+use crate::core::db::RefereeCachePrune;
 use crate::error::error::BallError;
 use crate::utils::output::print_json;
 
@@ -15,8 +16,12 @@ use crate::utils::output::print_json;
 pub enum CacheAction {
     Status,
     Clear,
-    /// Drop verdicts computed more than this many days ago
-    Prune(u32),
+    /// Drop verdicts computed more than `days` days ago. `vulnerable` ones
+    /// are kept unless `include_vulnerable` is set.
+    Prune {
+        days: u32,
+        include_vulnerable: bool,
+    },
 }
 
 pub fn execute_cache(ctx: &AppContext, action: CacheAction) -> Result<(), BallError> {
@@ -35,26 +40,55 @@ pub fn execute_cache(ctx: &AppContext, action: CacheAction) -> Result<(), BallEr
             println!("{} {} cached verdict(s)", "Cleared".green().bold(), removed);
             Ok(())
         }
-        CacheAction::Prune(days) => {
-            let removed = ctx.db.referee_cache_prune_older_than(days)?;
+        CacheAction::Prune {
+            days,
+            include_vulnerable,
+        } => {
+            let outcome = ctx.db.referee_cache_prune(days, include_vulnerable)?;
             if ctx.flags.json {
-                return print_json(&json!({
-                    "command": "referee",
-                    "subcommand": "cache",
-                    "action": "prune",
-                    "days": days,
-                    "removed": removed,
-                }));
+                return print_json(&prune_json(days, &outcome));
             }
             println!(
                 "{} {} cached verdict(s) older than {} day(s)",
                 "Pruned".green().bold(),
-                removed,
+                outcome.removed,
                 days
             );
+            // Reported at the default verbosity either way: what was kept is
+            // what still blocks, and what was removed no longer does.
+            if outcome.removed_vulnerable > 0 {
+                println!(
+                    "  {} {} of them were vulnerable verdicts — those packages will be re-queried",
+                    "Note:".yellow(),
+                    outcome.removed_vulnerable
+                );
+            }
+            if outcome.kept_vulnerable > 0 {
+                println!(
+                    "  {} kept {} vulnerable verdict(s) older than {} day(s) — pass {} to remove them",
+                    "Note:".yellow(),
+                    outcome.kept_vulnerable,
+                    days,
+                    "--include-vulnerable".cyan()
+                );
+            }
             Ok(())
         }
     }
+}
+
+/// The `--prune` JSON document. The original five keys are unchanged; the two
+/// vulnerable counts are additive.
+fn prune_json(days: u32, outcome: &RefereeCachePrune) -> serde_json::Value {
+    json!({
+        "command": "referee",
+        "subcommand": "cache",
+        "action": "prune",
+        "days": days,
+        "removed": outcome.removed,
+        "removed_vulnerable": outcome.removed_vulnerable,
+        "kept_vulnerable": outcome.kept_vulnerable,
+    })
 }
 
 fn status(ctx: &AppContext) -> Result<(), BallError> {
@@ -135,5 +169,25 @@ mod tests {
         assert!(freshness_note(None, 0).contains("never age out"));
         let note = freshness_note(Some(7), 3);
         assert!(note.starts_with("3 clean verdict(s) older than 7 day(s)"));
+    }
+
+    #[test]
+    fn test_prune_json_keeps_every_key_and_adds_the_vulnerable_counts() {
+        let doc = prune_json(
+            30,
+            &RefereeCachePrune {
+                removed: 3,
+                removed_vulnerable: 0,
+                kept_vulnerable: 2,
+            },
+        );
+        assert_eq!(doc["command"], "referee");
+        assert_eq!(doc["subcommand"], "cache");
+        assert_eq!(doc["action"], "prune");
+        assert_eq!(doc["days"], 30);
+        assert_eq!(doc["removed"], 3);
+        assert_eq!(doc["removed_vulnerable"], 0);
+        assert_eq!(doc["kept_vulnerable"], 2);
+        assert_eq!(doc.as_object().unwrap().len(), 7);
     }
 }

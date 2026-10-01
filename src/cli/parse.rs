@@ -300,9 +300,17 @@ pub enum RefereeSub {
         /// Drop every cached verdict
         #[arg(long, conflicts_with = "prune")]
         clear: bool,
-        /// Drop verdicts computed more than DAYS days ago
+        /// Drop clean, unknown and unverified verdicts computed more than DAYS
+        /// days ago; vulnerable verdicts are kept unless --include-vulnerable
         #[arg(long, value_name = "DAYS")]
         prune: Option<u32>,
+        /// With --prune, also drop vulnerable verdicts past the cutoff
+        #[arg(
+            long = "include-vulnerable",
+            requires = "prune",
+            conflicts_with_all = ["status", "clear"]
+        )]
+        include_vulnerable: bool,
     },
     /// Prints the [referee] settings in effect
     Config,
@@ -365,8 +373,16 @@ impl RefereeArgs {
                 package_names: package_names.clone(),
                 fail_on: *fail_on,
             },
-            Some(RefereeSub::Cache { clear, prune, .. }) => RefereeCommand::Cache(match prune {
-                Some(days) => CacheAction::Prune(*days),
+            Some(RefereeSub::Cache {
+                clear,
+                prune,
+                include_vulnerable,
+                ..
+            }) => RefereeCommand::Cache(match prune {
+                Some(days) => CacheAction::Prune {
+                    days: *days,
+                    include_vulnerable: *include_vulnerable,
+                },
                 None if *clear => CacheAction::Clear,
                 None => CacheAction::Status,
             }),
@@ -985,7 +1001,24 @@ mod tests {
         ));
         assert!(matches!(
             referee(&["baller", "referee", "cache", "--prune", "30"]),
-            RefereeCommand::Cache(CacheAction::Prune(30))
+            RefereeCommand::Cache(CacheAction::Prune {
+                days: 30,
+                include_vulnerable: false
+            })
+        ));
+        assert!(matches!(
+            referee(&[
+                "baller",
+                "referee",
+                "cache",
+                "--prune",
+                "30",
+                "--include-vulnerable"
+            ]),
+            RefereeCommand::Cache(CacheAction::Prune {
+                days: 30,
+                include_vulnerable: true
+            })
         ));
     }
 
@@ -996,6 +1029,22 @@ mod tests {
         referee_rejects(&["baller", "referee", "cache", "--clear", "--prune", "3"]);
         referee_rejects(&["baller", "referee", "cache", "--prune", "-1"]);
         referee_rejects(&["baller", "referee", "cache", "--prune", "soon"]);
+        // The opt-in only means something alongside --prune.
+        referee_rejects(&["baller", "referee", "cache", "--include-vulnerable"]);
+        referee_rejects(&[
+            "baller",
+            "referee",
+            "cache",
+            "--clear",
+            "--include-vulnerable",
+        ]);
+        referee_rejects(&[
+            "baller",
+            "referee",
+            "cache",
+            "--status",
+            "--include-vulnerable",
+        ]);
     }
 
     #[test]

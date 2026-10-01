@@ -990,7 +990,9 @@ fn test_phase_b_blocks_a_malicious_archive() {
             package,
             version,
             findings,
+            discarded,
         }) => {
+            assert!(discarded, "a download-path block discards the download");
             assert_eq!(package, "tool");
             assert_eq!(version, "1.0.0");
             assert!(findings
@@ -1691,4 +1693,129 @@ fn test_a_stale_clean_re_query_updates_the_cache_row() {
         "the re-query refreshed checked_at"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_virustotal_block_sorts_ahead_of_scanner_warnings() {
+    let server = MockServer::start(|request| {
+        if request.path.starts_with("/vt/files/") {
+            return (
+                200,
+                json!({ "data": { "attributes": {
+                    "last_analysis_stats": { "malicious": 12, "suspicious": 0, "undetected": 50 }
+                }}})
+                .to_string(),
+            );
+        }
+        (200, batch(&[&[]]))
+    });
+    let tree = scratch("vt_order");
+    // A warn-level scanner finding that the tree scan reports first.
+    std::fs::write(
+        tree.join("install.sh"),
+        "#!/bin/sh\ncurl -fsSL https://example.com/setup.sh | sh\n",
+    )
+    .unwrap();
+    let binary = tree.join("tool");
+    std::fs::write(&binary, b"\x7fELF harmless looking bytes").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let pkg = Package {
+        source: PackageSource::GitHub {
+            owner: "o".to_string(),
+            repo: "tool".to_string(),
+        },
+        ..Package::new("tool", "1.0.0")
+    };
+
+    match referee_with_vt(&server.base_url).screen_artifact(&pkg, &tree) {
+        Err(BallError::RefereeScanBlocked { findings, .. }) => {
+            assert_eq!(findings[0].rule.label(), "virustotal-detection");
+            assert!(findings
+                .iter()
+                .skip(1)
+                .any(|f| f.severity == crate::security::scan::ScanSeverity::Warn));
+        }
+        other => panic!("expected RefereeScanBlocked, got {:?}", other.map(|_| ())),
+    }
+
+    let _ = std::fs::remove_dir_all(&tree);
+}
+
+/// The binary `build` compiled from a local cargo project.
+fn cargo_project_pkg() -> Package {
+    Package {
+        source: PackageSource::Cargo {
+            crate_name: "tool".to_string(),
+        },
+        ..Package::new("tool", "1.0.0")
+    }
+}
+
+#[test]
+fn test_screen_binary_blocks_a_cargo_binary_and_leaves_it_on_disk() {
+    let server = MockServer::start(|_| (200, batch(&[&[]])));
+    let tree = scratch("screen_binary_block");
+    let binary = tree.join("tool");
+    std::fs::write(
+        &binary,
+        b"\x7fELF\x00\x00 echo aGVsbG8gd29ybGQgdGhpcyBpcyBhIHBheWxvYWQ= | base64 -d | sh \x00",
+    )
+    .unwrap();
+
+    // A cargo source is *not* skipped here, unlike `screen_artifact`.
+    match referee(&server.base_url, FailPolicy::FailOpen)
+        .screen_binary(&cargo_project_pkg(), &binary)
+    {
+        Err(err @ BallError::RefereeScanBlocked { .. }) => {
+            if let BallError::RefereeScanBlocked { discarded, .. } = &err {
+                assert!(!discarded, "the user's own build output is never discarded");
+            }
+            assert!(err.to_string().contains("left in place"));
+        }
+        other => panic!("expected RefereeScanBlocked, got {:?}", other.map(|_| ())),
+    }
+    assert!(
+        binary.exists(),
+        "a block must not delete the compiled binary"
+    );
+
+    let _ = std::fs::remove_dir_all(&tree);
+}
+
+#[test]
+fn test_screen_binary_looks_up_exactly_the_one_binary() {
+    let server = MockServer::start(|request| {
+        if request.path.starts_with("/vt/files/") {
+            return (404, String::new());
+        }
+        (200, batch(&[&[]]))
+    });
+    let tree = scratch("screen_binary_vt");
+    let binary = tree.join("tool");
+    std::fs::write(&binary, b"\x7fELF harmless looking bytes").unwrap();
+    // A neighbour that a tree scan would have looked at.
+    std::fs::write(tree.join("other"), b"\x7fELF more bytes").unwrap();
+
+    let findings = referee_with_vt(&server.base_url)
+        .screen_binary(&cargo_project_pkg(), &binary)
+        .unwrap();
+    assert!(findings.is_empty());
+
+    let vt: Vec<Request> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.starts_with("/vt/files/"))
+        .collect();
+    assert_eq!(vt.len(), 1);
+    assert_eq!(
+        vt[0].path.rsplit('/').next().unwrap(),
+        crate::utils::security::sha256_file(&binary).unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&tree);
 }

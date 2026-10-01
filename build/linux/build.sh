@@ -127,48 +127,81 @@ function run_dist() {
 function run_install() {
     local binary_name="baller"
     local release_binary="$BALLER_SRC_DIR/target/$BALLER_TARGET/release/$binary_name"
-    local install_binary="$BALLER_INSTALL_DIR/$binary_name"
-    
-    mkdir -p "$BALLER_INSTALL_DIR"
-    
+
     if [ ! -f "$release_binary" ]; then
         echo "Binary not found. Running release build first..."
         run_release
     fi
-    
-    if [ -f "$install_binary" ]; then
-        echo "Removing existing $install_binary"
-        rm -f "$install_binary"
+
+    if [ ! -f "$release_binary" ]; then
+        echo "Error: no release binary at $release_binary" >&2
+        return 1
     fi
-    
-    echo "Installing $release_binary to $install_binary"
-    cp "$release_binary" "$install_binary"
-    
+
+    # A failure per directory is a privilege problem, not a build problem: the
+    # system directory needs root, the user directory never does. So install to
+    # whichever ones we can and name the ones we could not, rather than letting
+    # one unwritable directory abandon the rest and leave no `baller` at all.
+    local installed=0
+    local skipped=""
+
+    for install_dir in "${BALLER_INSTALL_DIRS[@]}"; do
+        local install_binary="$install_dir/$binary_name"
+
+        if mkdir -p "$install_dir" 2>/dev/null && cp "$release_binary" "$install_binary" 2>/dev/null; then
+            chmod +x "$install_binary" 2>/dev/null || true
+            installed=$((installed + 1))
+            echo "Installed $install_binary"
+        else
+            skipped="$skipped $install_dir"
+        fi
+    done
+
+    # Only a machine-wide install could affect the dynamic linker cache, and
+    # refreshing it needs root. `baller` is not a shared library, so a failure
+    # here changes nothing and must not fail the install.
     if command -v ldconfig >/dev/null 2>&1; then
-        echo "Running ldconfig..."
-        ldconfig
+        ldconfig 2>/dev/null || true
     fi
-    
-    echo "Installed successfully"
+
+    if [ -n "$skipped" ]; then
+        echo ""
+        echo "Skipped (needs elevated privileges):$skipped" >&2
+        if [ "$installed" -eq 0 ]; then
+            echo "Error: nothing was installed" >&2
+            return 1
+        fi
+        echo "Re-run with sudo to install to the system directory as well." >&2
+    fi
 }
 
 function run_uninstall() {
     local binary_name="baller"
-    local install_binary="$BALLER_INSTALL_DIR/$binary_name"
-    
-    if [ -f "$install_binary" ]; then
-        echo "Removing $install_binary"
-        rm -f "$install_binary"
-        
-        if command -v ldconfig >/dev/null 2>&1; then
-            echo "Running ldconfig..."
-            ldconfig
+    local removed=0
+
+    for install_dir in "${BALLER_INSTALL_DIRS[@]}"; do
+        local install_binary="$install_dir/$binary_name"
+
+        if [ -f "$install_binary" ]; then
+            if rm -f "$install_binary" 2>/dev/null; then
+                removed=$((removed + 1))
+                echo "Removed $install_binary"
+            else
+                echo "Skipped $install_binary (needs elevated privileges)" >&2
+            fi
         fi
-        
-        echo "Uninstalled successfully"
-    else
-        echo "Binary not found at $install_binary"
+    done
+
+    if command -v ldconfig >/dev/null 2>&1; then
+        ldconfig 2>/dev/null || true
     fi
+
+    if [ "$removed" -eq 0 ]; then
+        echo "No baller binary found in: ${BALLER_INSTALL_DIRS[*]}"
+        return 1
+    fi
+
+    echo "Uninstalled successfully"
 }
 
 if [ $# -eq 0 ]; then

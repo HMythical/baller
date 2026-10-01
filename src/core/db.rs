@@ -726,16 +726,57 @@ impl DbManager {
     }
 
     /// Drop verdicts computed more than `days` days ago, for
-    /// `referee cache --prune`. Returns how many rows were removed.
-    pub fn referee_cache_prune_older_than(&self, days: u32) -> Result<usize, BallError> {
-        self.conn
-            .execute(
-                "DELETE FROM referee_cache WHERE checked_at < datetime('now', ?1)",
-                params![format!("-{} days", days)],
+    /// `referee cache --prune`.
+    ///
+    /// `vulnerable` rows are kept unless `include_vulnerable` is set. The TTL
+    /// in [`Self::referee_cache_get_fresh`] honours a block no matter how old
+    /// it is, and pruning must agree: deleting a vulnerable verdict turns a
+    /// known vulnerability back into "no data", which an audit then reports as
+    /// `unknown` or `unverified`. How many vulnerable rows were kept is
+    /// returned so the command can say what it declined to delete — a silent
+    /// non-deletion is as misleading as a silent deletion.
+    pub fn referee_cache_prune(
+        &self,
+        days: u32,
+        include_vulnerable: bool,
+    ) -> Result<RefereeCachePrune, BallError> {
+        let to_err = |e: rusqlite::Error| {
+            BallError::InvalidConfig(format!("failed to prune the referee cache: {}", e))
+        };
+        let cutoff = format!("-{} days", days);
+
+        let old_vulnerable: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM referee_cache
+                 WHERE verdict = 'vulnerable' AND checked_at < datetime('now', ?1)",
+                params![cutoff],
+                |row| row.get(0),
             )
-            .map_err(|e| {
-                BallError::InvalidConfig(format!("failed to prune the referee cache: {}", e))
-            })
+            .map_err(to_err)?;
+
+        let sql = if include_vulnerable {
+            "DELETE FROM referee_cache WHERE checked_at < datetime('now', ?1)"
+        } else {
+            "DELETE FROM referee_cache
+             WHERE checked_at < datetime('now', ?1) AND verdict <> 'vulnerable'"
+        };
+        let removed = self.conn.execute(sql, params![cutoff]).map_err(to_err)?;
+
+        let old_vulnerable = old_vulnerable as usize;
+        Ok(if include_vulnerable {
+            RefereeCachePrune {
+                removed,
+                removed_vulnerable: old_vulnerable,
+                kept_vulnerable: 0,
+            }
+        } else {
+            RefereeCachePrune {
+                removed,
+                removed_vulnerable: 0,
+                kept_vulnerable: old_vulnerable,
+            }
+        })
     }
 
     /// How many `clean` verdicts are older than `ttl_days` and will therefore
@@ -921,6 +962,17 @@ pub struct RefereeCacheStats {
     pub count: i64,
     /// The most recent `checked_at` in this ecosystem
     pub newest: Option<String>,
+}
+
+/// What `referee cache --prune` did, and what it declined to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefereeCachePrune {
+    /// Rows deleted, of every verdict
+    pub removed: usize,
+    /// Of `removed`, how many were `vulnerable` (only with the opt-in)
+    pub removed_vulnerable: usize,
+    /// `vulnerable` rows past the cutoff left in place (only without it)
+    pub kept_vulnerable: usize,
 }
 
 fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
@@ -1240,6 +1292,105 @@ mod tests {
     }
 
     #[test]
+    fn test_referee_cache_prune_keeps_vulnerable_rows_by_default() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old-clean", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "old-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "new-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        age_verdict(&db, "old-clean", 40);
+        age_verdict(&db, "old-bad", 40);
+
+        let outcome = db.referee_cache_prune(30, false).unwrap();
+        assert_eq!(
+            outcome,
+            RefereeCachePrune {
+                removed: 1,
+                removed_vulnerable: 0,
+                kept_vulnerable: 1,
+            }
+        );
+        assert!(db
+            .referee_cache_get("crates.io", "old-bad", "1.0.0")
+            .unwrap()
+            .is_some());
+
+        // A second run still reports the vulnerable row it is keeping.
+        assert_eq!(
+            db.referee_cache_prune(30, false).unwrap().kept_vulnerable,
+            1
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_prune_opt_in_removes_vulnerable_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old-clean", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "old-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "new-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        age_verdict(&db, "old-clean", 40);
+        age_verdict(&db, "old-bad", 40);
+
+        let outcome = db.referee_cache_prune(30, true).unwrap();
+        assert_eq!(
+            outcome,
+            RefereeCachePrune {
+                removed: 2,
+                removed_vulnerable: 1,
+                kept_vulnerable: 0,
+            }
+        );
+        // Only rows past the cutoff go, whatever their verdict.
+        assert!(db
+            .referee_cache_get("crates.io", "new-bad", "1.0.0")
+            .unwrap()
+            .is_some());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn test_referee_cache_prune_drops_only_stale_rows() {
         let path = test_db_path();
         let db = init_db(&path);
@@ -1253,21 +1404,21 @@ mod tests {
         age_verdict(&db, "old", 10);
         age_verdict(&db, "older", 40);
 
-        assert_eq!(db.referee_cache_prune_older_than(30).unwrap(), 1);
+        assert_eq!(db.referee_cache_prune(30, false).unwrap().removed, 1);
         assert!(db
             .referee_cache_get("crates.io", "older", "1.0.0")
             .unwrap()
             .is_none());
         assert_eq!(db.referee_cache_count().unwrap(), 2);
 
-        assert_eq!(db.referee_cache_prune_older_than(7).unwrap(), 1);
+        assert_eq!(db.referee_cache_prune(7, false).unwrap().removed, 1);
         assert!(db
             .referee_cache_get("crates.io", "fresh", "1.0.0")
             .unwrap()
             .is_some());
         assert_eq!(db.referee_cache_count().unwrap(), 1);
 
-        assert_eq!(db.referee_cache_prune_older_than(7).unwrap(), 0);
+        assert_eq!(db.referee_cache_prune(7, false).unwrap().removed, 0);
 
         drop(db);
         let _ = std::fs::remove_file(&path);

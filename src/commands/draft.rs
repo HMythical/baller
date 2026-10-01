@@ -583,7 +583,9 @@ mod tests {
         // The cargo-path wrapper scans the user's own build output; a purge
         // here would delete it. Pinned on the source, as the wrapper needs a
         // full `AppContext` to run.
-        let source = include_str!("draft.rs");
+        // A Windows checkout is CRLF, so the embedded source carries `\r\n` and
+        // a search for a bare `\n}` would never match.
+        let source = include_str!("draft.rs").replace("\r\n", "\n");
         let start = source.find("pub(crate) fn screen_binary(").unwrap();
         let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
         assert!(!body.contains("purge"));

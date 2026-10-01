@@ -182,6 +182,35 @@ fn scratch(label: &str) -> PathBuf {
     dir
 }
 
+/// A file in `tree` that `executable_candidates` will pick up.
+///
+/// Candidates are the exec bit on Unix and a `.exe`/`.bat`/`.cmd` extension on
+/// Windows, so an extensionless fixture is a candidate on one host only — and a
+/// VirusTotal test whose fixture is not a candidate never makes a request, so
+/// it passes vacuously on the other.
+fn candidate_binary(tree: &std::path::Path, contents: &[u8]) -> PathBuf {
+    let path = tree.join(if cfg!(windows) { "tool.exe" } else { "tool" });
+    std::fs::write(&path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+/// How many VirusTotal lookups the mock server was actually asked for.
+///
+/// Asserted alongside `findings.is_empty()` so a test cannot pass because the
+/// fixture was never a candidate and the hook was therefore never called.
+fn vt_lookups(server: &MockServer) -> usize {
+    server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.starts_with("/vt/files/"))
+        .count()
+}
+
 fn db_in(dir: &std::path::Path) -> DbManager {
     DbManager::init_at_path(&dir.join("db").join("baller.db")).unwrap()
 }
@@ -1060,13 +1089,7 @@ fn test_virustotal_detection_blocks_and_sends_only_the_hash() {
         (200, batch(&[&[]]))
     });
     let tree = scratch("vt_hit");
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"\x7fELF harmless looking bytes").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let binary = candidate_binary(&tree, b"\x7fELF harmless looking bytes");
 
     let pkg = Package {
         source: PackageSource::GitHub {
@@ -1119,13 +1142,7 @@ fn test_a_clean_virustotal_report_does_not_block() {
         (200, batch(&[&[]]))
     });
     let tree = scratch("vt_clean");
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"harmless").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    candidate_binary(&tree, b"harmless");
 
     let pkg = Package {
         source: PackageSource::GitHub {
@@ -1139,6 +1156,9 @@ fn test_a_clean_virustotal_report_does_not_block() {
         .screen_artifact(&pkg, &tree)
         .unwrap()
         .is_empty());
+    // At least once: an exact count would pin the HTTP retry policy, and a
+    // count of zero is the vacuous pass this guards against.
+    assert!(vt_lookups(&server) >= 1, "the hook was actually consulted");
     let _ = std::fs::remove_dir_all(&tree);
 }
 
@@ -1151,13 +1171,7 @@ fn test_an_unreachable_virustotal_never_decides_an_install() {
         (200, batch(&[&[]]))
     });
     let tree = scratch("vt_down");
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"harmless").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    candidate_binary(&tree, b"harmless");
 
     let pkg = Package {
         source: PackageSource::GitHub {
@@ -1172,6 +1186,9 @@ fn test_an_unreachable_virustotal_never_decides_an_install() {
         .screen_artifact(&pkg, &tree)
         .unwrap()
         .is_empty());
+    // At least once: an exact count would pin the HTTP retry policy, and a
+    // count of zero is the vacuous pass this guards against.
+    assert!(vt_lookups(&server) >= 1, "the hook was actually consulted");
     let _ = std::fs::remove_dir_all(&tree);
 }
 
@@ -1184,13 +1201,7 @@ fn test_an_unknown_hash_is_not_a_finding() {
         (200, batch(&[&[]]))
     });
     let tree = scratch("vt_unknown");
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"brand new build").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    candidate_binary(&tree, b"brand new build");
 
     let pkg = Package {
         source: PackageSource::GitHub {
@@ -1204,6 +1215,9 @@ fn test_an_unknown_hash_is_not_a_finding() {
         .screen_artifact(&pkg, &tree)
         .unwrap()
         .is_empty());
+    // At least once: an exact count would pin the HTTP retry policy, and a
+    // count of zero is the vacuous pass this guards against.
+    assert!(vt_lookups(&server) >= 1, "the hook was actually consulted");
     let _ = std::fs::remove_dir_all(&tree);
 }
 
@@ -1211,13 +1225,7 @@ fn test_an_unknown_hash_is_not_a_finding() {
 fn test_no_api_key_means_no_virustotal_request_at_all() {
     let server = MockServer::start(|_| (200, batch(&[&[]])));
     let tree = scratch("vt_off");
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"harmless").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    candidate_binary(&tree, b"harmless");
 
     let pkg = Package {
         source: PackageSource::GitHub {
@@ -1716,13 +1724,7 @@ fn test_virustotal_block_sorts_ahead_of_scanner_warnings() {
         "#!/bin/sh\ncurl -fsSL https://example.com/setup.sh | sh\n",
     )
     .unwrap();
-    let binary = tree.join("tool");
-    std::fs::write(&binary, b"\x7fELF harmless looking bytes").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    candidate_binary(&tree, b"\x7fELF harmless looking bytes");
 
     let pkg = Package {
         source: PackageSource::GitHub {

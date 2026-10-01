@@ -21,6 +21,12 @@ with a custom scheme:
 
 ### Fixed
 
+- **A database that cannot be migrated fails at startup instead of reporting healthy** (Closes #77)
+  `DbManager::init_at_path` probed for the `user_installed` column with `.unwrap_or(0)`, which turned every query error into "column missing", and then ran the `ALTER TABLE` that adds the column with its result discarded. A database the migration could not change (locked by another `baller` process, say, or with `installed_packages` replaced by a view) was reported as initialized, and the failure surfaced later as unrelated `query error` messages from whichever command next read the roster. The migration now lives in `migrate_user_installed`, and the schema probe and the `ALTER` each propagate their own `InvalidConfig` (`failed to inspect installed_packages schema for user_installed column: …` and `failed to migrate installed_packages: could not add user_installed column: …`), so the failure is reported once, at startup, naming the step that failed. A healthy database that predates the column still migrates silently, and a fresh or already-migrated database is untouched.
+
+- **`is_frozen` no longer reports a failed lookup as "not frozen"** (Closes #78)
+  `DbManager::is_frozen` mapped every error from its `SELECT frozen` lookup to `false`, so a broken schema, a locked database and a missing row all read as "not frozen", which is the one answer that lets `eject` and `substitute` remove a package. A package that is not on the roster still reads as not frozen; any other failure is now an `InvalidConfig` naming the package (`failed to read frozen state of package '<name>': …`). On a database that is already broken, `eject` (even with `--force`) and `substitute` (unless `--keep-old`) now abort with that error instead of carrying on as though nothing were frozen.
+
 - **Release workflow builds and uploads the Windows artifact** (closes #14)
   The `build-windows` job in `.github/workflows/release.yml` called `build/winbuild/build.ps1 -Profile Release`, which isn't a parameter the script accepts, so every tagged release failed before `cargo` ran and shipped without a Windows build. The job now calls `-Command release`. It also named its artifact from `needs.build-linux.outputs.version` without depending on `build-linux`, which gave an empty version. The job now reads the version from `Cargo.toml` in its own step, as the Linux job does. A new step fails the job if `build/winbuild/dist/baller.exe` is missing.
 

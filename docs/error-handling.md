@@ -25,6 +25,24 @@ the process exits with a non-zero status code.
 | `NoMatchingAsset` | A GitHub release has no asset built for the host platform. Carries the package, the host `<os>-<arch>`, and every asset name the release offered |
 | `NoBinaryFound` | An archive extracted cleanly but contained no executable. Carries the package, version, extract directory and cached archive path |
 
+## Database Startup Errors
+
+Every command opens the package database (`<baller dir>/db/baller.db`) before
+it does anything else, in four steps. A failure in any of them stops the
+command at startup with a single `InvalidConfig` error naming the step:
+
+| Step | Message starts with |
+|------|---------------------|
+| Open the file | `failed to open database at <path>` |
+| Apply pragmas | `failed to set pragmas` (a file that is not a SQLite database fails here) |
+| Create missing tables | `failed to create schema` |
+| Migrate the schema | `failed to inspect installed_packages schema for user_installed column` or `failed to migrate installed_packages: could not add user_installed column` |
+
+The migration adds the `user_installed` column to databases created before it
+existed; a healthy one is migrated silently. A database that gets past startup
+is fully migrated, so a later `query error` from an unrelated command points at
+a real defect, not at a migration that silently did not happen.
+
 ## GitHub Source Asset Errors
 
 A GitHub release usually ships one asset per platform, named with no agreed

@@ -1,4 +1,4 @@
-use crate::core::package::Package;
+use crate::core::package::{Package, PackageSource, Platform, SourceAffinity};
 use crate::error::error::BallError;
 use crate::http::cargo::CargoRegistry;
 use crate::http::chocolatey::ChocolateyRegistry;
@@ -50,6 +50,120 @@ impl RegistrySource {
             _ => None,
         }
     }
+
+    /// The registry a resolved package's source belongs to
+    pub fn of(source: &PackageSource) -> Self {
+        match source {
+            PackageSource::GitHub { .. } => RegistrySource::GitHub,
+            PackageSource::BallerRegistry { .. } => RegistrySource::BallerRegistry,
+            PackageSource::Chocolatey { .. } => RegistrySource::Chocolatey,
+            PackageSource::System { .. } => RegistrySource::System,
+            PackageSource::Cargo { .. } => RegistrySource::Cargo,
+        }
+    }
+
+    /// The platforms this source can serve, for checks made before a package
+    /// exists (`--source`). Must agree with [`PackageSource::affinity`].
+    pub fn affinity(&self) -> SourceAffinity {
+        match self {
+            RegistrySource::Chocolatey => SourceAffinity::Only(Platform::Windows),
+            RegistrySource::System => SourceAffinity::Only(Platform::Linux),
+            RegistrySource::GitHub | RegistrySource::BallerRegistry | RegistrySource::Cargo => {
+                SourceAffinity::Agnostic
+            }
+        }
+    }
+}
+
+/// Pre-flight: reject a source that cannot serve `host` before anything is
+/// fetched from it. This is the `--source` half of [`ensure_installable_on`].
+///
+/// A mismatch is a hard error, never a fallback: the message names the
+/// package, the source, the host and the fix.
+pub fn ensure_source_supported(
+    source: &RegistrySource,
+    package: &str,
+    host: Platform,
+) -> Result<(), BallError> {
+    ensure_affinity(package, source, source.affinity(), host)
+}
+
+fn ensure_affinity(
+    package: &str,
+    source: &RegistrySource,
+    affinity: SourceAffinity,
+    host: Platform,
+) -> Result<(), BallError> {
+    if affinity.supports(host) {
+        return Ok(());
+    }
+
+    Err(BallError::UnsupportedOs(format!(
+        "'{package}' uses the {} source, which only serves {} hosts, so it cannot be installed on {host} \
+         — declare a [source.{host}] table for this platform in its manifest, or pass a different --source",
+        source.config_name(),
+        affinity.name(),
+        host = host.name(),
+    )))
+}
+
+/// Canonical spelling of a CPU architecture, so `amd64` and `x86_64` match.
+pub fn normalize_arch(arch: &str) -> String {
+    let lowered = arch.trim().to_lowercase();
+    match lowered.as_str() {
+        "amd64" | "x64" | "x86-64" => "x86_64".to_string(),
+        "arm64" => "aarch64".to_string(),
+        _ => lowered,
+    }
+}
+
+/// A package's `architectures` is an allow-list; absent or empty means any.
+fn ensure_arch_supported(pkg: &Package, host: Platform, host_arch: &str) -> Result<(), BallError> {
+    let declared = match &pkg.architectures {
+        Some(list) if !list.is_empty() => list,
+        _ => return Ok(()),
+    };
+
+    let host_arch = normalize_arch(host_arch);
+    if declared
+        .iter()
+        .any(|arch| normalize_arch(arch) == host_arch)
+    {
+        return Ok(());
+    }
+
+    Err(BallError::UnsupportedOs(format!(
+        "'{}' only supports {} (its declared architectures), not this {}-{} host",
+        pkg.name,
+        declared.join(", "),
+        host.name(),
+        host_arch
+    )))
+}
+
+/// Pre-flight: whether `pkg` can be installed on `host`/`host_arch` at all.
+///
+/// The single platform gate. It runs where a source is *used* — on the parsed
+/// manifest, after `--source` is applied, and on every package the chain
+/// resolved — so no path that builds a source differently can bypass it.
+/// Checks the source's platform affinity, then the `architectures` allow-list.
+pub fn ensure_installable_on(
+    pkg: &Package,
+    host: Platform,
+    host_arch: &str,
+) -> Result<(), BallError> {
+    ensure_affinity(
+        &pkg.name,
+        &RegistrySource::of(&pkg.source),
+        pkg.source.affinity(),
+        host,
+    )?;
+    ensure_arch_supported(pkg, host, host_arch)
+}
+
+/// [`ensure_installable_on`] for the host this binary runs on
+pub fn ensure_installable(pkg: &Package) -> Result<(), BallError> {
+    ensure_installable_on(pkg, Platform::host(), std::env::consts::ARCH)
 }
 
 /// The source chain this platform prefers: the Baller registry first, then the
@@ -305,6 +419,147 @@ mod tests {
     fn test_registry_source_equality() {
         assert_eq!(RegistrySource::GitHub, RegistrySource::GitHub);
         assert_ne!(RegistrySource::GitHub, RegistrySource::Chocolatey);
+    }
+
+    const ALL_SOURCES: [RegistrySource; 5] = [
+        RegistrySource::GitHub,
+        RegistrySource::BallerRegistry,
+        RegistrySource::Chocolatey,
+        RegistrySource::System,
+        RegistrySource::Cargo,
+    ];
+
+    fn package_from(source: &RegistrySource) -> Package {
+        let mut pkg = Package::new("tool", "1.0.0");
+        pkg.source = match source {
+            RegistrySource::GitHub => PackageSource::GitHub {
+                owner: "o".to_string(),
+                repo: "tool".to_string(),
+            },
+            RegistrySource::BallerRegistry => PackageSource::BallerRegistry {
+                url: "https://reg.example.com".to_string(),
+            },
+            RegistrySource::Chocolatey => PackageSource::Chocolatey {
+                feed_url: "https://feed.example.com".to_string(),
+            },
+            RegistrySource::System => PackageSource::System {
+                manager: "apt".to_string(),
+            },
+            RegistrySource::Cargo => PackageSource::Cargo {
+                crate_name: "tool".to_string(),
+            },
+        };
+        pkg
+    }
+
+    #[test]
+    fn test_registry_and_package_affinity_agree() {
+        for source in &ALL_SOURCES {
+            let pkg = package_from(source);
+            assert_eq!(&RegistrySource::of(&pkg.source), source);
+            assert_eq!(source.affinity(), pkg.source.affinity(), "{:?}", source);
+        }
+    }
+
+    #[test]
+    fn test_affinity_gate_every_source_on_both_hosts() {
+        let expected = [
+            (RegistrySource::GitHub, true, true),
+            (RegistrySource::BallerRegistry, true, true),
+            (RegistrySource::Chocolatey, false, true),
+            (RegistrySource::System, true, false),
+            (RegistrySource::Cargo, true, true),
+        ];
+
+        for (source, on_linux, on_windows) in expected {
+            let pkg = package_from(&source);
+            for (host, allowed) in [(Platform::Linux, on_linux), (Platform::Windows, on_windows)] {
+                let result = ensure_installable_on(&pkg, host, "x86_64");
+                assert_eq!(result.is_ok(), allowed, "{:?} on {:?}", source, host);
+                if let Err(err) = result {
+                    assert!(matches!(err, BallError::UnsupportedOs(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_affinity_mismatch_names_package_source_host_and_fix() {
+        let pkg = package_from(&RegistrySource::Chocolatey);
+        let msg = ensure_installable_on(&pkg, Platform::Linux, "x86_64")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("'tool'"), "{}", msg);
+        assert!(msg.contains("chocolatey source"), "{}", msg);
+        assert!(msg.contains("only serves windows hosts"), "{}", msg);
+        assert!(msg.contains("cannot be installed on linux"), "{}", msg);
+        assert!(msg.contains("[source.linux]"), "{}", msg);
+        assert!(msg.contains("--source"), "{}", msg);
+
+        let system = package_from(&RegistrySource::System);
+        let msg = ensure_installable_on(&system, Platform::Windows, "x86_64")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("[source.windows]"), "{}", msg);
+    }
+
+    #[test]
+    fn test_source_flag_gate_runs_without_a_package() {
+        assert!(
+            ensure_source_supported(&RegistrySource::Chocolatey, "7zip", Platform::Linux).is_err()
+        );
+        assert!(
+            ensure_source_supported(&RegistrySource::System, "vim", Platform::Windows).is_err()
+        );
+        assert!(
+            ensure_source_supported(&RegistrySource::Chocolatey, "7zip", Platform::Windows).is_ok()
+        );
+        assert!(ensure_source_supported(&RegistrySource::System, "vim", Platform::Linux).is_ok());
+    }
+
+    #[test]
+    fn test_normalize_arch_aliases() {
+        assert_eq!(normalize_arch("amd64"), "x86_64");
+        assert_eq!(normalize_arch("X64"), "x86_64");
+        assert_eq!(normalize_arch("x86-64"), "x86_64");
+        assert_eq!(normalize_arch("x86_64"), "x86_64");
+        assert_eq!(normalize_arch("arm64"), "aarch64");
+        assert_eq!(normalize_arch(" AArch64 "), "aarch64");
+        assert_eq!(normalize_arch("riscv64"), "riscv64");
+    }
+
+    #[test]
+    fn test_architectures_is_an_enforced_allow_list() {
+        let mut pkg = package_from(&RegistrySource::GitHub);
+
+        pkg.architectures = None;
+        assert!(ensure_installable_on(&pkg, Platform::Linux, "aarch64").is_ok());
+
+        pkg.architectures = Some(Vec::new());
+        assert!(ensure_installable_on(&pkg, Platform::Linux, "aarch64").is_ok());
+
+        pkg.architectures = Some(vec!["x86_64".to_string()]);
+        assert!(ensure_installable_on(&pkg, Platform::Linux, "x86_64").is_ok());
+        let err = ensure_installable_on(&pkg, Platform::Linux, "aarch64").unwrap_err();
+        assert!(matches!(err, BallError::UnsupportedOs(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("'tool' only supports x86_64"), "{}", msg);
+        assert!(msg.contains("linux-aarch64"), "{}", msg);
+
+        // Aliases on either side compare equal
+        pkg.architectures = Some(vec!["amd64".to_string(), "arm64".to_string()]);
+        assert!(ensure_installable_on(&pkg, Platform::Windows, "x86_64").is_ok());
+        assert!(ensure_installable_on(&pkg, Platform::Linux, "aarch64").is_ok());
+    }
+
+    #[test]
+    fn test_affinity_is_checked_before_architectures() {
+        let mut pkg = package_from(&RegistrySource::Chocolatey);
+        pkg.architectures = Some(vec!["aarch64".to_string()]);
+        let msg = ensure_installable_on(&pkg, Platform::Linux, "x86_64")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("chocolatey source"), "{}", msg);
     }
 
     #[test]

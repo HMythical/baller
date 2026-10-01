@@ -61,16 +61,6 @@ pub fn execute_eject(
         ActiveManager::remove_symlink(&installed.name)?;
     }
 
-    // E3: Run post-eject hook BEFORE removing from DB
-    run_hook(
-        &HookType::PostEject,
-        &installed.name,
-        &installed.version,
-        &ctx.config.hooks_dir,
-        &ctx.config.hooks,
-        &[],
-    )?;
-
     ctx.db.remove_package(package_name)?;
 
     // E1: Orphan dependency cleanup
@@ -122,6 +112,18 @@ pub fn execute_eject(
             ),
         }
     }
+
+    // E3: The post-eject hook runs once the package is fully removed — link,
+    // roster row, extract dir and any purged archive. A failure is logged, not
+    // fatal: the eject has already happened.
+    run_hook(
+        &HookType::PostEject,
+        &installed.name,
+        &installed.version,
+        &ctx.config.hooks_dir,
+        &ctx.config.hooks,
+        &[],
+    )?;
 
     if ctx.flags.json {
         return print_json(&json!({

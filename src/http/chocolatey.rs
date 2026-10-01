@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::core::dep_solver::parse_dependency_line;
 use crate::core::package::{Package, PackageSource};
 use crate::error::error::BallError;
 use crate::http::HttpClient;
@@ -222,35 +223,55 @@ fn normalize_nuget_version(raw: &str) -> String {
     }
 }
 
+/// Translate a NuGet `Dependencies` string (`id:range:framework|…`) into
+/// baller dependency lines (`id >=min`).
 fn parse_nuget_dependencies(raw: &Option<String>) -> Option<Vec<String>> {
     let deps = raw.as_ref()?;
-    if deps.is_empty() {
-        return None;
-    }
-
-    let entries: Vec<String> = deps
-        .split('|')
-        .filter_map(|group| {
-            group.split(':').nth(1).map(|s| {
-                let parts: Vec<&str> = s.split(':').collect();
-                if parts.len() >= 2 {
-                    format!(
-                        "{}>={}",
-                        parts[0],
-                        parts[1].trim_start_matches('[').trim_end_matches(']')
-                    )
-                } else {
-                    parts[0].to_string()
-                }
-            })
-        })
-        .collect();
+    let entries: Vec<String> = deps.split('|').filter_map(nuget_dependency_line).collect();
 
     if entries.is_empty() {
         None
     } else {
         Some(entries)
     }
+}
+
+/// One `id:range:framework` group as a dependency line.
+///
+/// Only the range's lower bound is kept (`[1.0, 2.0)` → `>=1.0`, `(1.0,)` →
+/// `>1.0`): Chocolatey always serves its latest version, so an upper bound
+/// could only fail. A bound semver cannot express, such as a four-part NuGet
+/// version, is dropped rather than emitted as a line that fails resolution.
+fn nuget_dependency_line(group: &str) -> Option<String> {
+    let mut fields = group.split(':');
+    let id = fields.next()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+
+    let range = fields.next().unwrap_or("").trim();
+    let op = if range.starts_with('(') { ">" } else { ">=" };
+    let min = range
+        .trim_start_matches(['[', '('])
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([']', ')'])
+        .trim();
+    if min.is_empty() {
+        return Some(id.to_string());
+    }
+
+    let line = format!("{} {}{}", id, op, normalize_nuget_version(min));
+    if parse_dependency_line(&line).is_err() {
+        tracing::debug!(
+            "chocolatey dependency '{}': dropping version range '{}' that semver cannot express",
+            id,
+            range
+        );
+        return Some(id.to_string());
+    }
+    Some(line)
 }
 
 /// Derive a Chocolatey download URL from an OData entry.
@@ -303,5 +324,93 @@ mod tests {
         assert_eq!(normalize_nuget_version("14.1.0.0"), "14.1.0");
         assert_eq!(normalize_nuget_version("14.1.0"), "14.1.0");
         assert_eq!(normalize_nuget_version("14.1.0.3"), "14.1.0.3");
+    }
+
+    fn deps(raw: &str) -> Option<Vec<String>> {
+        parse_nuget_dependencies(&Some(raw.to_string()))
+    }
+
+    #[test]
+    fn test_parse_nuget_dependencies_returns_package_ids() {
+        // Previously this returned the version ranges ["1.3.3", "14.0"] as names
+        let parsed = deps("chocolatey-core.extension:1.3.3:|vcredist140:14.0:").unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                "chocolatey-core.extension >=1.3.3".to_string(),
+                "vcredist140 >=14.0".to_string()
+            ]
+        );
+
+        for line in &parsed {
+            let dep = parse_dependency_line(line).unwrap();
+            assert!(!dep.name.chars().next().unwrap().is_ascii_digit());
+        }
+    }
+
+    #[test]
+    fn test_parse_nuget_dependencies_interval_ranges() {
+        assert_eq!(deps("a:[1.0, 2.0):").unwrap(), vec!["a >=1.0"]);
+        assert_eq!(deps("a:(1.0,):").unwrap(), vec!["a >1.0"]);
+        assert_eq!(deps("a:[1.0]:").unwrap(), vec!["a >=1.0"]);
+        assert_eq!(deps("a:(,2.0]:").unwrap(), vec!["a"]);
+        assert_eq!(deps("a::").unwrap(), vec!["a"]);
+        assert_eq!(deps("a").unwrap(), vec!["a"]);
+    }
+
+    #[test]
+    fn test_parse_nuget_dependencies_four_part_versions() {
+        assert_eq!(deps("a:14.1.0.0:").unwrap(), vec!["a >=14.1.0"]);
+        // Not expressible in semver: the bound is dropped, the dependency kept
+        assert_eq!(
+            deps("vcredist140:14.16.27012.6:").unwrap(),
+            vec!["vcredist140"]
+        );
+    }
+
+    #[test]
+    fn test_parse_nuget_dependencies_empty_input() {
+        assert_eq!(parse_nuget_dependencies(&None), None);
+        assert_eq!(deps(""), None);
+        assert_eq!(deps("|"), None);
+        assert_eq!(deps(":1.0:"), None);
+    }
+
+    fn odata_entry(media_src: Option<&str>, with_metadata: bool) -> ODataPackage {
+        ODataPackage {
+            id: "7zip".to_string(),
+            version: "24.8.0".to_string(),
+            description: None,
+            authors: None,
+            download_url: None,
+            package_hash: None,
+            package_hash_algorithm: None,
+            dependencies: None,
+            project_url: None,
+            metadata: with_metadata.then(|| ODataMetadata {
+                media_src: media_src.map(str::to_string),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_derive_download_url_prefers_media_src() {
+        let entry = odata_entry(Some("https://cdn.example/7zip.24.8.0.nupkg"), true);
+        assert_eq!(
+            derive_download_url(&entry).as_deref(),
+            Some("https://cdn.example/7zip.24.8.0.nupkg")
+        );
+    }
+
+    #[test]
+    fn test_derive_download_url_falls_back_to_the_package_endpoint() {
+        let expected = Some("https://community.chocolatey.org/api/package/7zip/24.8.0");
+        for entry in [
+            odata_entry(Some(""), true),
+            odata_entry(None, true),
+            odata_entry(None, false),
+        ] {
+            assert_eq!(derive_download_url(&entry).as_deref(), expected);
+        }
     }
 }

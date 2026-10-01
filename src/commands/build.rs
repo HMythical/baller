@@ -7,8 +7,8 @@ use crate::commands::draft::source_label;
 use crate::context::AppContext;
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::manifest::{parse_github_url, ManifestParser};
-use crate::core::package::{Package, PackageSource};
-use crate::core::registry::RegistrySource;
+use crate::core::package::{Package, PackageSource, Platform};
+use crate::core::registry::{ensure_installable, ensure_source_supported, RegistrySource};
 use crate::error::error::BallError;
 use crate::http::cargo::install_cargo_package;
 use crate::http::chocolatey::ChocolateyRegistry;
@@ -68,6 +68,11 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         pkg.version,
         source_label(&pkg.source)
     );
+
+    // The effective source — manifest-declared or `--source` — must be able
+    // to serve this host. Checked before the dry run too: a plan the host
+    // cannot carry out is not a plan worth reporting.
+    ensure_installable(&pkg)?;
 
     if opts.no_deps {
         tracing::debug!("manifest dependencies dropped (--no-deps)");
@@ -255,9 +260,12 @@ fn override_source(
             })?;
             PackageSource::GitHub { owner, repo }
         }
-        RegistrySource::Chocolatey => PackageSource::Chocolatey {
-            feed_url: ctx.config.registry.chocolatey_feed_url.clone(),
-        },
+        RegistrySource::Chocolatey => {
+            ensure_source_supported(source, &pkg.name, Platform::host())?;
+            PackageSource::Chocolatey {
+                feed_url: ctx.config.registry.chocolatey_feed_url.clone(),
+            }
+        }
         RegistrySource::BallerRegistry => PackageSource::BallerRegistry {
             url: ctx.config.registry.baller_registry_url.clone(),
         },
@@ -355,6 +363,9 @@ fn report_plan(
 /// Pre-flight: a system source is only buildable when the host has a native
 /// package manager. Gated before any lifecycle hook so a guaranteed-failing
 /// build never runs user scripts (#66).
+///
+/// This is the *capability* probe (a Linux host with no apt/dnf/pacman); the
+/// *platform* check is [`ensure_installable`], which runs first.
 fn ensure_system_source_supported(
     host_manager: Option<&'static str>,
     requested_manager: &str,

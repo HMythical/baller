@@ -7,6 +7,7 @@ use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::package::Package;
+use crate::core::registry::ensure_installable;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use crate::utils::output::print_json;
@@ -124,6 +125,12 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     .iter()
                     .filter(|dep| dep.name != pkg.name && !installed.contains_key(&dep.name))
                     .collect();
+
+                // The new release and every new dependency must run on this
+                // host before any of them is installed or the old one pruned.
+                for candidate in missing_deps.iter().copied().chain([&remote_pkg]) {
+                    ensure_installable(candidate)?;
+                }
 
                 // Install any missing dependencies first
                 for dep in &missing_deps {

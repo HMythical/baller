@@ -4,6 +4,7 @@ use serde_json::json;
 use crate::context::AppContext;
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
+use crate::core::registry::ensure_installable;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use crate::utils::fs::confirm;
@@ -50,6 +51,12 @@ pub fn execute_substitute(
 
         resolved.packages
     };
+
+    // The replacement and everything it pulls in must run on this host;
+    // checked before the dry run and before the old package is touched.
+    for candidate in &packages {
+        ensure_installable(candidate)?;
+    }
 
     if opts.dry_run {
         return report_plan(ctx, old_package, &pkg, &packages, opts);

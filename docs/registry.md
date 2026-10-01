@@ -128,6 +128,33 @@ the `_enabled` flags below.
 
 Entries in `source_order` that match no known source are ignored.
 
+### Sources Are Platform-scoped
+
+Every source declares which hosts it can serve, and the chain is unchanged by
+it — the scoping applies to what a source *resolves*, not to the order sources
+are tried in:
+
+| Source | Serves |
+|---|---|
+| `chocolatey` | Windows only (a `.nupkg` payload is Windows-targeted) |
+| `system` | Linux only (reads `/etc/os-release`, drives apt/dnf/pacman) |
+| `github` | Any host; the asset is picked per OS/arch by the release selector |
+| `baller` | Any host; the registry decides server-side |
+| `cargo` | Any host; `cargo install` builds for whatever host runs it |
+
+A package that resolves to a source the host cannot use is a **hard error**,
+not a fallback to the next source: `draft`, `substitute`, `update` and `build`
+check every package they would install before the dry-run report, before any
+hook and before anything is downloaded, and fail with `UnsupportedOs`. That
+covers every way a source is reached — the configured chain (say,
+`chocolatey_enabled = true` on Linux), `--source`, and a manifest's
+`[source]`. `--source` is checked before anything is fetched from it at all.
+
+Behind that check, the binary every install extracts is inspected byte-wise:
+a PE/Windows executable on Linux (or an ELF on Windows) fails with
+`PlatformMismatch` whichever source supplied it. See
+[docs/error-handling.md](error-handling.md#platform-errors).
+
 ## Configuration
 
 ```ini

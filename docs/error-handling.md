@@ -10,7 +10,7 @@ the process exits with a non-zero status code.
 
 | Variant | Meaning |
 |---------|---------|
-| `UnsupportedOs` | Running on an unsupported operating system |
+| `UnsupportedOs` | The host cannot run what was asked for: an unsupported operating system at startup, a source that does not serve this platform (Chocolatey on Linux, System on Windows), or a CPU outside the package's `architectures`. See [Platform Errors](#platform-errors) |
 | `UnsupportedCommand` | Command not yet implemented |
 | `FileIoErr` | File system I/O error |
 | `InvalidConfig` | Configuration or database error |
@@ -23,7 +23,8 @@ the process exits with a non-zero status code.
 | `PackageFrozen` | Cannot modify a frozen package |
 | `PackageManagerError` | System package manager error (no PM detected, command failed, unsupported manager, wrong code path tried to download a system package, or version unparseable as semver) |
 | `NoMatchingAsset` | A GitHub release has no asset built for the host platform. Carries the package, the host `<os>-<arch>`, and every asset name the release offered |
-| `NoBinaryFound` | An archive extracted cleanly but contained no executable. Carries the package, version, extract directory and cached archive path |
+| `NoBinaryFound` | An archive extracted cleanly but contained no executable (an empty file counts as none). Carries the package, version, extract directory and cached archive path |
+| `PlatformMismatch` | The extracted binary is a definite executable for another platform — PE/Windows on Linux, ELF on Windows. Carries the package, version, detected format, the rejected binary and the cached archive path; the host `<os>-<arch>` is rendered in the message |
 
 ## Database Startup Errors
 
@@ -167,16 +168,52 @@ messages:
 
 See [docs/cargo-registry.md](cargo-registry.md) for the full error table.
 
+## Platform Errors
+
+Three checks keep an artifact built for another platform from being installed.
+All of them are hard errors — the dependency resolver only ever skips
+`PackageNotFound`, so a mismatch anywhere in the dependency graph aborts the
+whole command.
+
+**A source the host cannot use** — `UnsupportedOs`, raised before the dry-run
+report, before any hook and before anything is downloaded (for `--source`,
+before anything is even fetched):
+
+```
+[Error]: '7zip' uses the chocolatey source, which only serves windows hosts, so it cannot be installed on linux — declare a [source.linux] table for this platform in its manifest, or pass a different --source
+```
+
+**A CPU outside `architectures`** — `UnsupportedOs`, raised at the same point:
+
+```
+[Error]: 'tool' only supports riscv64 (its declared architectures), not this linux-x86_64 host
+```
+
+**A foreign binary in the archive** — `PlatformMismatch`, raised after
+extraction from the binary's own header, whichever source supplied it:
+
+```
+[Error]: package 'petool' v1.0.0 ships a binary this linux-x86_64 host cannot run (PE/Windows executable) — rejected ~/.baller/cache/petool-1.0.0/petool (archive: ~/.baller/cache/<archive>)
+```
+
+Only a *definite* foreign binary is rejected: a shebang (`#!`) script, or any
+file that is neither ELF nor PE, still installs, so script-based packages keep
+working.
+
 ## What a Failed Install Leaves Behind
 
 A package that fails one of the hard errors above leaves **nothing** of itself
-on disk or in the database: no symlink, no roster row, no extract directory and
-no cached archive. A retry therefore re-downloads from scratch rather than
-reusing a half-usable cache.
+on disk or in the database: no symlink, no roster row and no extract directory.
+After `NoBinaryFound` the cached archive is removed as well, so a retry
+re-downloads from scratch rather than reusing a half-usable cache. After
+`PlatformMismatch` the cached archive is **kept**: it downloaded intact and is
+exactly what the source serves, so fetching it again would only reproduce the
+mismatch (`sweep` reclaims it). A platform `UnsupportedOs` fires before
+anything is downloaded, so it leaves nothing to clean up at all.
 
 Per command:
 
-| Command | On `NoBinaryFound` |
+| Command | On `NoBinaryFound` or `PlatformMismatch` |
 |---------|--------------------|
 | `draft` | The package is not linked and not recorded. Packages installed earlier in the same run stay installed |
 | `build` | Nothing is linked (neither the platform default nor `--install-dir`) and no row is written, so the manifest can be fixed and rebuilt |
@@ -215,7 +252,9 @@ database entries are cleaned up.
 
 ## Hook Error Handling
 
-If a lifecycle hook (pre/post install, eject, or update) fails with a non-zero
-exit code, the command is aborted and the error is returned. For `eject`, the
-post-eject hook runs before the database entry is removed, so a hook failure
-leaves the package record intact for retry.
+A failing **pre-hook** (`pre_install`, `pre_eject`, `pre_update`) aborts the
+command before anything changes, with `hook '<script>' failed with exit code N`.
+A failing **post-hook** (`post_install`, `post_eject`, `post_update`) cannot undo
+work that already happened, so it is logged as a warning and the command still
+succeeds — the package stays installed, ejected or updated. `post_eject` runs
+only once the package is fully removed. See [docs/hooks.md](hooks.md#failing-hooks).

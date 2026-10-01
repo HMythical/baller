@@ -351,6 +351,15 @@ const FORBIDDEN_EXTENSIONS: &[&str] = &[
     ".changes",
 ];
 
+/// Container formats only a Windows host can run: a NuGet/Chocolatey package
+/// and a PE executable.
+///
+/// Both are legitimate assets on Windows, so they are ruled out per host in
+/// [`is_excluded`] rather than listed in [`FORBIDDEN_EXTENSIONS`]. A plain
+/// NuGet file name carries no OS token, so without this a `tool-x86_64.nupkg`
+/// would win on a Linux host on its bare arch token.
+const WINDOWS_ONLY_EXTENSIONS: &[&str] = &[".nupkg", ".exe"];
+
 /// OS tokens that rule an asset out, keyed by the host OS they are foreign to.
 const FOREIGN_OS_TOKENS: &[&str] = &[
     "darwin",
@@ -401,6 +410,14 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 /// tarball can never win on a bare `amd64` token.
 fn is_excluded(name: &str, spec: &PlatformSpec) -> bool {
     if FORBIDDEN_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) {
+        return true;
+    }
+
+    if spec.os != "windows"
+        && WINDOWS_ONLY_EXTENSIONS
+            .iter()
+            .any(|ext| name.ends_with(ext))
+    {
         return true;
     }
 
@@ -652,6 +669,48 @@ mod tests {
         let list = assets(&["tool-linux-amd64.tar.gz", "tool-win64.zip"]);
         assert_eq!(pick(&list, &WINDOWS_X64), "tool-win64.zip");
         assert_eq!(pick(&list, &LINUX_X64), "tool-linux-amd64.tar.gz");
+    }
+
+    #[test]
+    fn test_linux_host_prefers_a_tarball_over_a_nupkg_of_the_same_build() {
+        // Listed first and both match on the bare `x86_64` token: before the
+        // per-host exclusion the `.nupkg` won as a recognized archive.
+        let list = assets(&["tool-x86_64.1.2.3.nupkg", "tool-x86_64.tar.gz"]);
+        assert_eq!(pick(&list, &LINUX_X64), "tool-x86_64.tar.gz");
+    }
+
+    #[test]
+    fn test_nupkg_only_release_errors_on_a_linux_host() {
+        let list = assets(&["tool-x86_64.1.2.3.nupkg"]);
+        let err = select_asset(&list, &LINUX_X64, "tool").expect_err("nupkg is not for linux");
+        assert!(matches!(err, BallError::NoMatchingAsset { .. }));
+        assert!(format!("{}", err).contains("tool-x86_64.1.2.3.nupkg"));
+    }
+
+    #[test]
+    fn test_nupkg_is_still_selected_on_a_windows_host() {
+        let list = assets(&["tool-x86_64.1.2.3.nupkg"]);
+        assert_eq!(pick(&list, &WINDOWS_X64), "tool-x86_64.1.2.3.nupkg");
+    }
+
+    #[test]
+    fn test_exe_is_never_selected_on_a_linux_host() {
+        let list = assets(&["tool-x86_64.exe"]);
+        assert!(select_asset(&list, &LINUX_X64, "tool").is_err());
+        assert!(select_asset(&list, &LINUX_ARM64, "tool").is_err());
+
+        let mixed = assets(&["tool-amd64.exe", "tool-linux-amd64"]);
+        assert_eq!(pick(&mixed, &LINUX_X64), "tool-linux-amd64");
+    }
+
+    #[test]
+    fn test_exe_is_still_selected_on_a_windows_host() {
+        let list = assets(&["tool-x86_64.exe"]);
+        assert_eq!(pick(&list, &WINDOWS_X64), "tool-x86_64.exe");
+
+        // An archive of the same build still wins the tie, as before.
+        let paired = assets(&["tool-x86_64.exe", "tool-x86_64.zip"]);
+        assert_eq!(pick(&paired, &WINDOWS_X64), "tool-x86_64.zip");
     }
 
     #[test]

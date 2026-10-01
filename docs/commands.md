@@ -56,9 +56,9 @@ checks. See [referee.md](referee.md).
 | Flag | Description |
 |------|-------------|
 | `--version <V>` | Pin an exact version. GitHub and Chocolatey only — the Baller registry does not support pinning yet, and system and cargo packages always install the latest |
-| `--source <S>` | Resolve from one registry (`github`, `baller`, `chocolatey`, `system`, `cargo`) instead of the configured chain. `system` is Linux-only; `cargo` needs a cargo toolchain on `PATH` |
+| `--source <S>` | Resolve from one registry (`github`, `baller`, `chocolatey`, `system`, `cargo`) instead of the configured chain. `system` is Linux-only and `chocolatey` is Windows-only — either one on the other platform fails before anything is fetched; `cargo` needs a cargo toolchain on `PATH` |
 | `--no-deps` | Install the root package alone |
-| `--dry-run` | Print the resolved plan (every package, version, source and action) and change nothing |
+| `--dry-run` | Print the resolved plan (every package, version, source and action) and change nothing. A package in the plan that this host cannot install (a Windows-only source on Linux, say) fails the dry run too |
 | `--force`, `-f` | Reinstall even when the package is already on the roster (without it, installed packages are skipped) |
 
 `--version` and `--source` combine: `--source github --version 14.1.0` pins
@@ -174,8 +174,9 @@ installed package. Orphans are automatically removed.
 The cache directory (`~/.baller/cache/<package>-<version>`) is cleaned after
 the database entry is removed.
 
-The post-eject hook runs before the database entry is removed, so a hook
-failure leaves the package record intact for retry.
+The post-eject hook runs once the package is fully removed (link, database
+record, cache directory and, with `--purge`, the archive). If it fails, the
+failure is printed as a warning and the eject still succeeds.
 
 **Flags:**
 | Flag | Description |
@@ -441,34 +442,41 @@ see [Build a Rust project from source](#build-a-rust-project-from-source).
 | `--no-deps` | Ignore the manifest's declared dependencies, so none are recorded |
 | `--install-dir <DIR>` | Link the binary into this directory instead of the platform default |
 | `--force`, `-f` | Build over a package that is already on the roster (otherwise that is an error) |
-| `--source <S>` | Override the manifest's source before resolving. Clears any manifest `download_url` so the new source is actually consulted. `github` needs a github.com `repository` URL in the manifest; `system` is Linux-only; `cargo` needs a cargo toolchain on `PATH` |
+| `--source <S>` | Override the manifest's source (including any `[source.<os>]` table) before resolving. Clears any manifest `download_url` so the new source is actually consulted. `github` needs a github.com `repository` URL in the manifest; `system` is Linux-only; `chocolatey` is Windows-only; `cargo` needs a cargo toolchain on `PATH` |
 
 Both manifest layouts parse: the flat form and the nested form documented in
 [docs/manifest.md](manifest.md).
 
 The pipeline mirrors `draft`:
 
-1. Resolve and parse the manifest, then validate that `name` and `version` are present.
-2. Fill in a missing `download_url` from the manifest's source (GitHub,
+1. Resolve and parse the manifest (selecting the host's `[source.<os>]` table, if
+   any), then validate that `name` and `version` are present.
+2. Apply `--source` if given, then check that the effective source can serve this
+   host and that the host's CPU is in `architectures`, if declared. A mismatch
+   fails here, before `--dry-run` reports a plan, before any hook runs and
+   before anything is fetched.
+3. Fill in a missing `download_url` from the manifest's source (GitHub,
    Chocolatey, Baller registry; system and cargo sources need none). The
    registry's version replaces the manifest's when they differ.
-3. Run Referee's advisory gate on this one package — `build` does no dependency
+4. Run Referee's advisory gate on this one package — `build` does no dependency
    resolution, so its recorded `dependencies` are not checked — then the
    `--force` check, then the `pre_install` hook. A blocked package never runs a
    hook.
-4. Install from the resolved source:
+5. Resolve the package source and install from it:
    - `download_url` present → download it directly.
    - GitHub source → fetch the latest release to fill in the download URL (and
      the resolved version, which is printed when it differs from the manifest).
-   - Chocolatey source → resolve the `.nupkg` from the manifest's `feed_url`.
+   - Chocolatey source → resolve the `.nupkg` from the manifest's `feed_url` (Windows only).
    - Baller registry source → resolve from the manifest's registry `url`.
    - System source → install via the native package manager (Linux only).
-5. Verify the checksum when the manifest carries one, extract the archive, run
+6. Verify the checksum when the manifest carries one, extract the archive, run
    Referee's artifact scan, and locate the binary. A scan block purges the
    download; an archive that extracts without an executable fails with
-   `NoBinaryFound`. Either way nothing is linked and nothing is on the roster.
-6. Link the binary (symlink on Linux, `.exe` copy on Windows).
-7. Record the package in the database with `manifest_path` set and
+   `NoBinaryFound`, and a binary built for another platform (a PE `.exe` on
+   Linux) fails with `PlatformMismatch`. Either way nothing is linked and
+   nothing is on the roster.
+7. Link the binary (symlink on Linux, `.exe` copy on Windows).
+8. Record the package in the database with `manifest_path` set and
    `user_installed = true`, then run the `post_install` hook.
 
 ```

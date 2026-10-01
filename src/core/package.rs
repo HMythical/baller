@@ -9,6 +9,90 @@ pub enum PackageSource {
     Cargo { crate_name: String },
 }
 
+/// An operating system B.A.L.L.E.R. installs onto.
+///
+/// Only Linux and Windows exist here: any other host is rejected at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Linux,
+    Windows,
+}
+
+impl Platform {
+    /// The platform this build of baller runs on
+    pub fn host() -> Self {
+        if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Linux
+        }
+    }
+
+    /// The lowercase name used in messages and as a manifest `[source.<os>]` key
+    pub fn name(&self) -> &'static str {
+        match self {
+            Platform::Linux => "linux",
+            Platform::Windows => "windows",
+        }
+    }
+
+    /// Parse a `[source.<os>]` key; only the exact lowercase names match
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "linux" => Some(Platform::Linux),
+            "windows" => Some(Platform::Windows),
+            _ => None,
+        }
+    }
+}
+
+/// Which platforms a source can serve an installable artifact for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceAffinity {
+    /// Serves any host: the OS/arch is resolved per artifact, if at all
+    Agnostic,
+    /// Serves only this platform
+    Only(Platform),
+}
+
+impl SourceAffinity {
+    /// Whether a source with this affinity can install onto `host`
+    pub fn supports(&self, host: Platform) -> bool {
+        match self {
+            SourceAffinity::Agnostic => true,
+            SourceAffinity::Only(platform) => *platform == host,
+        }
+    }
+
+    /// `any`, or the single platform's name
+    pub fn name(&self) -> &'static str {
+        match self {
+            SourceAffinity::Agnostic => "any",
+            SourceAffinity::Only(platform) => platform.name(),
+        }
+    }
+}
+
+impl PackageSource {
+    /// The platforms this source can serve.
+    ///
+    /// Deliberately an exhaustive match rather than derived from a source's
+    /// name, so a new variant cannot be added without deciding its scope.
+    pub fn affinity(&self) -> SourceAffinity {
+        match self {
+            // Chocolatey/NuGet payloads target Windows
+            PackageSource::Chocolatey { .. } => SourceAffinity::Only(Platform::Windows),
+            // Driven by /etc/os-release and a distro package manager
+            PackageSource::System { .. } => SourceAffinity::Only(Platform::Linux),
+            // GitHub picks a host asset per release, the Baller registry decides
+            // server-side, and `cargo install` builds for whatever host runs it
+            PackageSource::GitHub { .. }
+            | PackageSource::BallerRegistry { .. }
+            | PackageSource::Cargo { .. } => SourceAffinity::Agnostic,
+        }
+    }
+}
+
 impl Default for PackageSource {
     fn default() -> Self {
         PackageSource::GitHub {
@@ -238,6 +322,75 @@ mod tests {
             url: "url".to_string(),
         };
         assert_ne!(a, c);
+    }
+
+    fn every_source() -> Vec<PackageSource> {
+        vec![
+            PackageSource::GitHub {
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+            },
+            PackageSource::BallerRegistry {
+                url: "https://reg.example.com".to_string(),
+            },
+            PackageSource::Chocolatey {
+                feed_url: "https://feed.example.com".to_string(),
+            },
+            PackageSource::System {
+                manager: "apt".to_string(),
+            },
+            PackageSource::Cargo {
+                crate_name: "c".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_source_affinity_mapping() {
+        let affinities: Vec<SourceAffinity> =
+            every_source().iter().map(PackageSource::affinity).collect();
+        assert_eq!(
+            affinities,
+            vec![
+                SourceAffinity::Agnostic,
+                SourceAffinity::Agnostic,
+                SourceAffinity::Only(Platform::Windows),
+                SourceAffinity::Only(Platform::Linux),
+                SourceAffinity::Agnostic,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_source_affinity_supports_matching_hosts_only() {
+        assert!(SourceAffinity::Agnostic.supports(Platform::Linux));
+        assert!(SourceAffinity::Agnostic.supports(Platform::Windows));
+        assert!(SourceAffinity::Only(Platform::Linux).supports(Platform::Linux));
+        assert!(!SourceAffinity::Only(Platform::Linux).supports(Platform::Windows));
+        assert!(SourceAffinity::Only(Platform::Windows).supports(Platform::Windows));
+        assert!(!SourceAffinity::Only(Platform::Windows).supports(Platform::Linux));
+    }
+
+    #[test]
+    fn test_platform_names_round_trip() {
+        for platform in [Platform::Linux, Platform::Windows] {
+            assert_eq!(Platform::from_name(platform.name()), Some(platform));
+        }
+        assert_eq!(Platform::from_name("mac"), None);
+        assert_eq!(Platform::from_name("win"), None);
+        assert_eq!(Platform::from_name("Linux"), None);
+        assert_eq!(SourceAffinity::Agnostic.name(), "any");
+        assert_eq!(SourceAffinity::Only(Platform::Windows).name(), "windows");
+    }
+
+    #[test]
+    fn test_platform_host_matches_the_build_target() {
+        let expected = if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Linux
+        };
+        assert_eq!(Platform::host(), expected);
     }
 
     #[test]

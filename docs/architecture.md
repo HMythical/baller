@@ -143,6 +143,41 @@ Linux:   request → [Baller Registry] ?→ [System PM]  ?→ [Cargo] ?→ [GitH
 
 See [docs/registry.md](registry.md) for the per-source details.
 
+## Platform Scoping
+
+The chain decides *where* to look; three layers decide whether what it found
+can run on this host. Each holds on its own, and together they mean no
+artifact built for another platform can be installed, whatever the manifest,
+the `--source` flag or a registry says:
+
+1. **Source affinity** — `PackageSource::affinity()` (`core/package.rs`) maps
+   every source to `Only(Windows)` (Chocolatey), `Only(Linux)` (System) or
+   `Agnostic` (GitHub, Baller, Cargo) as an exhaustive match, so a new source
+   cannot be added without deciding its scope. The one gate,
+   `ensure_installable()` in `core/registry.rs`, checks that affinity and the
+   package's `architectures` allow-list. It runs where a source is *used*, not
+   where it is declared: on `build`'s effective source, on `--source` before
+   any fetch (`ensure_source_supported`), and on every package `draft`,
+   `substitute` and `update` would install, before the dry run, any hook or
+   any download. The System host-manager probe (`build`'s
+   `ensure_system_source_supported`) is a separate *capability* check and runs
+   after it.
+2. **Platform-scoped manifests** — `[source.linux]` / `[source.windows]` tables
+   are resolved for the host inside `ManifestParser`, so `Package` stays flat
+   and no consumer needs selection logic (see [docs/manifest.md](manifest.md#platform-specific-sources)).
+   The GitHub release selector likewise never picks a `.nupkg` or `.exe`
+   asset on a non-Windows host.
+3. **Artifact verification** — `Downloader::download_and_extract` reads the
+   header of the binary `find_binary_in_dir` located: an ELF on Windows or a
+   PE on Linux is a `PlatformMismatch`; a shebang script or any other file that
+   is not a definite binary passes; an empty file counts as no binary at all.
+   Every install path (`build`, `draft`, `substitute`, both of `update`'s)
+   extracts through this one function, so the check covers them all.
+
+`UnsupportedOs` and `PlatformMismatch` are not `PackageNotFound`, so the
+dependency resolver propagates them: a mismatch anywhere in the graph aborts
+the whole command.
+
 ## Dependency Resolution
 
 `resolve_deps()` in `dep_solver.rs`:

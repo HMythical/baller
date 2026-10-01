@@ -6,8 +6,8 @@ use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::downloader::DownloadedPackage;
 use crate::core::hooks::{run_hook, HookType};
-use crate::core::package::{Package, PackageSource};
-use crate::core::registry::RegistrySource;
+use crate::core::package::{Package, PackageSource, Platform};
+use crate::core::registry::{ensure_installable, ensure_source_supported, RegistrySource};
 use crate::error::error::BallError;
 use crate::http::cargo::install_cargo_package;
 use crate::http::system::install_system_package;
@@ -36,10 +36,10 @@ pub fn execute_draft(
 ) -> Result<(), BallError> {
     let quiet = ctx.flags.is_quiet();
 
-    if opts.source == Some(RegistrySource::System) && !cfg!(target_os = "linux") {
-        return Err(BallError::UnsupportedOs(
-            "the system source is only available on Linux".to_string(),
-        ));
+    // A pinned source that cannot serve this host fails before anything is
+    // fetched from it.
+    if let Some(source) = &opts.source {
+        ensure_source_supported(source, package_name, Platform::host())?;
     }
 
     tracing::info!("{} {}...", "Drafting".green().bold(), package_name.cyan(),);
@@ -78,6 +78,16 @@ pub fn execute_draft(
         );
         resolved.packages
     };
+
+    // Every package this draft would install — the root and each dependency
+    // the chain resolved — must be able to run on this host. Gated before the
+    // dry-run report and before the install loop, which has no rollback, so a
+    // mismatch deep in the graph cannot leave earlier packages installed.
+    for candidate in &result_packages {
+        if !installed.contains_key(&candidate.name) || opts.force {
+            ensure_installable(candidate)?;
+        }
+    }
 
     for candidate in &result_packages {
         tracing::debug!(

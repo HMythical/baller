@@ -84,8 +84,8 @@ The goal is to complement existing package managers (Chocolatey, apt, npm, NuGet
 
 - **GitHub Releases** — download the release asset built for your OS and architecture (Rust target triples, Go-style `os_arch` names and bare arch tokens are all understood; a release with no build for your platform is an error, not a wrong download)
 - **Baller Registry** — custom registry API
-- **Chocolatey/NuGet** — install from the Chocolatey community feed (SHA-512 verified)
-- **System Package Manager** — wraps apt, dnf, or pacman for native Linux packages
+- **Chocolatey/NuGet** (Windows only) — install from the Chocolatey community feed (SHA-512 verified)
+- **System Package Manager** (Linux only) — wraps apt, dnf, or pacman for native Linux packages
 - **Cargo** — installs crates from crates.io through the local cargo toolchain
 
 ### Security

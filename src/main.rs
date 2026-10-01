@@ -33,7 +33,10 @@ fn main() {
 
 fn entry() -> Result<(), BallError> {
     if !cfg!(target_os = "linux") && !cfg!(target_os = "windows") {
-        return Err(BallError::UnsupportedOs(env::consts::OS.to_string()));
+        return Err(BallError::UnsupportedOs(format!(
+            "the following OS is unsupported: {}\n\t please use Windows or Linux",
+            env::consts::OS
+        )));
     }
 
     let command: BallerCommand = BallerCommand::parse_command()?;
@@ -726,13 +729,18 @@ sha256 = "cafebabe"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn test_build_assembles_from_local_archive() {
-        use std::io::Write;
+    /// The first bytes of a real executable for each platform
+    const ELF_BYTES: &[u8] = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    const PE_BYTES: &[u8] = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00";
 
-        let dir = test_dir();
-        let cache_dir = dir.join("cache");
-        std::fs::create_dir_all(&cache_dir).unwrap();
+    /// Seed `cache_dir` with a zip holding `payload` as the package binary,
+    /// cached under `url` so `download_and_extract` never hits the network.
+    fn seed_local_archive(
+        cache_dir: &std::path::Path,
+        url: &str,
+        payload: &[u8],
+    ) -> std::path::PathBuf {
+        use std::io::Write;
 
         let binary_name = if cfg!(target_os = "windows") {
             "local-pkg.exe"
@@ -740,43 +748,67 @@ sha256 = "cafebabe"
             "local-pkg"
         };
 
-        let archive_path = dir.join("local-pkg.zip");
-        {
-            let file = std::fs::File::create(&archive_path).unwrap();
-            let mut zip = zip::ZipWriter::new(file);
-            zip.start_file(binary_name, zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"binary contents").unwrap();
-            zip.finish().unwrap();
-        }
+        let archive_path = cache_dir.join(fs::sanitize_filename(url));
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(binary_name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+        archive_path
+    }
 
+    fn local_manifest(dir: &std::path::Path, url: &str) -> std::path::PathBuf {
         let manifest_path = dir.join("baller.toml");
         std::fs::write(
             &manifest_path,
-            r#"name = "local-pkg"
+            format!(
+                r#"name = "local-pkg"
 version = "1.2.3"
 description = "assembled from a local archive"
+download_url = "{}"
 
 [source]
 type = "github"
 owner = "owner"
 repo = "local-pkg"
 "#,
+                url
+            ),
         )
         .unwrap();
+        manifest_path
+    }
+
+    #[test]
+    fn test_build_assembles_from_local_archive() {
+        let dir = test_dir();
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // A real executable header for this host: before the artifact check,
+        // this test passed with `b"binary contents"` as the "binary".
+        let native = if cfg!(target_os = "windows") {
+            PE_BYTES
+        } else {
+            ELF_BYTES
+        };
+        let url = "https://example.test/local-pkg.zip";
+        seed_local_archive(&cache_dir, url, native);
+        let manifest_path = local_manifest(&dir, url);
 
         let pkg = ManifestParser::parse_auto(&manifest_path).unwrap();
         ManifestParser::validate(&pkg).unwrap();
+        crate::core::registry::ensure_installable(&pkg).unwrap();
 
         let downloader = Downloader::new(cache_dir.clone(), HttpClient::new().unwrap());
-        let extract_dir = cache_dir.join(format!("{}-{}", pkg.name, pkg.version));
-        std::fs::create_dir_all(&extract_dir).unwrap();
-        downloader
-            .extract_archive(&archive_path, &extract_dir)
-            .unwrap();
-
-        let binary_path = fs::find_binary_in_dir(&extract_dir, &pkg.name).unwrap();
-        assert_eq!(binary_path.file_name().unwrap(), binary_name);
+        let downloaded = downloader.download_and_extract(&pkg, false).unwrap();
+        let extract_dir = downloaded.extract_dir.clone();
+        let binary_path = downloaded.binary_path.unwrap();
+        assert_eq!(
+            binary_path,
+            fs::find_binary_in_dir(&extract_dir, &pkg.name).unwrap()
+        );
 
         let db = DbManager::init_at_path(&dir.join("build.db")).unwrap();
         let manifest_str = manifest_path.to_string_lossy().to_string();
@@ -797,5 +829,86 @@ repo = "local-pkg"
         assert_eq!(recorded.source, "github");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_rejects_a_foreign_binary_from_local_archive() {
+        let dir = test_dir();
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // PE on a Linux host (the Chocolatey leak), ELF on a Windows host
+        let foreign = if cfg!(target_os = "windows") {
+            ELF_BYTES
+        } else {
+            PE_BYTES
+        };
+        let url = "https://example.test/local-pkg.zip";
+        let archive_path = seed_local_archive(&cache_dir, url, foreign);
+        let manifest_path = local_manifest(&dir, url);
+
+        let pkg = ManifestParser::parse_auto(&manifest_path).unwrap();
+        let downloader = Downloader::new(cache_dir.clone(), HttpClient::new().unwrap());
+        let err = downloader.download_and_extract(&pkg, false).unwrap_err();
+        assert!(
+            matches!(err, BallError::PlatformMismatch { .. }),
+            "expected PlatformMismatch, got {:?}",
+            err
+        );
+
+        let extract_dir = cache_dir.join(format!("{}-{}", pkg.name, pkg.version));
+        assert!(!extract_dir.exists(), "extract dir must be cleaned up");
+        assert!(archive_path.is_file(), "cached archive must survive");
+
+        // Nothing reached the roster: the error fires before any caller links
+        // or records, so a fresh database has no entry for the package.
+        let db = DbManager::init_at_path(&dir.join("build.db")).unwrap();
+        assert!(!db.package_exists("local-pkg").unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_platform_errors_abort_dependency_resolution() {
+        use crate::core::dep_solver::resolve_deps_with_root;
+        use crate::core::registry::RegistryIndex;
+        use std::collections::HashMap;
+
+        // Only `PackageNotFound` is tolerated by the resolver, and only for
+        // system virtual packages; a platform error on a deep dependency must
+        // abort the whole command instead of being skipped.
+        struct Mismatching;
+        impl RegistryIndex for Mismatching {
+            fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
+                match name {
+                    "mid" => {
+                        let mut pkg = Package::new("mid", "1.0.0");
+                        pkg.dependencies = Some(vec!["leaf".to_string()]);
+                        Ok(pkg)
+                    }
+                    _ => Err(BallError::PlatformMismatch {
+                        package: name.to_string(),
+                        version: "1.0.0".to_string(),
+                        format: "PE/Windows executable".to_string(),
+                        binary: "leaf.exe".to_string(),
+                        archive: None,
+                    }),
+                }
+            }
+        }
+
+        let mut root = Package::new("root", "1.0.0");
+        root.dependencies = Some(vec!["mid".to_string()]);
+        let result = resolve_deps_with_root(&root, &Mismatching, &HashMap::new());
+        assert!(matches!(result, Err(BallError::PlatformMismatch { .. })));
+
+        struct Unsupported;
+        impl RegistryIndex for Unsupported {
+            fn fetch_package(&self, name: &str) -> Result<Package, BallError> {
+                Err(BallError::UnsupportedOs(format!("'{}' unsupported", name)))
+            }
+        }
+        let result = resolve_deps_with_root(&root, &Unsupported, &HashMap::new());
+        assert!(matches!(result, Err(BallError::UnsupportedOs(_))));
     }
 }

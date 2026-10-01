@@ -115,6 +115,13 @@ impl HooksConfig {
     }
 }
 
+/// One `key = value` line of `baller.conf`, with its 0-based line index
+struct ConfigEntry {
+    line: usize,
+    key: String,
+    value: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct BallerConfig {
     pub install_dir: PathBuf,
@@ -214,9 +221,9 @@ impl BallerConfig {
             .read_to_string(&mut config_content)
             .map_err(BallError::FileIoErr)?;
 
-        let key_value_map = Self::check_config_file(config_content)?;
+        let entries = Self::check_config_file(config_content)?;
 
-        for (line, (key, value)) in key_value_map {
+        for ConfigEntry { line, key, value } in entries {
             match key.as_str() {
                 "install_dir" => {
                     config.install_dir = PathBuf::from(&value);
@@ -330,11 +337,15 @@ impl BallerConfig {
         Ok(config)
     }
 
-    fn check_config_file(
-        config_content: String,
-    ) -> Result<HashMap<usize, (String, String)>, BallError> {
+    /// Validate `baller.conf` line by line, returning its entries in file order.
+    ///
+    /// Sections do not namespace keys, so a key may appear once in the whole
+    /// file: a repeat is an error rather than a silent override, since which
+    /// line should win is exactly what the user has not said.
+    fn check_config_file(config_content: String) -> Result<Vec<ConfigEntry>, BallError> {
         let mut errors: Vec<String> = Vec::new();
-        let mut key_value_map = HashMap::new();
+        let mut entries = Vec::new();
+        let mut first_seen: HashMap<String, usize> = HashMap::new();
         for (line, raw_line) in config_content.lines().enumerate() {
             let trimmed = raw_line.trim();
 
@@ -375,8 +386,24 @@ impl BallerConfig {
             if value.is_empty() {
                 errors.push(format!("invalid config at line[{}]: empty value", line + 1));
             }
+            if !key.is_empty() {
+                if let Some(first) = first_seen.get(key) {
+                    errors.push(format!(
+                        "duplicate key '{}' at line[{}]: already set at line[{}]",
+                        key,
+                        line + 1,
+                        first + 1
+                    ));
+                } else {
+                    first_seen.insert(key.to_string(), line);
+                }
+            }
 
-            key_value_map.insert(line, (key.to_string(), value.to_string()));
+            entries.push(ConfigEntry {
+                line,
+                key: key.to_string(),
+                value: value.to_string(),
+            });
         }
 
         if !errors.is_empty() {
@@ -386,7 +413,7 @@ impl BallerConfig {
             )));
         }
 
-        Ok(key_value_map)
+        Ok(entries)
     }
 }
 
@@ -765,6 +792,68 @@ post_update = off
         let (path, dir) = write_config(content);
         let result = BallerConfig::parse_config(&path);
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn invalid_config(result: Result<BallerConfig, BallError>) -> String {
+        match result {
+            Err(BallError::InvalidConfig(msg)) => msg,
+            other => panic!("expected InvalidConfig, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_config_rejects_duplicate_key() {
+        let content = "[registry]\nsource_order = baller\nballer_enabled = true\n\n[registry]\nsource_order = chocolatey\n";
+        let (path, dir) = write_config(content);
+        // Was nondeterministic: the winner depended on HashMap iteration order
+        for _ in 0..20 {
+            let msg = invalid_config(BallerConfig::parse_config(&path));
+            assert!(
+                msg.contains("duplicate key 'source_order' at line[6]: already set at line[2]"),
+                "{}",
+                msg
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_rejects_duplicate_key_across_sections() {
+        // Sections do not namespace keys, so the same key under two sections
+        // is the same setting set twice
+        let content = "[baller]\npre_install = true\n[hooks]\npre_install = false\n";
+        let (path, dir) = write_config(content);
+        let msg = invalid_config(BallerConfig::parse_config(&path));
+        assert!(
+            msg.contains("duplicate key 'pre_install' at line[4]"),
+            "{}",
+            msg
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_reports_every_duplicate() {
+        let content = "github_enabled = true\ngithub_enabled = false\ngithub_enabled = true\ncargo_enabled = true\ncargo_enabled = true\n";
+        let (path, dir) = write_config(content);
+        let msg = invalid_config(BallerConfig::parse_config(&path));
+        assert!(msg.contains("duplicate key 'github_enabled' at line[2]: already set at line[1]"));
+        assert!(msg.contains("duplicate key 'github_enabled' at line[3]: already set at line[1]"));
+        assert!(msg.contains("duplicate key 'cargo_enabled' at line[5]: already set at line[4]"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_config_reports_the_first_bad_line_deterministically() {
+        // Entries are applied in file order, so with two bad values the error
+        // always names the earlier line
+        let content = "[hooks]\npre_install = maybe\npost_install = perhaps\n";
+        let (path, dir) = write_config(content);
+        for _ in 0..20 {
+            let msg = invalid_config(BallerConfig::parse_config(&path));
+            assert!(msg.contains("'maybe' at line[2]"), "{}", msg);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

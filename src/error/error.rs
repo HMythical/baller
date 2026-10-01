@@ -17,6 +17,9 @@ pub struct BlockedPackage {
 
 #[derive(Debug)]
 pub enum BallError {
+    /// The host cannot run what was asked for: an unsupported OS at startup,
+    /// or a package whose source or architectures exclude this host. The
+    /// message is complete and displayed verbatim.
     UnsupportedOs(String),
     #[allow(dead_code)]
     UnsupportedCommand(String),
@@ -65,6 +68,26 @@ pub enum BallError {
         /// The extract directory that was searched
         dir: String,
         /// The cached archive it came from, when one is known
+        archive: Option<String>,
+    },
+    /// An extracted binary is a definite executable for another platform,
+    /// e.g. a PE/Windows `.exe` found on a Linux host.
+    ///
+    /// The backstop behind the source and asset checks: raised from the
+    /// artifact's own bytes, whichever source supplied it. A hard error for
+    /// the same reason as `NoMatchingAsset`, so nothing is linked or recorded.
+    /// Like `NoBinaryFound`, the host (`<os>-<arch>`) is rendered on display,
+    /// which keeps `BallError` under clippy's `result_large_err` limit.
+    PlatformMismatch {
+        /// The package that was extracted
+        package: String,
+        /// The version that was extracted
+        version: String,
+        /// What the binary's header says it is, e.g. "PE/Windows executable"
+        format: String,
+        /// The rejected binary, inside the (removed) extract directory
+        binary: String,
+        /// The cached archive it came from, which is kept
         archive: Option<String>,
     },
     /// Referee's advisory gate refused the plan.
@@ -116,11 +139,7 @@ pub enum BallError {
 impl fmt::Display for BallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BallError::UnsupportedOs(os) => write!(
-                f,
-                "the following OS is unsupported: {}\n\t please use Windows or Linux",
-                os
-            ),
+            BallError::UnsupportedOs(msg) => write!(f, "{}", msg),
 
             BallError::UnsupportedCommand(command) => write!(
                 f,
@@ -278,6 +297,24 @@ impl fmt::Display for BallError {
                 archive.as_deref().unwrap_or("<none>")
             ),
 
+            BallError::PlatformMismatch {
+                package,
+                version,
+                format,
+                binary,
+                archive,
+            } => write!(
+                f,
+                "package '{}' v{} ships a binary this {}-{} host cannot run ({}) — rejected {} (archive: {})",
+                package,
+                version,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                format,
+                binary,
+                archive.as_deref().unwrap_or("<none>")
+            ),
+
             BallError::UnresolvedDependencies(names) => write!(
                 f,
                 "unresolved dependencies: {} could not be found in any configured registry",
@@ -293,10 +330,11 @@ mod tests {
 
     #[test]
     fn test_unsupported_os_display() {
-        let err = BallError::UnsupportedOs("windows".to_string());
-        let msg = format!("{}", err);
-        assert!(msg.contains("windows"));
-        assert!(msg.contains("unsupported"));
+        // Displayed verbatim: the variant also carries platform-gate messages
+        // that must not be wrapped in the startup "unsupported OS" sentence.
+        let msg = "'vim' uses the system source, which only serves linux hosts";
+        let err = BallError::UnsupportedOs(msg.to_string());
+        assert_eq!(format!("{}", err), msg);
     }
 
     #[test]
@@ -450,6 +488,38 @@ mod tests {
             archive: None,
         };
         let msg = format!("{}", err);
+        assert!(msg.contains("archive: <none>"));
+    }
+
+    #[test]
+    fn test_platform_mismatch_display() {
+        let err = BallError::PlatformMismatch {
+            package: "7zip".to_string(),
+            version: "24.8.0".to_string(),
+            format: "PE/Windows executable".to_string(),
+            binary: "/cache/7zip-24.8.0/7zip.exe".to_string(),
+            archive: Some("/cache/7zip.nupkg".to_string()),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("package '7zip' v24.8.0"));
+        let host = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        assert!(msg.contains(&format!("ships a binary this {} host cannot run", host)));
+        assert!(msg.contains("(PE/Windows executable)"));
+        assert!(msg.contains("rejected /cache/7zip-24.8.0/7zip.exe"));
+        assert!(msg.contains("archive: /cache/7zip.nupkg"));
+    }
+
+    #[test]
+    fn test_platform_mismatch_display_without_archive() {
+        let err = BallError::PlatformMismatch {
+            package: "tool".to_string(),
+            version: "1.0.0".to_string(),
+            format: "ELF/Linux executable".to_string(),
+            binary: "C:\\cache\\tool-1.0.0\\tool".to_string(),
+            archive: None,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("host cannot run (ELF/Linux executable)"));
         assert!(msg.contains("archive: <none>"));
     }
 

@@ -125,6 +125,12 @@ pre_update = true
 post_update = true
 ```
 
+Sections group keys for readability but do not namespace them, so each key may
+appear **once** in the whole file. A repeated key — even under a different
+section — is rejected at startup with an error naming both lines
+(`duplicate key 'source_order' at line[7]: already set at line[3]`) rather than
+one silently overriding the other.
+
 ## Dependencies
 
 Key crates used:

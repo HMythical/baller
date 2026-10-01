@@ -5,6 +5,7 @@ use crate::commands::draft::screen_artifact;
 use crate::context::AppContext;
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
+use crate::core::registry::ensure_installable;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
 use crate::utils::fs::confirm;
@@ -51,6 +52,14 @@ pub fn execute_substitute(
 
         resolved.packages
     };
+
+    // Two layers, cheapest and most fundamental first. The replacement and
+    // everything it pulls in must run on this host at all; only then is it
+    // worth asking Referee whether what would run is safe. Both run before the
+    // dry run and before the old package is touched.
+    for candidate in &packages {
+        ensure_installable(candidate)?;
+    }
 
     // Referee Phase A on the replacement, before the old package is touched:
     // a blocked substitution must leave the roster exactly as it found it.

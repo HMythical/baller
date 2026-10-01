@@ -1,4 +1,4 @@
-use crate::core::package::Package;
+use crate::core::package::{Package, Platform};
 use crate::error::error::BallError;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -39,13 +39,19 @@ impl ManifestParser {
     /// # Returns
     /// * `Result<Package, BallError>` - Parsed package or error
     pub fn parse_toml(content: &str) -> Result<Package, BallError> {
+        Self::parse_toml_on(content, Platform::host())
+    }
+
+    /// [`ManifestParser::parse_toml`] as `host` sees it: `host`'s
+    /// `[source.<os>]` table, if any, is the one selected.
+    fn parse_toml_on(content: &str, host: Platform) -> Result<Package, BallError> {
         let raw: toml::Value = toml::from_str(content).map_err(|e| {
             BallError::InvalidConfig(format!("Failed to parse TOML manifest: {}", e))
         })?;
         let value = serde_json::to_value(raw).map_err(|e| {
             BallError::InvalidConfig(format!("Failed to parse TOML manifest: {}", e))
         })?;
-        Self::from_value(value, "TOML")
+        Self::from_value(value, "TOML", host)
     }
 
     /// Parse JSON manifest content
@@ -59,15 +65,20 @@ impl ManifestParser {
     /// # Returns
     /// * `Result<Package, BallError>` - Parsed package or error
     pub fn parse_json(content: &str) -> Result<Package, BallError> {
+        Self::parse_json_on(content, Platform::host())
+    }
+
+    /// [`ManifestParser::parse_json`] as `host` sees it
+    fn parse_json_on(content: &str, host: Platform) -> Result<Package, BallError> {
         let value: Value = serde_json::from_str(content).map_err(|e| {
             BallError::InvalidConfig(format!("Failed to parse JSON manifest: {}", e))
         })?;
-        Self::from_value(value, "JSON")
+        Self::from_value(value, "JSON", host)
     }
 
     /// Normalize a decoded manifest into the flat `Package` shape
-    fn from_value(value: Value, format: &str) -> Result<Package, BallError> {
-        let normalized = normalize_manifest(value)?;
+    fn from_value(value: Value, format: &str, host: Platform) -> Result<Package, BallError> {
+        let normalized = normalize_manifest(value, host)?;
         serde_json::from_value(normalized).map_err(|e| {
             BallError::InvalidConfig(format!("Failed to parse {} manifest: {}", format, e))
         })
@@ -144,7 +155,9 @@ impl ManifestParser {
 /// Rewrite the documented nested manifest layout into the flat `Package` shape.
 ///
 /// Manifests already written in the flat layout pass through untouched.
-fn normalize_manifest(value: Value) -> Result<Value, BallError> {
+/// `[source.<os>]` tables are resolved here, for `host`, so `Package` stays
+/// flat and no consumer needs platform-selection logic of its own.
+fn normalize_manifest(value: Value, host: Platform) -> Result<Value, BallError> {
     let mut map = match value {
         Value::Object(map) => map,
         _ => {
@@ -157,7 +170,7 @@ fn normalize_manifest(value: Value) -> Result<Value, BallError> {
     normalize_checksum(&mut map);
     normalize_architectures(&mut map);
     normalize_dependencies(&mut map)?;
-    normalize_source(&mut map)?;
+    normalize_source(&mut map, host)?;
 
     Ok(Value::Object(map))
 }
@@ -246,9 +259,32 @@ fn normalize_dependencies(map: &mut Map<String, Value>) -> Result<(), BallError>
     Ok(())
 }
 
-/// `[source] type = ".."` becomes the tagged `PackageSource` representation
-fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
-    let source = match map.get("source") {
+/// The `PackageSource` variant names, as the flat layout spells them:
+/// `[source] GitHub = { .. }`, or `[source.GitHub]` as serialization emits it.
+const SOURCE_TAGS: [&str; 5] = ["GitHub", "BallerRegistry", "Chocolatey", "System", "Cargo"];
+
+/// Package fields a `[source.<os>]` table may override, typed or not
+const PLATFORM_ARTIFACT_FIELDS: [&str; 3] = ["download_url", "sha256", "hash_algorithm"];
+
+/// One validated `[source.<os>]` table
+struct PlatformEntry {
+    /// The normalized source, when the table declares one (`type` or a flat tag)
+    source: Option<Value>,
+    /// `download_url` / `sha256` / `hash_algorithm` overrides for the package
+    overrides: Map<String, Value>,
+}
+
+/// `[source] type = ".."` becomes the tagged `PackageSource` representation,
+/// with `host`'s `[source.<os>]` table applied first.
+///
+/// A plain `[source]` is the fallback on every platform. A `[source.linux]` or
+/// `[source.windows]` table that declares a source (`type`, or a flat tag)
+/// replaces it wholesale on that platform; one that declares none inherits it
+/// and may only override `download_url`, `sha256` and `hash_algorithm`. Every
+/// platform table is validated whichever host parses it, so a typo fails on
+/// both platforms rather than only on the one it targets.
+fn normalize_source(map: &mut Map<String, Value>, host: Platform) -> Result<(), BallError> {
+    let table = match map.get("source") {
         Some(Value::Object(table)) => table.clone(),
         Some(_) => {
             return Err(BallError::InvalidConfig(
@@ -258,6 +294,137 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
         None => return Ok(()),
     };
 
+    let mut fallback = Map::new();
+    let mut selected = None;
+    let mut has_platform_tables = false;
+
+    for (key, value) in table {
+        if let Some(platform) = Platform::from_name(&key) {
+            let entry = match &value {
+                Value::Object(entry) => parse_platform_entry(&key, entry, map)?,
+                _ => {
+                    return Err(BallError::InvalidConfig(format!(
+                        "[source.{}] must be a table",
+                        key
+                    )))
+                }
+            };
+            has_platform_tables = true;
+            if platform == host {
+                selected = Some(entry);
+            }
+        } else if value.is_object() && !SOURCE_TAGS.contains(&key.as_str()) {
+            return Err(BallError::InvalidConfig(format!(
+                "unknown platform table [source.{}]: expected [source.linux] or [source.windows] \
+                 (flat sources are spelled {})",
+                key,
+                SOURCE_TAGS.join(", ")
+            )));
+        } else {
+            fallback.insert(key, value);
+        }
+    }
+
+    // No platform tables: exactly the single-source path manifests always took
+    if !has_platform_tables {
+        let normalized = normalize_source_table(&fallback, map)?;
+        map.insert("source".to_string(), normalized);
+        return Ok(());
+    }
+
+    let fallback = if fallback.is_empty() {
+        None
+    } else {
+        Some(normalize_source_table(&fallback, map)?)
+    };
+
+    let (source, overrides) = match selected {
+        Some(entry) => (entry.source.or(fallback), entry.overrides),
+        None => (fallback, Map::new()),
+    };
+
+    for (field, value) in overrides {
+        map.insert(field, value);
+    }
+
+    // Only other platforms' tables and no fallback: this host gets the default
+    // source, exactly as if `[source]` had been omitted.
+    match source {
+        Some(source) => map.insert("source".to_string(), source),
+        None => map.remove("source"),
+    };
+
+    Ok(())
+}
+
+/// Validate one `[source.<os>]` table and split it into the source it
+/// declares (if any) and the artifact fields it overrides.
+fn parse_platform_entry(
+    key: &str,
+    entry: &Map<String, Value>,
+    root: &Map<String, Value>,
+) -> Result<PlatformEntry, BallError> {
+    if entry.is_empty() {
+        return Err(BallError::InvalidConfig(format!(
+            "[source.{}] is empty: declare a source 'type', or override {}",
+            key,
+            PLATFORM_ARTIFACT_FIELDS.join(", ")
+        )));
+    }
+
+    let mut overrides = Map::new();
+    let mut source_fields = Map::new();
+    for (field, value) in entry {
+        if !PLATFORM_ARTIFACT_FIELDS.contains(&field.as_str()) {
+            source_fields.insert(field.clone(), value.clone());
+            continue;
+        }
+        match value {
+            Value::String(text) if !text.trim().is_empty() => {
+                overrides.insert(field.clone(), value.clone());
+            }
+            _ => {
+                return Err(BallError::InvalidConfig(format!(
+                    "[source.{}] '{}' must be a non-empty string",
+                    key, field
+                )))
+            }
+        }
+    }
+
+    let declares_source = source_fields.contains_key("type")
+        || source_fields
+            .keys()
+            .any(|field| SOURCE_TAGS.contains(&field.as_str()));
+    if declares_source {
+        return Ok(PlatformEntry {
+            source: Some(normalize_source_table(&source_fields, root)?),
+            overrides,
+        });
+    }
+
+    // Source fields with no type would yield a half-populated source
+    if let Some(field) = source_fields.keys().next() {
+        return Err(BallError::InvalidConfig(format!(
+            "[source.{}] sets '{}' without a source 'type': add one to replace [source] on {}, \
+             or move '{}' under [source]",
+            key, field, key, field
+        )));
+    }
+
+    Ok(PlatformEntry {
+        source: None,
+        overrides,
+    })
+}
+
+/// Normalize a single source table through the one `type` switch that knows
+/// how each source is spelled. A table with no `type` is the flat tagged form
+/// and passes through for serde to decode.
+fn normalize_source_table(
+    source: &Map<String, Value>,
+    map: &Map<String, Value>,
+) -> Result<Value, BallError> {
     let source_type = match source.get("type") {
         Some(Value::String(source_type)) => source_type.trim().to_lowercase(),
         Some(_) => {
@@ -265,16 +432,16 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
                 "source 'type' must be a string".to_string(),
             ))
         }
-        None => return Ok(()),
+        None => return Ok(Value::Object(source.clone())),
     };
 
     let normalized = match source_type.as_str() {
         "github" => {
-            let (owner, repo) = github_owner_repo(&source, map)?;
+            let (owner, repo) = github_owner_repo(source, map)?;
             json!({ "GitHub": { "owner": owner, "repo": repo } })
         }
         "baller" | "baller-registry" | "registry" => {
-            let url = string_field(&source, "url").ok_or_else(|| {
+            let url = string_field(source, "url").ok_or_else(|| {
                 BallError::InvalidConfig(
                     "baller registry source requires a 'url' field".to_string(),
                 )
@@ -282,13 +449,13 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
             json!({ "BallerRegistry": { "url": url } })
         }
         "chocolatey" | "choco" => {
-            let feed_url = string_field(&source, "feed_url")
-                .or_else(|| string_field(&source, "url"))
+            let feed_url = string_field(source, "feed_url")
+                .or_else(|| string_field(source, "url"))
                 .unwrap_or_else(|| DEFAULT_CHOCOLATEY_FEED.to_string());
             json!({ "Chocolatey": { "feed_url": feed_url } })
         }
         "system" => {
-            let manager = string_field(&source, "manager").ok_or_else(|| {
+            let manager = string_field(source, "manager").ok_or_else(|| {
                 BallError::InvalidConfig(
                     "system source requires a 'manager' field (apt, dnf, or pacman)".to_string(),
                 )
@@ -296,8 +463,8 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
             json!({ "System": { "manager": manager } })
         }
         "cargo" | "crate" => {
-            let crate_name = string_field(&source, "crate_name")
-                .or_else(|| string_field(&source, "name"))
+            let crate_name = string_field(source, "crate_name")
+                .or_else(|| string_field(source, "name"))
                 .or_else(|| map.get("name").and_then(|v| v.as_str().map(String::from)))
                 .ok_or_else(|| {
                     BallError::InvalidConfig(
@@ -314,8 +481,7 @@ fn normalize_source(map: &mut Map<String, Value>) -> Result<(), BallError> {
         }
     };
 
-    map.insert("source".to_string(), normalized);
-    Ok(())
+    Ok(normalized)
 }
 
 /// Resolve the owner/repo pair for a github source, falling back to the
@@ -928,6 +1094,378 @@ sha256 = "hash"
         let reparsed = ManifestParser::parse_toml(&serialized).unwrap();
         assert_eq!(reparsed.name, "ripgrep");
         assert_eq!(reparsed.source, pkg.source);
+    }
+
+    /// `Package` holds one source, so serialization emits the source already
+    /// selected for the parsing host and drops the other platform's table —
+    /// by design, and documented in docs/manifest.md.
+    #[test]
+    fn test_platform_manifest_round_trips_as_the_selected_flat_source() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.linux]
+type = "system"
+manager = "apt"
+
+[source.windows]
+type = "chocolatey"
+download_url = "https://example.com/tool.nupkg"
+sha256 = "win-hash"
+"#;
+        for host in [Platform::Linux, Platform::Windows] {
+            let pkg = ManifestParser::parse_toml_on(toml, host).unwrap();
+            let serialized = ManifestParser::serialize(&pkg, "toml").unwrap();
+            assert!(!serialized.contains("linux"), "{}", serialized);
+            assert!(!serialized.contains("windows"), "{}", serialized);
+            assert!(!serialized.contains("type ="), "{}", serialized);
+
+            // The emitted flat tag must not be mistaken for a platform table
+            for reparse_host in [Platform::Linux, Platform::Windows] {
+                let reparsed = ManifestParser::parse_toml_on(&serialized, reparse_host).unwrap();
+                assert_eq!(reparsed.source, pkg.source);
+                assert_eq!(reparsed.download_url, pkg.download_url);
+                assert_eq!(reparsed.sha256, pkg.sha256);
+            }
+
+            let json = ManifestParser::serialize(&pkg, "json").unwrap();
+            let reparsed = ManifestParser::parse_json_on(&json, host).unwrap();
+            assert_eq!(reparsed.source, pkg.source);
+        }
+    }
+
+    const PLATFORM_TOML: &str = r#"
+name = "tool"
+version = "1.0.0"
+download_url = "https://example.com/tool-generic.tar.gz"
+sha256 = "generic-hash"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.linux]
+type = "system"
+manager = "apt"
+
+[source.windows]
+type = "chocolatey"
+download_url = "https://example.com/tool.nupkg"
+sha256 = "win-hash"
+"#;
+
+    fn github() -> PackageSource {
+        PackageSource::GitHub {
+            owner: "o".to_string(),
+            repo: "tool".to_string(),
+        }
+    }
+
+    fn apt() -> PackageSource {
+        PackageSource::System {
+            manager: "apt".to_string(),
+        }
+    }
+
+    fn default_chocolatey() -> PackageSource {
+        PackageSource::Chocolatey {
+            feed_url: DEFAULT_CHOCOLATEY_FEED.to_string(),
+        }
+    }
+
+    fn invalid_config(result: Result<Package, BallError>) -> String {
+        match result {
+            Err(BallError::InvalidConfig(msg)) => msg,
+            other => panic!("expected InvalidConfig, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_platform_tables_select_the_host_entry() {
+        let linux = ManifestParser::parse_toml_on(PLATFORM_TOML, Platform::Linux).unwrap();
+        assert_eq!(linux.source, apt());
+        assert_eq!(
+            linux.download_url.as_deref(),
+            Some("https://example.com/tool-generic.tar.gz")
+        );
+        assert_eq!(linux.sha256.as_deref(), Some("generic-hash"));
+
+        let windows = ManifestParser::parse_toml_on(PLATFORM_TOML, Platform::Windows).unwrap();
+        assert_eq!(windows.source, default_chocolatey());
+        assert_eq!(
+            windows.download_url.as_deref(),
+            Some("https://example.com/tool.nupkg")
+        );
+        assert_eq!(windows.sha256.as_deref(), Some("win-hash"));
+    }
+
+    #[test]
+    fn test_platform_tables_in_json_use_the_same_shape() {
+        let json = r#"{
+    "name": "tool",
+    "version": "1.0.0",
+    "source": {
+        "type": "github", "owner": "o", "repo": "tool",
+        "linux": { "type": "system", "manager": "apt" },
+        "windows": { "type": "chocolatey", "sha256": "win-hash" }
+    }
+}"#;
+        let linux = ManifestParser::parse_json_on(json, Platform::Linux).unwrap();
+        assert_eq!(linux.source, apt());
+        assert_eq!(linux.sha256, None);
+
+        let windows = ManifestParser::parse_json_on(json, Platform::Windows).unwrap();
+        assert_eq!(windows.source, default_chocolatey());
+        assert_eq!(windows.sha256.as_deref(), Some("win-hash"));
+
+        let bad = r#"{"name": "tool", "version": "1.0.0", "source": {"mac": {"type": "github"}}}"#;
+        let msg = invalid_config(ManifestParser::parse_json_on(bad, Platform::Linux));
+        assert!(msg.contains("[source.mac]"), "{}", msg);
+    }
+
+    #[test]
+    fn test_linux_table_alone() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source.linux]
+type = "system"
+manager = "apt"
+"#;
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.source, apt());
+
+        // No fallback and no Windows table: the default source, as if
+        // `[source]` had been omitted entirely
+        let windows = ManifestParser::parse_toml_on(toml, Platform::Windows).unwrap();
+        assert_eq!(windows.source, PackageSource::default());
+    }
+
+    #[test]
+    fn test_windows_table_alone() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source.windows]
+type = "choco"
+"#;
+        let windows = ManifestParser::parse_toml_on(toml, Platform::Windows).unwrap();
+        assert_eq!(windows.source, default_chocolatey());
+
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.source, PackageSource::default());
+    }
+
+    #[test]
+    fn test_fallback_is_used_where_no_platform_table_applies() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.windows]
+type = "chocolatey"
+"#;
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.source, github());
+    }
+
+    #[test]
+    fn test_no_platform_tables_parse_identically_on_both_hosts() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source]
+type = "chocolatey"
+"#;
+        // Parsing stays host-agnostic for legacy manifests; the platform gate,
+        // not the parser, is what rejects this on Linux.
+        for host in [Platform::Linux, Platform::Windows] {
+            let pkg = ManifestParser::parse_toml_on(toml, host).unwrap();
+            assert_eq!(pkg.source, default_chocolatey());
+        }
+    }
+
+    #[test]
+    fn test_typed_platform_table_replaces_the_fallback_wholesale() {
+        // The fallback's github `url` must not leak into chocolatey's
+        // `feed_url`, which also accepts a `url` spelling
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source]
+type = "github"
+url = "https://github.com/o/tool"
+
+[source.windows]
+type = "chocolatey"
+"#;
+        let windows = ManifestParser::parse_toml_on(toml, Platform::Windows).unwrap();
+        assert_eq!(windows.source, default_chocolatey());
+    }
+
+    #[test]
+    fn test_untyped_platform_table_inherits_and_overrides_download_url() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+download_url = "https://example.com/tool-generic.tar.gz"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.linux]
+download_url = "https://example.com/tool-linux.tar.gz"
+"#;
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.source, github());
+        assert_eq!(
+            linux.download_url.as_deref(),
+            Some("https://example.com/tool-linux.tar.gz")
+        );
+
+        let windows = ManifestParser::parse_toml_on(toml, Platform::Windows).unwrap();
+        assert_eq!(windows.source, github());
+        assert_eq!(
+            windows.download_url.as_deref(),
+            Some("https://example.com/tool-generic.tar.gz")
+        );
+    }
+
+    #[test]
+    fn test_platform_sha256_overrides_flat_and_checksum_table() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[checksum]
+sha256 = "table-hash"
+algorithm = "SHA512"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.linux]
+sha256 = "linux-hash"
+
+[source.windows]
+sha256 = "windows-hash"
+hash_algorithm = "SHA256"
+"#;
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.sha256.as_deref(), Some("linux-hash"));
+        // Fields the platform table does not set are inherited
+        assert_eq!(linux.hash_algorithm.as_deref(), Some("SHA512"));
+
+        let windows = ManifestParser::parse_toml_on(toml, Platform::Windows).unwrap();
+        assert_eq!(windows.sha256.as_deref(), Some("windows-hash"));
+        assert_eq!(windows.hash_algorithm.as_deref(), Some("SHA256"));
+    }
+
+    #[test]
+    fn test_platform_table_may_use_the_flat_tagged_form() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source.linux.System]
+manager = "apt"
+"#;
+        let linux = ManifestParser::parse_toml_on(toml, Platform::Linux).unwrap();
+        assert_eq!(linux.source, apt());
+    }
+
+    #[test]
+    fn test_unknown_platform_key_is_rejected_by_name() {
+        for key in ["mac", "win", "Linux", "github"] {
+            let toml = format!(
+                "name = \"tool\"\nversion = \"1.0.0\"\n\n[source.{}]\ntype = \"github\"\n",
+                key
+            );
+            for host in [Platform::Linux, Platform::Windows] {
+                let msg = invalid_config(ManifestParser::parse_toml_on(&toml, host));
+                assert!(msg.contains(&format!("[source.{}]", key)), "{}", msg);
+                assert!(
+                    msg.contains("[source.linux] or [source.windows]"),
+                    "{}",
+                    msg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty_platform_table_is_rejected() {
+        let toml = "name = \"tool\"\nversion = \"1.0.0\"\n\n[source.linux]\n";
+        // Rejected on the other host too, not only where it would apply
+        for host in [Platform::Linux, Platform::Windows] {
+            let msg = invalid_config(ManifestParser::parse_toml_on(toml, host));
+            assert!(msg.contains("[source.linux] is empty"), "{}", msg);
+        }
+    }
+
+    #[test]
+    fn test_untyped_platform_table_with_source_fields_is_rejected() {
+        let toml = r#"
+name = "tool"
+version = "1.0.0"
+
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+[source.linux]
+manager = "apt"
+"#;
+        let msg = invalid_config(ManifestParser::parse_toml_on(toml, Platform::Windows));
+        assert!(msg.contains("[source.linux] sets 'manager'"), "{}", msg);
+        assert!(msg.contains("without a source 'type'"), "{}", msg);
+    }
+
+    #[test]
+    fn test_platform_table_errors_surface_on_every_host() {
+        let bad_type = "name = \"t\"\nversion = \"1\"\n\n[source.windows]\ntype = \"npm\"\n";
+        let msg = invalid_config(ManifestParser::parse_toml_on(bad_type, Platform::Linux));
+        assert!(msg.contains("unknown source type 'npm'"), "{}", msg);
+
+        let no_manager = "name = \"t\"\nversion = \"1\"\n\n[source.linux]\ntype = \"system\"\n";
+        let msg = invalid_config(ManifestParser::parse_toml_on(no_manager, Platform::Windows));
+        assert!(msg.contains("requires a 'manager' field"), "{}", msg);
+
+        let blank_url = "name = \"t\"\nversion = \"1\"\n\n[source.linux]\ndownload_url = \" \"\n";
+        let msg = invalid_config(ManifestParser::parse_toml_on(blank_url, Platform::Windows));
+        assert!(
+            msg.contains("'download_url' must be a non-empty string"),
+            "{}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_platform_key_must_be_a_table() {
+        let json = r#"{"name": "t", "version": "1", "source": {"type": "github", "repo": "t", "owner": "o", "linux": "apt"}}"#;
+        let msg = invalid_config(ManifestParser::parse_json_on(json, Platform::Linux));
+        assert!(msg.contains("[source.linux] must be a table"), "{}", msg);
     }
 
     #[test]

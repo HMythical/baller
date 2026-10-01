@@ -8,7 +8,9 @@ and consumed by [`baller build`](commands.md).
 `[checksum]`, `[architectures]`, `[dependencies]` tables) and the *flat* layout
 that mirrors the internal `Package` struct. The parser normalizes the nested
 layout into the flat model, so the two are interchangeable. Serialization always
-emits the flat layout.
+emits the flat layout, with any [`[source.<os>]`](#platform-specific-sources)
+table already resolved for the host that parsed the manifest — the other
+platform's table is not carried over.
 
 ## TOML Format (nested)
 
@@ -89,7 +91,7 @@ flat `dependencies` array, which is fine:
 | `type` | Extra fields | Notes |
 |---|---|---|
 | `github` | `owner`, `repo` | `owner`/`repo` may be omitted when `repository` (or a source `url`) is a github.com URL; `repo` otherwise defaults to `name` |
-| `chocolatey` (`choco`) | `feed_url` (or `url`) | Defaults to `https://community.chocolatey.org/api/v2` |
+| `chocolatey` (`choco`) | `feed_url` (or `url`) | Defaults to `https://community.chocolatey.org/api/v2`; Windows only |
 | `baller` (`registry`) | `url` | Required |
 | `system` | `manager` | One of `apt`, `dnf`, `pacman`; Linux only |
 | `cargo` (`crate`) | `crate_name` (or `name`) | Defaults to the package `name`; installed with `cargo install` |
@@ -97,10 +99,77 @@ flat `dependencies` array, which is fine:
 Omitting `[source]` entirely leaves the default GitHub source, in which case the
 manifest needs a `download_url`. An unknown `type` is a parse error.
 
+Sources are platform-scoped: `chocolatey` serves only Windows hosts and `system`
+only Linux hosts, while `github`, `baller` and `cargo` serve both. `build`
+rejects a source the host cannot use **before** the dry run, before any
+lifecycle hook and before anything is downloaded, with an error naming the
+package, the source, the host and the fix:
+
+```
+[Error]: 'tool' uses the chocolatey source, which only serves windows hosts, so it cannot be installed on linux — declare a [source.linux] table for this platform in its manifest, or pass a different --source
+```
+
 The equivalent flat spelling uses the tagged variant name directly —
 `[source] GitHub = { owner = "..", repo = ".." }`, `BallerRegistry = { url = ".." }`,
 `Chocolatey = { feed_url = ".." }`, `System = { manager = ".." }`, or
 `Cargo = { crate_name = ".." }`.
+
+## Platform-specific Sources
+
+A package that ships differently per platform declares a `[source.linux]` and/or
+`[source.windows]` table beside (or instead of) the plain `[source]`:
+
+```toml
+name = "tool"
+version = "1.0.0"
+
+# The fallback, used on any platform with no table of its own
+[source]
+type = "github"
+owner = "o"
+repo = "tool"
+
+# Declares no type: keeps the github source above and overrides the artifact
+[source.linux]
+download_url = "https://github.com/o/tool/releases/download/v1.0.0/tool-linux.tar.gz"
+sha256 = "aaa..."
+
+# Declares a type: replaces [source] wholesale on Windows
+[source.windows]
+type = "chocolatey"
+```
+
+The table for the host doing the parse is selected when the manifest is read,
+so the rest of baller only ever sees one source:
+
+- **A table that declares a source** — `type = ".."`, or the flat tagged form
+  (`[source.linux.System]` with `manager = "apt"`) — **replaces** `[source]` on
+  that platform. No field is inherited, so a github `url` cannot leak into a
+  chocolatey `feed_url`.
+- **A table that declares no source** inherits `[source]` and may only set
+  `download_url`, `sha256` and `hash_algorithm`. These override the top-level
+  fields (including `[checksum]`) on that platform; fields it leaves out are
+  inherited.
+- **No table for the host** → `[source]` is used. With no `[source]` either, the
+  host gets the default source, exactly as if `[source]` had been omitted.
+- A manifest with **no platform tables** parses exactly as it always did.
+
+Every platform table is validated on every host, so a mistake fails on both
+platforms rather than only the one it targets. These are parse errors:
+
+| Manifest | Error |
+|---|---|
+| `[source.mac]`, `[source.win]`, `[source.Linux]` … | `unknown platform table [source.mac]: expected [source.linux] or [source.windows] …` |
+| `[source.linux]` with no keys | `[source.linux] is empty: declare a source 'type', or override download_url, sha256, hash_algorithm` |
+| `[source.linux]` with `manager = "apt"` but no `type` | `[source.linux] sets 'manager' without a source 'type': …` |
+| `download_url = ""` (or a non-string) in a platform table | `[source.linux] 'download_url' must be a non-empty string` |
+| `linux = "apt"` inside `[source]` | `[source.linux] must be a table` |
+
+JSON manifests use the same shape: `"source": { "type": "github", …,
+"linux": { … }, "windows": { … } }`.
+
+`--source` on `build` still overrides everything, platform tables included, and
+still discards the manifest `download_url`.
 
 ## Grouped Tables
 
@@ -125,9 +194,20 @@ A flat field wins when both are present (`sha256` beats `[checksum] sha256`).
 | `repository` | string | no | Source repository URL |
 | `download_url` | string | no | Direct download URL for archive |
 | `sha256` | string | no | Expected SHA-256 hash of archive |
+| `hash_algorithm` | string | no | Algorithm `sha256` is in: `SHA256` (default) or `SHA512` (base64, as Chocolatey publishes it) |
 | `dependencies` | array | no | List of dependency strings |
-| `architectures` | array | no | Supported CPU architectures |
+| `architectures` | array | no | CPU architectures the package runs on — an enforced allow-list (see below) |
 | `advisory` | table | no | Where this package's known-issue surface lives — see below |
+
+### Architectures
+
+`architectures` (or `[architectures] supported`) is checked against the host's
+CPU before anything is installed. A host that is not listed fails with
+`'tool' only supports x86_64 (its declared architectures), not this
+linux-aarch64 host`, before any hook runs. Common aliases match each other:
+`x86_64` = `amd64` = `x64` = `x86-64`, and `aarch64` = `arm64`. An absent or
+empty list places no restriction. The same check applies to packages a
+registry returns with an `architectures` list.
 
 ## Advisory Identity
 

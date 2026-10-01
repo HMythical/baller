@@ -29,6 +29,24 @@ the process exits with a non-zero status code.
 | `RefereeUnavailable` | The advisory service could not be reached. Fatal only under `fail_policy = fail-closed`; the default fail-open path reports the packages as `unverified` and continues |
 | `RefereeAuditFailed` | `baller referee audit`/`check`/`scan --fail-on block\|warn` found an advisory or re-scan finding at or above that level; each package is named with the phase that tripped it. Raised after the report is printed, only to make the exit code non-zero for CI; nothing was changed |
 
+## Database Startup Errors
+
+Every command opens the package database (`<baller dir>/db/baller.db`) before
+it does anything else, in four steps. A failure in any of them stops the
+command at startup with a single `InvalidConfig` error naming the step:
+
+| Step | Message starts with |
+|------|---------------------|
+| Open the file | `failed to open database at <path>` |
+| Apply pragmas | `failed to set pragmas` (a file that is not a SQLite database fails here) |
+| Create missing tables | `failed to create schema` |
+| Migrate the schema | `failed to inspect installed_packages schema for user_installed column` or `failed to migrate installed_packages: could not add user_installed column` |
+
+The migration adds the `user_installed` column to databases created before it
+existed; a healthy one is migrated silently. A database that gets past startup
+is fully migrated, so a later `query error` from an unrelated command points at
+a real defect, not at a migration that silently did not happen.
+
 ## GitHub Source Asset Errors
 
 A GitHub release usually ships one asset per platform, named with no agreed

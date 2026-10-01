@@ -151,19 +151,7 @@ impl DbManager {
         )
         .map_err(|e| BallError::InvalidConfig(format!("failed to create schema: {}", e)))?;
 
-        // Migration: add user_installed column to existing databases that don't have it
-        let has_column: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='user_installed'",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
-        if has_column == 0 {
-            let _ = conn.execute(
-                "ALTER TABLE installed_packages ADD COLUMN user_installed BOOLEAN NOT NULL DEFAULT 1",
-                [],
-            );
-            // Backfill: entries without the column get default value of 1
-        }
+        Self::migrate_user_installed(&conn)?;
 
         // Migration: add the advisory column to databases written before
         // Referee existed. Existing rows get NULL, which reads as "declared
@@ -183,6 +171,43 @@ impl DbManager {
         }
 
         Ok(Self { conn })
+    }
+
+    /// Adds the `user_installed` column to an `installed_packages` table created
+    /// before the column existed. Does nothing when the column is already there, so
+    /// it is safe on a fresh database and on every later initialization.
+    ///
+    /// Returns `Err(InvalidConfig)` when the schema cannot be inspected or the
+    /// column cannot be added, with a message naming which of the two failed.
+    fn migrate_user_installed(conn: &Connection) -> Result<(), BallError> {
+        let has_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='user_installed'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to inspect installed_packages schema for user_installed column: {}",
+                    e
+                ))
+            })?;
+
+        if has_column == 0 {
+            // No backfill needed: NOT NULL DEFAULT 1 marks every existing row as user-installed
+            conn.execute(
+                "ALTER TABLE installed_packages ADD COLUMN user_installed BOOLEAN NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to migrate installed_packages: could not add user_installed column: {}",
+                    e
+                ))
+            })?;
+        }
+
+        Ok(())
     }
 
     pub fn insert_package(
@@ -425,16 +450,21 @@ impl DbManager {
         Ok(count > 0)
     }
 
+    /// Returns the stored frozen flag, or `false` for a package not on the roster.
+    /// Any other lookup failure is an `Err(InvalidConfig)`, never "not frozen".
     pub fn is_frozen(&self, name: &str) -> Result<bool, BallError> {
-        let frozen: bool = self
-            .conn
-            .query_row(
-                "SELECT frozen FROM installed_packages WHERE name = ?1",
-                params![name],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        Ok(frozen)
+        match self.conn.query_row(
+            "SELECT frozen FROM installed_packages WHERE name = ?1",
+            params![name],
+            |row| row.get(0),
+        ) {
+            Ok(frozen) => Ok(frozen),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(BallError::InvalidConfig(format!(
+                "failed to read frozen state of package '{}': {}",
+                name, e
+            ))),
+        }
     }
 
     pub fn set_frozen(&self, name: &str, freeze: bool) -> Result<(), BallError> {
@@ -1473,6 +1503,106 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A database written before `installed_packages` had a `user_installed` column
+    fn legacy_db(path: &PathBuf) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE installed_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                version TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'github',
+                source_detail TEXT,
+                description TEXT,
+                author TEXT,
+                repository TEXT,
+                download_url TEXT,
+                sha256 TEXT,
+                frozen BOOLEAN NOT NULL DEFAULT 0,
+                install_path TEXT NOT NULL,
+                bin_path TEXT,
+                manifest_path TEXT,
+                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO installed_packages (name, version, install_path)
+                VALUES ('legacy-pkg', '1.0.0', '/p');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn user_installed_columns(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='user_installed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_init_fails_when_user_installed_migration_fails() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        // A view passes CREATE TABLE IF NOT EXISTS and the schema probe, but
+        // cannot be altered, so only the migration step can fail
+        conn.execute_batch(
+            "ALTER TABLE installed_packages RENAME TO legacy_packages;
+             CREATE VIEW installed_packages AS SELECT * FROM legacy_packages;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = DbManager::init_at_path(&path)
+            .err()
+            .expect("init must fail on a database it could not migrate")
+            .to_string();
+        assert!(
+            err.contains("user_installed"),
+            "error should name the migration step: {}",
+            err
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_user_installed_adds_column_to_legacy_db() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        assert_eq!(user_installed_columns(&conn), 0);
+
+        DbManager::migrate_user_installed(&conn).unwrap();
+        assert_eq!(user_installed_columns(&conn), 1);
+
+        let user_installed: bool = conn
+            .query_row(
+                "SELECT user_installed FROM installed_packages WHERE name = 'legacy-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(user_installed, "existing rows default to user-installed");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_user_installed_is_idempotent() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+
+        DbManager::migrate_user_installed(&conn).unwrap();
+        // The second call must see the column and skip the ALTER, not fail
+        // with "duplicate column name"
+        DbManager::migrate_user_installed(&conn).unwrap();
+        assert_eq!(user_installed_columns(&conn), 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn test_insert_and_get_package() {
         let path = test_db_path();
@@ -1640,6 +1770,29 @@ mod tests {
         let path = test_db_path();
         let db = init_db(&path);
         assert!(!db.is_frozen("nonexistent").unwrap()); // returns false default
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_is_frozen_propagates_query_errors() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        // A failed lookup is not the same as "not on the roster"
+        db.conn
+            .execute_batch("DROP TABLE installed_packages;")
+            .unwrap();
+
+        let err = db
+            .is_frozen("some-pkg")
+            .expect_err("a failed lookup must not read as not-frozen")
+            .to_string();
+        assert!(
+            err.contains("some-pkg"),
+            "error should name the package: {}",
+            err
+        );
 
         drop(db);
         let _ = std::fs::remove_file(&path);

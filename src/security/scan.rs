@@ -1212,14 +1212,18 @@ mod tests {
     fn test_executable_candidates_walks_the_whole_tree() {
         let dir = scratch("candidates");
         write(&dir, "README.md", "docs\n");
-        let inner = write(&dir, "bin/tool.exe", "MZ");
-        let outer = write(&dir, "tool.exe", "MZ");
+        write(&dir, "bin/tool.exe", "MZ");
+        write(&dir, "tool.exe", "MZ");
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::set_permissions(&outer, fs::Permissions::from_mode(0o755)).unwrap();
+            // Reached by name rather than through the returned paths: a binding
+            // held only by this block would be unused on Windows, where the
+            // extension alone already makes both candidates.
+            for name in ["bin/tool.exe", "tool.exe"] {
+                fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
 
         let candidates = executable_candidates(&dir);

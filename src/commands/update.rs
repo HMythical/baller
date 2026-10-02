@@ -1,15 +1,16 @@
 use colored::Colorize;
 use serde_json::json;
 
-use crate::commands::draft::source_label;
+use crate::commands::draft::{screen_artifact, source_label};
 use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
 use crate::core::hooks::{run_hook, HookType};
-use crate::core::package::Package;
-use crate::core::registry::ensure_installable;
+use crate::core::package::{Package, PackageSource};
+use crate::core::registry::{ensure_installable, RegistrySource};
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
+use crate::security::ranges::parse_advisory_version;
 use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
@@ -50,12 +51,11 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
         match ctx.registry.fetch_package(&pkg.name) {
             Ok(remote_pkg) => {
                 // U1: Use semver-aware version comparison with fallback to string
-                let current_version = parse_version_flexible(&pkg.version);
-                let remote = parse_version_flexible(&remote_pkg.version);
-                let needs_update = match (current_version, remote) {
-                    (Some(cur), Some(rem)) => rem > cur,
-                    _ => remote_pkg.version != pkg.version, // fallback to string comparison
-                };
+                let needs_update = is_newer_release(
+                    &pkg.version,
+                    &remote_pkg.version,
+                    is_distro_versioned(&pkg.source, &remote_pkg.source),
+                );
 
                 tracing::debug!(
                     "{}: installed v{}, registry v{} from {} -> {}",
@@ -126,10 +126,23 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     .filter(|dep| dep.name != pkg.name && !installed.contains_key(&dep.name))
                     .collect();
 
-                // The new release and every new dependency must run on this
-                // host before any of them is installed or the old one pruned.
+                // Two layers, cheapest and most fundamental first. The new
+                // release and every new dependency must run on this host at
+                // all, before any of them is installed or the old one pruned.
                 for candidate in missing_deps.iter().copied().chain([&remote_pkg]) {
                     ensure_installable(candidate)?;
+                }
+
+                // Referee Phase A: the upgrade and every dependency it pulls in
+                // are checked before anything is downloaded, so a blocked
+                // upgrade leaves the working installed version untouched.
+                let mut plan: Vec<Package> = vec![remote_pkg.clone()];
+                plan.extend(missing_deps.iter().map(|dep| (*dep).clone()));
+
+                let gate = ctx.referee.gate(&ctx.db, &plan)?;
+                gate.report(quiet);
+                if let Some(blocked) = gate.block_error() {
+                    return Err(blocked);
                 }
 
                 // Install any missing dependencies first
@@ -156,6 +169,8 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                         dep.name,
                         downloaded.extract_dir.display()
                     );
+
+                    screen_artifact(ctx, dep, &downloaded)?;
 
                     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
 
@@ -206,6 +221,11 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     remote_pkg.name,
                     downloaded.extract_dir.display()
                 );
+
+                // Referee Phase B runs *before* the old extract directory is
+                // pruned: a rejected upgrade must not also cost the user the
+                // version they already had working.
+                screen_artifact(ctx, &remote_pkg, &downloaded)?;
 
                 // U3: Clean old extracted directory before installing new one
                 let old_extract_dir = ctx
@@ -332,6 +352,33 @@ fn select_packages(
     Ok(selected)
 }
 
+/// Whether the registry's version is newer than the installed one.
+///
+/// Upstream releases are compared with [`parse_advisory_version`], so an
+/// installed `1.0.0-rc1` sees `1.0.0` as the newer release — the lossy parser
+/// collapses both to 1.0.0 and the rc was never offered its final release.
+/// Distribution versions keep [`parse_version_flexible`]: a Debian
+/// `1.2.3-5ubuntu10` also parses as a semver pre-release, and semver compares
+/// `5ubuntu10` below `5ubuntu2` lexically, which would offer a downgrade as an
+/// update. Anything unparseable falls back to a plain string comparison.
+pub(crate) fn is_newer_release(installed: &str, remote: &str, distro: bool) -> bool {
+    let parse = if distro {
+        parse_version_flexible
+    } else {
+        parse_advisory_version
+    };
+    match (parse(installed), parse(remote)) {
+        (Some(cur), Some(rem)) => rem > cur,
+        _ => remote != installed,
+    }
+}
+
+/// Whether either side of a comparison is a system package manager's version.
+pub(crate) fn is_distro_versioned(installed_source: &str, remote_source: &PackageSource) -> bool {
+    installed_source == RegistrySource::System.db_name()
+        || matches!(remote_source, PackageSource::System { .. })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +393,34 @@ mod tests {
         assert!(opts.packages.is_empty());
         assert!(!opts.check);
         assert!(!opts.include_frozen);
+    }
+
+    #[test]
+    fn test_final_release_is_newer_than_its_rc() {
+        assert!(is_newer_release("1.0.0-rc1", "1.0.0", false));
+        assert!(is_newer_release("1.0.0-rc1", "1.0.0-rc2", false));
+        assert!(!is_newer_release("1.0.0", "1.0.0-rc1", false));
+        assert!(!is_newer_release("1.0.0", "1.0.0", false));
+    }
+
+    #[test]
+    fn test_distro_versions_keep_the_lossy_comparison() {
+        // Lexically `5ubuntu2` > `5ubuntu10`; the lossy parser sees no change
+        // rather than offering a downgrade.
+        assert!(!is_newer_release("1.2.3-5ubuntu10", "1.2.3-5ubuntu2", true));
+        assert!(is_newer_release("1.2.3-5ubuntu10", "1.2.4-1", true));
+        assert!(is_distro_versioned("system", &PackageSource::default()));
+        assert!(!is_distro_versioned(
+            "github",
+            &PackageSource::Cargo {
+                crate_name: String::new()
+            }
+        ));
+    }
+
+    #[test]
+    fn test_unparseable_versions_compare_as_strings() {
+        assert!(is_newer_release("nightly", "nightly-2", false));
+        assert!(!is_newer_release("nightly", "nightly", false));
     }
 }

@@ -179,6 +179,7 @@ still discards the manifest `download_url`.
 | `[checksum] algorithm = "SHA512"` | `hash_algorithm = "SHA512"` |
 | `[architectures] supported = [..]` | `architectures = [..]` |
 | `[dependencies]` name → constraint table | `dependencies = ["name constraint"]` |
+| `[advisory]` (no flat form — see below) | — |
 
 A flat field wins when both are present (`sha256` beats `[checksum] sha256`).
 
@@ -196,6 +197,7 @@ A flat field wins when both are present (`sha256` beats `[checksum] sha256`).
 | `hash_algorithm` | string | no | Algorithm `sha256` is in: `SHA256` (default) or `SHA512` (base64, as Chocolatey publishes it) |
 | `dependencies` | array | no | List of dependency strings |
 | `architectures` | array | no | CPU architectures the package runs on — an enforced allow-list (see below) |
+| `advisory` | table | no | Where this package's known-issue surface lives — see below |
 
 ### Architectures
 
@@ -206,6 +208,33 @@ linux-aarch64 host`, before any hook runs. Common aliases match each other:
 `x86_64` = `amd64` = `x64` = `x86-64`, and `aarch64` = `arm64`. An absent or
 empty list places no restriction. The same check applies to packages a
 registry returns with an `architectures` list.
+
+## Advisory Identity
+
+Distribution shape and advisory ecosystem are not the same thing: a tool shipped
+as a GitHub release may also be published as a crate, and only its author knows
+that. The optional `[advisory]` section tells Referee where to look.
+
+```toml
+name = "ripgrep"
+version = "14.1.1"
+
+[advisory]
+ecosystem = "crates.io"       # OSV ecosystem: crates.io, npm, NuGet, PyPI, GitHub, …
+name = "ripgrep"              # optional; defaults to the package name
+aliases = ["CVE-2026-1234"]   # advisory ids this package is tracked under
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ecosystem` | string | yes (within the section) | The OSV ecosystem to query. Without it the section names nothing queryable and is ignored |
+| `name` | string | no | The name inside that ecosystem; defaults to the package `name` |
+| `aliases` | array | no | Advisory ids (CVE, GHSA, RUSTSEC, …) fetched by id and range-checked against the installed version |
+
+The declaration is stored on the roster, so `baller referee` re-checks the
+package under the same identity the install used. It is honoured in JSON
+manifests and in registry-served package metadata identically. See
+[referee.md](referee.md).
 
 ## Dependency Strings
 

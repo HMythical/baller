@@ -86,6 +86,7 @@ cargo --version
 ./build/linux/build.sh release  # Release build (stripped)
 ./build/linux/build.sh test     # Tests + clippy + fmt check
 ./build/linux/build.sh clean    # Clean artifacts
+./build/linux/build.sh install  # Install to /usr/local/bin and ~/.local/bin
 ```
 
 **Windows (PowerShell)**
@@ -95,7 +96,20 @@ cargo --version
 .\build\winbuild\build.ps1 -Command release  # Release build
 .\build\winbuild\build.ps1 -Command test     # Run tests
 .\build\winbuild\build.ps1 -Command clean    # Clean artifacts
+.\build\winbuild\build.ps1 -Command install  # Install per-machine and per-user
 ```
+
+**Where `install` puts the binary.** Both platforms install to a per-machine
+directory *and* a per-user one — `/usr/local/bin` and `~/.local/bin` on Linux,
+`%ProgramFiles%\baller\bin` and `%LOCALAPPDATA%\baller\bin` on Windows. Only the
+per-machine directory needs elevation, so a plain `./build.sh install` writes the
+per-user copy, reports which directory it could not write, and still leaves a
+working `baller` on `PATH`; re-run under `sudo` (or from an elevated PowerShell)
+to get both. If neither can be written the command fails rather than claiming
+success. `BALLER_INSTALL_DIR` overrides the pair and installs to that one
+location instead; `BALLER_SYSTEM_INSTALL_DIR` and `BALLER_USER_INSTALL_DIR`
+override one side each. `uninstall` removes from every directory it would have
+installed to.
 
 You can also use `cargo` directly. See [`docs/contributing.md`](docs/contributing.md) for the full project layout, configuration file format, and dependency list.
 

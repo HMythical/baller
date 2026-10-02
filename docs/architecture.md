@@ -21,10 +21,11 @@ baller/
 │   │   ├── substitute.rs    # Swap packages
 │   │   ├── update.rs        # Update non-frozen packages
 │   │   ├── sweep.rs         # Clean cache
+│   │   ├── referee/         # referee group: audit, check, scan, cache, config, sbom
 │   │   └── build.rs         # Assemble a package from a local manifest
 │   ├── config/
 │   │   ├── mod.rs
-│   │   └── config.rs        # BallerConfig, RegistryConfig, HooksConfig
+│   │   └── config.rs        # BallerConfig, RegistryConfig, HooksConfig, RefereeConfig
 │   ├── core/                # Core engine
 │   │   ├── mod.rs
 │   │   ├── package.rs       # Package / PackageSource structs
@@ -41,6 +42,15 @@ baller/
 │   │   ├── chocolatey.rs    # Chocolatey OData v2 feed
 │   │   ├── system.rs        # System Linux package manager (apt/dnf/pacman)
 │   │   └── cargo.rs         # crates.io via the local cargo CLI
+│   ├── security/            # Referee — the package security layer
+│   │   ├── mod.rs           # Referee service, the Phase A gate, GateOutcome
+│   │   ├── identity.rs      # Package -> advisory identities
+│   │   ├── osv.rs           # OSV API client and wire types
+│   │   ├── ranges.rs        # Affected-version range matching
+│   │   ├── scoring.rs       # CVSS base scores, risk index, thresholds
+│   │   ├── verdict.rs       # Verdicts, matched advisories, package reports
+│   │   ├── scan.rs          # Phase B artifact scanner
+│   │   └── virustotal.rs    # Optional hash-only VirusTotal lookup
 │   ├── platform/            # OS abstraction
 │   │   ├── mod.rs
 │   │   ├── common.rs        # PlatformManager trait
@@ -85,6 +95,10 @@ The universal package metadata struct used across the entire system:
 - `name`, `version`, `description`, `author`
 - `source` (`PackageSource` enum: `GitHub`, `BallerRegistry`, `Chocolatey`, `System { manager }`, `Cargo { crate_name }`)
 - `download_url`, `sha256`, `hash_algorithm`, `dependencies`
+- `advisory` (optional `AdvisoryDeclaration`: the OSV ecosystem, name and
+  advisory ids the package declares about itself) and `vulnerabilities`
+  (OSV-shaped records a registry served with the metadata). Both feed Referee;
+  see [referee.md](referee.md)
 
 The `hash_algorithm` field (e.g., `"SHA256"`, `"SHA512"`) is set by the
 Chocolatey source to indicate which hash algorithm was used. When present,
@@ -247,6 +261,39 @@ The downloader (`Downloader::download_and_extract`) refuses to handle
 system and cargo packages, returning a `PackageManagerError` if invoked on
 one — this is a defensive check, since the `draft` command should always
 dispatch those packages to their own path.
+
+## Package Security (Referee)
+
+`AppContext` carries a `Referee` alongside the downloader and registry client,
+built from `config.referee` and `GlobalFlags::no_referee`. It runs in two
+phases:
+
+- **Phase A** (`Referee::gate`) runs in `draft`, `update` and `substitute` on
+  the fully resolved plan, and in `build` on its one package (after the
+  download URL — and so the installed version — is resolved, or before a Cargo
+  project is compiled), before the install loop and before the
+  `pre_install` hook. Because no package in the plan has been fetched at that
+  point, a block leaves zero symlinks, zero roster rows and an empty cache
+  wherever in the plan the offending package sits.
+- **Phase B** (`Referee::screen_artifact`) runs after `download_and_extract`
+  and before `create_symlink`. A blocking finding calls
+  `Downloader::purge_download` — the cleanup `no_binary_error` also uses — so
+  the extract directory and the cached archive are both removed. In `update`
+  it runs before the old extract directory is pruned, leaving a rejected
+  upgrade's predecessor linked and runnable. `build`'s Cargo-project path uses
+  `Referee::screen_binary` instead: one file, the compiled binary, scanned
+  without purging, because it is the user's own build output.
+
+Verdicts are cached in the `referee_cache` table of the same SQLite database,
+keyed by `(ecosystem, name, version)`; only `clean` and `vulnerable` are
+stored. Rows are durable unless `[referee] cache_ttl_days` is set, in which
+case a `clean` row older than the TTL is re-queried; `vulnerable` rows are
+exempt. The `installed_packages` table carries an `advisory` column (added by
+migration on open) holding a package's declared advisory identity, so
+`baller referee` re-checks it under the same identity the install used.
+
+The modules live in `src/security/` and are mapped in
+[referee.md](referee.md#code-map).
 
 ## Error Handling and Rollback
 

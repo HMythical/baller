@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use semver::{Version, VersionReq};
+use semver::{Op, Prerelease, Version, VersionReq};
 
 use crate::core::package::{Package, PackageSource};
 use crate::core::registry::RegistryIndex;
@@ -293,10 +293,18 @@ fn enqueue_deps(
 }
 
 fn parse_dependencies(pkg: &Package) -> Result<Vec<Dependency>, BallError> {
+    let depender_is_prerelease = Version::parse(pkg.version.trim())
+        .map(|version| !version.pre.is_empty())
+        .unwrap_or(false);
+
     let mut result = Vec::new();
     if let Some(deps) = &pkg.dependencies {
         for dep_str in deps {
-            result.push(parse_dependency_line(dep_str)?);
+            // Widening happens only once the constraint has parsed, so a
+            // malformed one still fails with `parse_dependency_line`'s error.
+            let mut dep = parse_dependency_line(dep_str)?;
+            dep.constraint = widen_prerelease_constraints(dep.constraint, depender_is_prerelease);
+            result.push(dep);
         }
     }
     Ok(result)
@@ -332,10 +340,56 @@ pub(crate) fn parse_dependency_line(dep_str: &str) -> Result<Dependency, BallErr
     })
 }
 
+/// Let a pre-release depender's constraint admit pre-releases of its bounds.
+///
+/// semver only lets a pre-release satisfy a requirement when some comparator
+/// names the same `major.minor.patch` *with* a pre-release, so `^1.4.0`
+/// excludes `1.4.0-rc1`. For a stable depender that is the right default and
+/// it is left alone. But when the depender is itself an rc and its requirement
+/// already mentions a pre-release, the requirement is a statement about a
+/// pre-release line, and refusing every other rc in it pins the rc to versions
+/// it was never built against.
+///
+/// Requirements with no pre-release comparator are returned untouched, so the
+/// stable path is bit-for-bit unchanged. A `-0` is appended only where it is a
+/// pure superset — `^`, `~` and `>=` gain the pre-releases of their own base
+/// version, and `<` keeps exactly the same stable versions while still
+/// refusing pre-releases of its limit. `=`, `>` and `<=` would change meaning
+/// (`<=1.2.5-0` refuses 1.2.5 itself, `>1.2.5-0` admits it) and wildcards have
+/// no patch to attach a pre-release to, so those comparators are kept as
+/// written.
+pub(crate) fn widen_prerelease_constraints(
+    req: VersionReq,
+    depender_is_prerelease: bool,
+) -> VersionReq {
+    if !depender_is_prerelease || req.comparators.iter().all(|c| c.pre.is_empty()) {
+        return req;
+    }
+
+    let comparators = req
+        .comparators
+        .into_iter()
+        .map(|mut comparator| {
+            let widenable = matches!(
+                comparator.op,
+                Op::Caret | Op::Tilde | Op::GreaterEq | Op::Less
+            );
+            if widenable && comparator.pre.is_empty() && comparator.patch.is_some() {
+                comparator.pre = Prerelease::new("0").expect("`0` is a valid pre-release");
+            }
+            comparator
+        })
+        .collect();
+
+    VersionReq { comparators }
+}
+
 /// Parse a version string that may use formats other than strict semver.
 ///
 /// Handles Debian epoch prefixes (`2:1.21-76`), Debian/RPM revision suffixes
-/// (`1.21-76`), and upstream Fedora release tags (`8.2.2637-20.fc36`).
+/// (`1.21-76`), upstream Fedora release tags (`8.2.2637-20.fc36`), and the
+/// zero-padded segments distro versions use freely (`2:8.1.0875-5ubuntu2`),
+/// which semver rejects outright.
 /// Returns `None` if the cleaned value still cannot be parsed as semver.
 pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     // Try standard parse first for clean semver versions
@@ -373,8 +427,11 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
         return None;
     }
 
-    // Normalize to 3 segments (major.minor.patch) for semver compatibility
-    let segments: Vec<&str> = clean.split('.').collect();
+    // Normalize to 3 segments (major.minor.patch) for semver compatibility.
+    // Leading zeros are dropped first: semver forbids them on a numeric
+    // identifier, so `8.1.0875` would otherwise fail to parse at all and the
+    // whole version would be reported as unreadable.
+    let segments: Vec<String> = clean.split('.').map(strip_leading_zeros).collect();
     let normalized = match segments.len() {
         0 => return None,
         1 => format!("{}.0.0", segments[0]),
@@ -383,6 +440,16 @@ pub(crate) fn parse_version_flexible(raw: &str) -> Option<Version> {
     };
 
     Version::parse(&normalized).ok()
+}
+
+/// `0875` -> `875`, `000` -> `0`: the zero padding semver will not accept.
+fn strip_leading_zeros(segment: &str) -> String {
+    let trimmed = segment.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn find_cycle(graph: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
@@ -579,6 +646,8 @@ mod tests {
                 owner: "test".to_string(),
                 repo: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         }
     }
 
@@ -950,6 +1019,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_version_flexible_zero_padded_segment() {
+        let v = parse_version_flexible("8.1.0875").unwrap();
+        assert_eq!(v, Version::new(8, 1, 875));
+    }
+
+    #[test]
+    fn test_parse_version_flexible_debian_epoch_with_zero_padding() {
+        let v = parse_version_flexible("2:8.1.0875-5ubuntu2").unwrap();
+        assert_eq!(v, Version::new(8, 1, 875));
+    }
+
+    #[test]
+    fn test_parse_version_flexible_all_zero_segment() {
+        let v = parse_version_flexible("1.00.0").unwrap();
+        assert_eq!(v, Version::new(1, 0, 0));
+    }
+
+    #[test]
+    fn test_strip_leading_zeros() {
+        assert_eq!(strip_leading_zeros("0875"), "875");
+        assert_eq!(strip_leading_zeros("000"), "0");
+        assert_eq!(strip_leading_zeros("0"), "0");
+        assert_eq!(strip_leading_zeros("12"), "12");
+    }
+
+    #[test]
     fn test_parse_version_flexible_invalid() {
         assert!(parse_version_flexible("not-a-version").is_none());
     }
@@ -964,5 +1059,68 @@ mod tests {
     fn test_parse_version_flexible_debian_dfsg() {
         let v = parse_version_flexible("1:1.3.dfsg+really1.3.1-1+b1").unwrap();
         assert_eq!(v, Version::new(1, 3, 0));
+    }
+
+    fn req(raw: &str) -> VersionReq {
+        VersionReq::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn test_widen_prerelease_admits_rcs_for_a_prerelease_depender() {
+        let widened = widen_prerelease_constraints(req(">=1.2.0-beta, ^1.4.0"), true);
+        assert_eq!(widened.to_string(), ">=1.2.0-beta, ^1.4.0-0");
+        assert!(widened.matches(&Version::parse("1.4.0-rc1").unwrap()));
+        assert!(!req(">=1.2.0-beta, ^1.4.0").matches(&Version::parse("1.4.0-rc1").unwrap()));
+    }
+
+    #[test]
+    fn test_widen_prerelease_leaves_a_stable_depender_alone() {
+        let original = req(">=1.2.0-beta, ^1.4.0");
+        assert_eq!(
+            widen_prerelease_constraints(original.clone(), false),
+            original
+        );
+    }
+
+    #[test]
+    fn test_widen_prerelease_leaves_requirements_without_a_prerelease_alone() {
+        for raw in ["^1.4.0", "*", "1.*", ">=1.0.0, <2.0.0"] {
+            let original = req(raw);
+            assert_eq!(
+                widen_prerelease_constraints(original.clone(), true),
+                original,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_widen_prerelease_never_narrows() {
+        // Already `-0`, wildcards, and the operators where `-0` would change
+        // meaning are all kept as written.
+        let original = req(">=1.0.0-0, 1.*, =1.2.5, >1.0.0, <=1.9.0");
+        let widened = widen_prerelease_constraints(original.clone(), true);
+        assert_eq!(widened, original);
+        assert!(widened.matches(&Version::new(1, 2, 5)));
+
+        // `<` keeps every stable version it had and still refuses the limit's rcs.
+        let widened = widen_prerelease_constraints(req(">=1.0.0-rc1, <2.0.0"), true);
+        assert!(widened.matches(&Version::new(1, 9, 9)));
+        assert!(!widened.matches(&Version::parse("2.0.0-rc1").unwrap()));
+    }
+
+    #[test]
+    fn test_parse_dependencies_widens_only_for_a_prerelease_depender() {
+        let rc = make_pkg("root", "2.0.0-rc1", Some(vec!["lib >=1.2.0-beta, ^1.4.0"]));
+        let deps = parse_dependencies(&rc).unwrap();
+        assert!(deps[0]
+            .constraint
+            .matches(&Version::parse("1.4.0-rc1").unwrap()));
+
+        let stable = make_pkg("root", "2.0.0", Some(vec!["lib >=1.2.0-beta, ^1.4.0"]));
+        let deps = parse_dependencies(&stable).unwrap();
+        assert!(!deps[0]
+            .constraint
+            .matches(&Version::parse("1.4.0-rc1").unwrap()));
     }
 }

@@ -1,5 +1,20 @@
 use std::fmt;
 
+use crate::security::scan::ScanFinding;
+use crate::security::verdict::MatchedAdvisory;
+
+/// One advisory as a blocked install reports it: id, aliases, score, summary.
+pub type AdvisoryRef = MatchedAdvisory;
+
+/// A package the advisory gate refused to install, and why.
+#[derive(Debug, Clone)]
+pub struct BlockedPackage {
+    pub package: String,
+    pub version: String,
+    pub advisories: Vec<AdvisoryRef>,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub enum BallError {
     /// The host cannot run what was asked for: an unsupported OS at startup,
@@ -74,6 +89,44 @@ pub enum BallError {
         binary: String,
         /// The cached archive it came from, which is kept
         archive: Option<String>,
+    },
+    /// Referee's advisory gate refused the plan.
+    ///
+    /// Raised before the install loop runs, so nothing has been downloaded,
+    /// linked or recorded: the block is all-or-nothing by construction. Every
+    /// package that crossed the block threshold is listed, because fixing one
+    /// and rediscovering the next one at a time helps nobody.
+    RefereeBlocked {
+        packages: Vec<BlockedPackage>,
+    },
+    /// Referee's artifact scan refused a downloaded package.
+    ///
+    /// Raised after extraction and before linking; the caller purges the
+    /// extract directory and the cached archive on the way out. `discarded` is
+    /// false only for `build`'s cargo-project path, where the scanned file is
+    /// the user's own compiled binary and is deliberately left in place.
+    RefereeScanBlocked {
+        package: String,
+        version: String,
+        findings: Vec<ScanFinding>,
+        discarded: bool,
+    },
+    /// The advisory service could not be reached.
+    ///
+    /// Only fatal under `fail_policy = fail-closed`; the default fail-open
+    /// path reports the affected packages as `Unverified` and continues.
+    RefereeUnavailable {
+        message: String,
+    },
+    /// `baller referee --fail-on` found packages at or above the chosen level,
+    /// through an advisory or an artifact-scan finding.
+    ///
+    /// Raised after the report is printed, only to turn it into a non-zero
+    /// exit for CI. The audit itself is read-only: nothing was changed.
+    RefereeAuditFailed {
+        /// The `--fail-on` band, `block` or `warn`
+        band: &'static str,
+        packages: Vec<String>,
     },
     /// Non-optional dependencies that could not be resolved from any
     /// configured source and are not tolerated system virtual packages.
@@ -150,6 +203,84 @@ impl fmt::Display for BallError {
                     platform, package, available
                 )
             }
+
+            BallError::RefereeBlocked { packages } => {
+                writeln!(
+                    f,
+                    "referee blocked {} package(s); nothing was installed",
+                    packages.len()
+                )?;
+                for (index, blocked) in packages.iter().enumerate() {
+                    if index > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(
+                        f,
+                        "\t{} v{} — {}",
+                        blocked.package, blocked.version, blocked.reason
+                    )?;
+                    for advisory in &blocked.advisories {
+                        write!(f, "\n\t  • {}", advisory.describe())?;
+                    }
+                }
+                write!(
+                    f,
+                    "\n\trun with --no-referee to install anyway, or raise referee.block_at"
+                )
+            }
+
+            BallError::RefereeScanBlocked {
+                package,
+                version,
+                findings,
+                discarded,
+            } => {
+                if *discarded {
+                    writeln!(
+                        f,
+                        "referee blocked the downloaded archive for '{}' v{} — the download was discarded",
+                        package, version
+                    )?;
+                } else {
+                    writeln!(
+                        f,
+                        "referee blocked the compiled binary for '{}' v{} — it was left in place and nothing was linked",
+                        package, version
+                    )?;
+                }
+                // Each bullet leads with its severity in capitals, so the
+                // finding that caused the block stands out from the warnings
+                // listed beside it. Built from the fields rather than
+                // `describe()`, which already starts with the lowercase label
+                // and is shared with the Markdown, JSON and SARIF writers.
+                for (index, finding) in findings.iter().enumerate() {
+                    if index > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(
+                        f,
+                        "\t• {}: [{}] {} — {}",
+                        finding.severity.label().to_uppercase(),
+                        finding.rule.label(),
+                        finding.path.display(),
+                        finding.evidence
+                    )?;
+                }
+                Ok(())
+            }
+
+            BallError::RefereeUnavailable { message } => {
+                write!(f, "referee could not verify this install: {}", message)
+            }
+
+            BallError::RefereeAuditFailed { band, packages } => write!(
+                f,
+                "referee found {} package(s) at or above the '{}' level (--fail-on {}): {}",
+                packages.len(),
+                band,
+                band,
+                packages.join(", ")
+            ),
 
             BallError::NoBinaryFound {
                 package,
@@ -402,9 +533,62 @@ mod tests {
     }
 
     #[test]
+    fn test_referee_audit_failed_display() {
+        let err = BallError::RefereeAuditFailed {
+            band: "warn",
+            packages: vec!["alpha".to_string(), "beta".to_string()],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("2 package(s)"));
+        assert!(msg.contains("--fail-on warn"));
+        assert!(msg.contains("alpha, beta"));
+    }
+
+    #[test]
     fn test_debug_format() {
         let err = BallError::PackageNotFound("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("PackageNotFound"));
+    }
+
+    #[test]
+    fn test_scan_blocked_bullets_carry_a_severity_label() {
+        use crate::security::scan::{ScanRule, ScanSeverity};
+        use std::path::PathBuf;
+
+        let finding = |severity, rule| ScanFinding {
+            path: PathBuf::from("bin/tool"),
+            rule,
+            severity,
+            evidence: "evidence".to_string(),
+        };
+        let err = BallError::RefereeScanBlocked {
+            package: "tool".to_string(),
+            version: "1.0.0".to_string(),
+            findings: vec![
+                finding(ScanSeverity::Block, ScanRule::VirusTotalDetection),
+                finding(ScanSeverity::Warn, ScanRule::HighEntropy),
+            ],
+            discarded: true,
+        };
+        let text = err.to_string();
+        assert!(text.starts_with(
+            "referee blocked the downloaded archive for 'tool' v1.0.0 — the download was discarded\n"
+        ));
+        assert!(text.contains("\t• BLOCK: [virustotal-detection] bin/tool — evidence"));
+        assert!(text.contains("\t• WARN: [high-entropy] bin/tool — evidence"));
+    }
+
+    #[test]
+    fn test_scan_blocked_on_a_kept_binary_does_not_claim_a_discard() {
+        let err = BallError::RefereeScanBlocked {
+            package: "tool".to_string(),
+            version: "1.0.0".to_string(),
+            findings: Vec::new(),
+            discarded: false,
+        };
+        let text = err.to_string();
+        assert!(!text.contains("discarded"));
+        assert!(text.contains("compiled binary for 'tool' v1.0.0 — it was left in place"));
     }
 }

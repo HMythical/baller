@@ -3,7 +3,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::commands::draft::source_label;
+use crate::commands::draft::{report_blocked, screen_artifact, screen_binary, source_label};
 use crate::context::AppContext;
 use crate::core::hooks::{run_hook, HookType};
 use crate::core::manifest::{parse_github_url, ManifestParser};
@@ -16,6 +16,7 @@ use crate::http::github::GitHubRegistry;
 use crate::http::registry_api::BallerRegistryApi;
 use crate::http::system::install_system_package;
 use crate::platform::common::PlatformManager;
+use crate::security::GateOutcome;
 use crate::utils::output::print_json;
 
 #[cfg(target_os = "linux")]
@@ -79,8 +80,30 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         pkg.dependencies = None;
     }
 
+    // The registry decides what version actually gets installed —
+    // `resolve_download_url` overwrites `pkg.version` with it — so the URL is
+    // resolved before Phase A, or the gate would check a version that is never
+    // installed. It returns early for system and cargo sources, which is what
+    // makes resolving above their dispatch below free on those paths.
+    if pkg.download_url.is_none() {
+        resolve_download_url(ctx, &mut pkg)?;
+    }
+
+    // Referee Phase A. `build` does no dependency resolution — manifest
+    // dependencies are only recorded — so the plan is this one package. It
+    // runs before the `--force` check so a dry run still previews an
+    // installed package, and before the PreInstall hook so a package Referee
+    // rejected never gets to run code of its own. The dry run returns before
+    // the block check so it *shows* the block instead of failing on it.
+    let gate = ctx.referee.gate(&ctx.db, std::slice::from_ref(&pkg))?;
+    gate.report(quiet);
+
     if opts.dry_run {
-        return report_plan(ctx, &pkg, &manifest_str, opts);
+        return report_plan(ctx, &pkg, &manifest_str, opts, &gate);
+    }
+
+    if let Some(blocked) = gate.block_error() {
+        return Err(blocked);
     }
 
     if !opts.force && ctx.db.package_exists(&pkg.name)? {
@@ -111,10 +134,6 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
         return build_cargo_package(ctx, &pkg, crate_name, &manifest_str);
     }
 
-    if pkg.download_url.is_none() {
-        resolve_download_url(ctx, &mut pkg)?;
-    }
-
     tracing::debug!(
         "fetching {} into cache {}",
         pkg.download_url
@@ -134,6 +153,10 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "none found".to_string())
     );
+
+    // Referee Phase B, before anything is linked. A block purges the
+    // extracted tree and the cached archive, as in draft/update/substitute.
+    screen_artifact(ctx, &pkg, &downloaded)?;
 
     let install_path = downloaded.extract_dir.to_string_lossy().to_string();
 
@@ -194,6 +217,7 @@ pub fn execute_build(ctx: &AppContext, path: &str, opts: &BuildOptions) -> Resul
             "install_path": install_path,
             "bin_path": bin_path_str,
             "status": "built",
+            "referee": gate.to_json(),
         }));
     }
 
@@ -303,6 +327,7 @@ fn report_plan(
     pkg: &Package,
     manifest_path: &str,
     opts: &BuildOptions,
+    gate: &GateOutcome,
 ) -> Result<(), BallError> {
     let already_installed = ctx.db.package_exists(&pkg.name).unwrap_or(false);
     let deps = pkg.dependencies.clone().unwrap_or_default();
@@ -319,6 +344,7 @@ fn report_plan(
             "install_dir": opts.install_dir,
             "already_installed": already_installed,
             "dry_run": true,
+            "referee": gate.to_json(),
         }));
     }
 
@@ -355,6 +381,8 @@ fn report_plan(
             "--force".cyan()
         );
     }
+
+    report_blocked(ctx, gate);
 
     println!("{} nothing was installed", "Note".yellow());
     Ok(())
@@ -647,6 +675,7 @@ fn report_cargo_plan(
     dir: &Path,
     release_dir: &Path,
     opts: &BuildOptions,
+    gate: &GateOutcome,
 ) -> Result<(), BallError> {
     let already_installed = ctx.db.package_exists(&pkg.name).unwrap_or(false);
     let project_dir = dir.to_string_lossy().to_string();
@@ -667,6 +696,7 @@ fn report_cargo_plan(
             "install_dir": install_dir,
             "already_installed": already_installed,
             "dry_run": true,
+            "referee": gate.to_json(),
         }));
     }
 
@@ -691,6 +721,8 @@ fn report_cargo_plan(
             "--force".cyan()
         );
     }
+
+    report_blocked(ctx, gate);
 
     println!("{} nothing was compiled", "Note".yellow());
     Ok(())
@@ -725,8 +757,19 @@ fn build_cargo_project(ctx: &AppContext, dir: &Path, opts: &BuildOptions) -> Res
         crate_name: meta.name.clone(),
     };
 
+    // Referee Phase A, before any compile time is spent: the crate's
+    // crates.io identity is checked as one package (cargo resolves the
+    // dependencies itself). An unpublished crate simply has no advisories.
+    // Same order as the manifest path: report, dry run, then the block.
+    let gate = ctx.referee.gate(&ctx.db, std::slice::from_ref(&pkg))?;
+    gate.report(ctx.flags.is_quiet());
+
     if opts.dry_run {
-        return report_cargo_plan(ctx, &pkg, &meta, dir, &release_dir, opts);
+        return report_cargo_plan(ctx, &pkg, &meta, dir, &release_dir, opts, &gate);
+    }
+
+    if let Some(blocked) = gate.block_error() {
+        return Err(blocked);
     }
 
     if !opts.force && ctx.db.package_exists(&pkg.name)? {
@@ -755,6 +798,11 @@ fn build_cargo_project(ctx: &AppContext, dir: &Path, opts: &BuildOptions) -> Res
             release_dir.display()
         ))
     })?;
+
+    // Referee Phase B over the one binary about to be linked — never the
+    // `target/release` tree; see `Referee::screen_binary` for why. A block
+    // leaves the binary where cargo put it: it is the user's build output.
+    screen_binary(ctx, &pkg, &binary_path)?;
 
     match &opts.install_dir {
         Some(install_dir) => {
@@ -798,6 +846,7 @@ fn build_cargo_project(ctx: &AppContext, dir: &Path, opts: &BuildOptions) -> Res
             "source": source_label(&pkg.source),
             "bin_path": bin_path_str,
             "status": "built",
+            "referee": gate.to_json(),
         }));
     }
 
@@ -1162,5 +1211,67 @@ mod tests {
         assert_eq!(lines[CARGO_ERROR_LINES - 1], "line 20");
 
         assert_eq!(cargo_error_snippet("   \n\n"), "no output");
+    }
+
+    /// The text of one function in this file, from its signature to the next
+    /// top-level item.
+    fn function_body(name: &str) -> &'static str {
+        let source = include_str!("build.rs");
+        let start = source
+            .find(&format!("fn {}(", name))
+            .unwrap_or_else(|| panic!("fn {} not found", name));
+        let rest = &source[start..];
+        let end = rest[1..].find("\nfn ").map(|i| i + 1).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn position(body: &str, needle: &str) -> usize {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("`{}` not found", needle))
+    }
+
+    // `execute_build` needs a live registry, so the Phase A/B ordering is
+    // pinned on the source itself. Each of these orders is load-bearing: see
+    // the comments at the call sites.
+    #[test]
+    fn test_manifest_build_gates_after_url_resolution_and_before_the_hook() {
+        let body = function_body("execute_build");
+        let resolve = position(body, "resolve_download_url(ctx, &mut pkg)");
+        let gate = position(body, "ctx.referee.gate(");
+        let dry_run = position(body, "return report_plan(");
+        let block = position(body, "gate.block_error()");
+        let force = position(body, "pass --force to build over it");
+        let hook = position(body, "HookType::PreInstall");
+        let system = position(body, "return build_system_package(");
+        let extract = position(body, "download_and_extract(");
+        let scan = position(body, "screen_artifact(ctx, &pkg, &downloaded)");
+        let link = position(body, "create_symlink");
+
+        assert!(resolve < gate, "the gate must see the resolved version");
+        assert!(gate < dry_run && dry_run < block, "dry run shows the block");
+        assert!(block < force && block < hook, "the gate precedes the hook");
+        assert!(hook < system, "system/cargo dispatch stays after the gate");
+        assert!(extract < scan && scan < link, "phase B precedes linking");
+        assert_eq!(body.matches("resolve_download_url(").count(), 1);
+    }
+
+    #[test]
+    fn test_cargo_project_gates_before_compiling_and_scans_before_linking() {
+        let body = function_body("build_cargo_project");
+        let gate = position(body, "ctx.referee.gate(");
+        let dry_run = position(body, "return report_cargo_plan(");
+        let block = position(body, "gate.block_error()");
+        let hook = position(body, "HookType::PreInstall");
+        let compile = position(body, "compile_cargo_project(dir)");
+        let locate = position(body, "locate_cargo_binary(&release_dir");
+        let scan = position(body, "screen_binary(ctx, &pkg, &binary_path)");
+        let link = position(body, "create_symlink");
+
+        assert!(gate < dry_run && dry_run < block && block < hook);
+        assert!(hook < compile);
+        assert!(locate < scan && scan < link);
+        // The non-purging wrapper: purging here would delete the user's build.
+        assert!(!body.contains("screen_artifact("));
+        assert!(!body.contains("purge_download"));
     }
 }

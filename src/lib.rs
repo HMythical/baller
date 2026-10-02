@@ -6,4 +6,5 @@ pub mod core;
 pub mod error;
 pub mod http;
 pub mod platform;
+pub mod security;
 pub mod utils;

@@ -8,6 +8,8 @@ use std::{
 use crate::core::registry::default_source_order as platform_source_order;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
+use crate::security::scoring::RefereeThresholds;
+use crate::security::FailPolicy;
 
 #[cfg(target_os = "linux")]
 use crate::platform::linux::LinuxManager as ActiveManager;
@@ -26,6 +28,67 @@ pub struct RegistryConfig {
     pub chocolatey_enabled: bool,
     pub system_enabled: bool,
     pub cargo_enabled: bool,
+}
+
+/// The `[referee]` section: the package security layer's policy.
+///
+/// The thresholds are on the 0–5 Referee Risk Index, which is CVSS halved: the
+/// defaults warn from CVSS 5.0 (Medium) and block from CVSS 8.0 (High).
+#[derive(Debug, Clone)]
+pub struct RefereeConfig {
+    /// Master switch for both phases
+    pub enabled: bool,
+    /// Risk index at or above which a package is reported
+    pub warn_at: f32,
+    /// Risk index at or above which the whole plan is aborted
+    pub block_at: f32,
+    /// What an unreachable advisory service means
+    pub fail_policy: FailPolicy,
+    /// The advisory API base URL, for tests and self-hosting
+    pub osv_base_url: String,
+    /// Enables the hash-only VirusTotal lookup in Phase B
+    pub virustotal_api_key: Option<String>,
+    /// The VirusTotal API base URL, for tests and self-hosted proxies.
+    ///
+    /// `None` uses the public endpoint. It exists for the same reason
+    /// `osv_base_url` does: a service baller cannot be pointed somewhere else
+    /// is a service nobody can verify baller talks to correctly.
+    pub virustotal_base_url: Option<String>,
+    /// How old a cached `clean` verdict may be before it is re-queried.
+    ///
+    /// `None` keeps every cached verdict for as long as it stands, which is
+    /// what baller has always done. `Some(days)` bounds it; `Some(0)` re-asks
+    /// OSV on every install and is what CI wants.
+    pub cache_ttl_days: Option<u32>,
+}
+
+impl Default for RefereeConfig {
+    fn default() -> Self {
+        let thresholds = RefereeThresholds::default();
+        Self {
+            enabled: true,
+            warn_at: thresholds.warn_at,
+            block_at: thresholds.block_at,
+            // An advisory database that is down must not stop a user
+            // installing software; it must only stop baller claiming the
+            // install was verified.
+            fail_policy: FailPolicy::FailOpen,
+            osv_base_url: "https://api.osv.dev".to_string(),
+            virustotal_api_key: None,
+            virustotal_base_url: None,
+            cache_ttl_days: None,
+        }
+    }
+}
+
+impl RefereeConfig {
+    /// The thresholds as the scoring layer consumes them.
+    pub fn thresholds(&self) -> RefereeThresholds {
+        RefereeThresholds {
+            warn_at: self.warn_at,
+            block_at: self.block_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +130,7 @@ pub struct BallerConfig {
     pub hooks_dir: PathBuf,
     pub registry: RegistryConfig,
     pub hooks: HooksConfig,
+    pub referee: RefereeConfig,
 }
 
 impl Default for BallerConfig {
@@ -112,6 +176,7 @@ impl Default for BallerConfig {
                 pre_update: true,
                 post_update: true,
             },
+            referee: RefereeConfig::default(),
         }
     }
 }
@@ -218,11 +283,56 @@ impl BallerConfig {
                 "post_update" => {
                     config.hooks.post_update = parse_bool(&value, line)?;
                 }
+                // `[referee]`. The parser is flat, so `enabled` is spelled
+                // unambiguously as `referee_enabled` too — the plain key is
+                // what the documented section uses, the prefixed one is for
+                // anyone who would rather not rely on section context.
+                "enabled" | "referee_enabled" => {
+                    config.referee.enabled = parse_bool(&value, line)?;
+                }
+                "warn_at" => {
+                    config.referee.warn_at = parse_risk(&value, line)?;
+                }
+                "block_at" => {
+                    config.referee.block_at = parse_risk(&value, line)?;
+                }
+                "fail_policy" => {
+                    config.referee.fail_policy =
+                        FailPolicy::from_config_value(&value).ok_or_else(|| {
+                            BallError::InvalidConfig(format!(
+                                "invalid fail_policy '{}' at line[{}]: expected fail-open or fail-closed",
+                                value,
+                                line + 1
+                            ))
+                        })?;
+                }
+                "osv_base_url" => {
+                    config.referee.osv_base_url = value;
+                }
+                "cache_ttl_days" => {
+                    config.referee.cache_ttl_days = Some(value.trim().parse::<u32>().map_err(
+                        |_| {
+                            BallError::InvalidConfig(format!(
+                                "invalid cache_ttl_days '{}' at line[{}]: expected a whole number of days",
+                                value,
+                                line + 1
+                            ))
+                        },
+                    )?);
+                }
+                "virustotal_api_key" => {
+                    config.referee.virustotal_api_key = Some(value);
+                }
+                "virustotal_base_url" => {
+                    config.referee.virustotal_base_url = Some(value);
+                }
                 _ => {
                     return Err(BallError::UnknownConfigEntry((line + 1, key.to_string())));
                 }
             }
         }
+
+        config.referee.thresholds().validate()?;
 
         Ok(config)
     }
@@ -246,7 +356,7 @@ impl BallerConfig {
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let section = trimmed[1..trimmed.len() - 1].trim();
                 match section.to_lowercase().as_str() {
-                    "baller" | "registry" | "hooks" => continue,
+                    "baller" | "registry" | "hooks" | "referee" => continue,
                     _ => {
                         return Err(BallError::UnknownConfigEntry((
                             line + 1,
@@ -315,6 +425,17 @@ pub fn default_source_order() -> Vec<String> {
         .iter()
         .map(|source| source.config_name().to_string())
         .collect()
+}
+
+/// Parse a risk-index threshold from `baller.conf`.
+fn parse_risk(value: &str, line: usize) -> Result<f32, BallError> {
+    value.trim().parse::<f32>().map_err(|_| {
+        BallError::InvalidConfig(format!(
+            "invalid risk threshold '{}' at line[{}]: expected a number between 0 and 5",
+            value,
+            line + 1
+        ))
+    })
 }
 
 fn parse_bool(value: &str, line: usize) -> Result<bool, BallError> {
@@ -417,6 +538,152 @@ mod tests {
         let config = BallerConfig::parse_config(&path).unwrap();
         assert_eq!(config.install_dir.to_string_lossy(), "/custom/path");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_defaults() {
+        let (path, dir) = write_config("");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(config.referee.enabled);
+        assert_eq!(config.referee.warn_at, 2.5);
+        assert_eq!(config.referee.block_at, 4.0);
+        assert_eq!(config.referee.fail_policy, FailPolicy::FailOpen);
+        assert_eq!(config.referee.osv_base_url, "https://api.osv.dev");
+        assert!(config.referee.virustotal_api_key.is_none());
+        assert!(config.referee.virustotal_base_url.is_none());
+        assert!(config.referee.cache_ttl_days.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_referee_section() {
+        let content = r#"
+[referee]
+enabled = false
+warn_at = 1.5
+block_at = 3.5
+fail_policy = fail-closed
+osv_base_url = http://127.0.0.1:9999
+virustotal_api_key = deadbeef
+"#;
+        let (path, dir) = write_config(content);
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(!config.referee.enabled);
+        assert_eq!(config.referee.warn_at, 1.5);
+        assert_eq!(config.referee.block_at, 3.5);
+        assert_eq!(config.referee.fail_policy, FailPolicy::FailClosed);
+        assert_eq!(config.referee.osv_base_url, "http://127.0.0.1:9999");
+        assert_eq!(
+            config.referee.virustotal_api_key.as_deref(),
+            Some("deadbeef")
+        );
+        assert!(config.referee.virustotal_base_url.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_enabled_accepts_the_prefixed_key() {
+        let (path, dir) = write_config("[referee]\nreferee_enabled = off\n");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert!(!config.referee.enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_section_header_is_known() {
+        let (path, dir) = write_config("[referee]\nwarn_at = 2.0\n");
+        assert!(BallerConfig::parse_config(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_warn_at_or_above_block_at() {
+        let (path, dir) = write_config("[referee]\nwarn_at = 4.5\nblock_at = 4.0\n");
+        let err = BallerConfig::parse_config(&path).unwrap_err();
+        assert!(format!("{}", err).contains("must be below block_at"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_an_out_of_scale_threshold() {
+        let (path, dir) = write_config("[referee]\nblock_at = 9.0\n");
+        let err = BallerConfig::parse_config(&path).unwrap_err();
+        assert!(format!("{}", err).contains("0-5 risk scale"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_a_non_numeric_threshold() {
+        let (path, dir) = write_config("[referee]\nwarn_at = high\n");
+        let err = BallerConfig::parse_config(&path).unwrap_err();
+        assert!(format!("{}", err).contains("invalid risk threshold"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_an_unknown_fail_policy() {
+        let (path, dir) = write_config("[referee]\nfail_policy = whatever\n");
+        let err = BallerConfig::parse_config(&path).unwrap_err();
+        assert!(format!("{}", err).contains("invalid fail_policy"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_parses_cache_ttl_days() {
+        let (path, dir) = write_config("[referee]\ncache_ttl_days = 7\n");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(config.referee.cache_ttl_days, Some(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_accepts_a_zero_cache_ttl() {
+        let (path, dir) = write_config("[referee]\ncache_ttl_days = 0\n");
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(config.referee.cache_ttl_days, Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_rejects_a_bad_cache_ttl() {
+        for bad in ["-1", "week", "1.5"] {
+            let (path, dir) = write_config(&format!("[referee]\ncache_ttl_days = {}\n", bad));
+            let err = BallerConfig::parse_config(&path).unwrap_err();
+            let message = format!("{}", err);
+            assert!(
+                message.contains(&format!("invalid cache_ttl_days '{}'", bad)),
+                "{}",
+                message
+            );
+            assert!(message.contains("expected a whole number of days"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn test_parse_virustotal_base_url() {
+        let (path, dir) = write_config(
+            "[referee]\nvirustotal_api_key = k\nvirustotal_base_url = http://127.0.0.1:9/vt\n",
+        );
+        let config = BallerConfig::parse_config(&path).unwrap();
+        assert_eq!(
+            config.referee.virustotal_base_url.as_deref(),
+            Some("http://127.0.0.1:9/vt")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_referee_thresholds_feed_the_scorer() {
+        let config = RefereeConfig {
+            warn_at: 1.0,
+            block_at: 2.0,
+            ..RefereeConfig::default()
+        };
+        let thresholds = config.thresholds();
+        assert_eq!(thresholds.warn_at, 1.0);
+        assert_eq!(thresholds.block_at, 2.0);
+        assert!(thresholds.validate().is_ok());
     }
 
     #[test]

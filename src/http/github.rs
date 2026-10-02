@@ -81,6 +81,8 @@ impl GitHubRegistry {
                 owner: owner.clone(),
                 repo: repo.clone(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -132,6 +134,8 @@ impl GitHubRegistry {
                 owner: owner.clone(),
                 repo: repo.clone(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         })
     }
 
@@ -162,6 +166,8 @@ impl GitHubRegistry {
                         owner: item.owner.login,
                         repo: item.name,
                     },
+                    advisory: None,
+                    vulnerabilities: Vec::new(),
                 }
             })
             .collect();

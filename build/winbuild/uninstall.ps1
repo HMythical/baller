@@ -1,16 +1,14 @@
 #!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+    Uninstalls baller.exe.
+
+.DESCRIPTION
+    Convenience wrapper. The uninstall logic lives in build.ps1 so that this
+    script and `build.ps1 -Command uninstall` can never disagree about where
+    the binary was put; delegating is the whole point of keeping this file.
+#>
 [CmdletBinding()]
+param()
 
-. "$PSScriptRoot\config.ps1"
-
-function Invoke-Uninstall {
-    $path = "$InstallDir\baller.exe"
-    if (Test-Path $path) {
-        Remove-Item $path -Force
-        Write-Host "Removed $path" -ForegroundColor Yellow
-    } else {
-        Write-Host "Binary not found at $path" -ForegroundColor Gray
-    }
-}
-
-Invoke-Uninstall
+& "$PSScriptRoot\build.ps1" -Command uninstall

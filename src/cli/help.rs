@@ -19,7 +19,7 @@ struct BuiltinCommand {
     notes: &'static [&'static str],
 }
 
-const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
+const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
     BuiltinCommand {
         name: "draft",
         summary: "Drafts (Installs) a new player onto your team",
@@ -140,6 +140,37 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
         ],
     },
     BuiltinCommand {
+        name: "referee",
+        summary: "Referees (Audits) the roster against public vulnerability data",
+        usage: "baller referee [PACKAGE_NAME] | baller referee <SUBCOMMAND>",
+        details: &[
+            "[PACKAGE_NAME]   Package to audit; omit to audit the whole roster (same as 'audit')",
+            "--refresh        Re-query the advisory service instead of reusing cached verdicts",
+            "--no-scan        Skip the artifact re-scan and only check advisory data",
+            "",
+            "Subcommands:",
+            "audit [PKG...]   Advisory check and artifact re-scan (the default)",
+            "                 --refresh, --no-scan, --fail-on <block|warn>,",
+            "                 --format <json|markdown|sarif>, --out <FILE>",
+            "check [PKG...]   Advisory data only: --refresh, --fail-on <block|warn>",
+            "scan [PKG...]    Artifact re-scan only: --fail-on <block|warn>",
+            "cache            --status (default) | --clear | --prune <DAYS> [--include-vulnerable]",
+            "                 --prune keeps vulnerable verdicts unless --include-vulnerable",
+            "config           Print the [referee] settings in effect; the VirusTotal key shows as set/unset",
+            "sbom             CycloneDX 1.5 JSON of the roster: --out <FILE>, --format cyclonedx-json",
+        ],
+        notes: &[
+            "Every subcommand is read-only: a flagged package stays installed until",
+            "you eject or update it yourself. --fail-on only changes the exit code",
+            "(1 when an advisory or a re-scan finding reaches the level), for CI.",
+            "'cache' writes only to the verdict cache; 'cache', 'config' and 'sbom'",
+            "work with Referee off.",
+            "Referee also runs automatically before draft, update, substitute and",
+            "build install anything. Pass --no-referee to skip it for one command, or",
+            "set 'enabled = false' under [referee] in baller.conf to turn it off.",
+        ],
+    },
+    BuiltinCommand {
         name: "help",
         summary: "Prints this message, or details for one command",
         usage: "baller help [COMMAND]",
@@ -155,7 +186,7 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 11] = [
     },
 ];
 
-const GLOBAL_OPTIONS: [&str; 9] = [
+const GLOBAL_OPTIONS: [&str; 10] = [
     "-y, --yes          Skip confirmation prompts",
     "-q, --quiet        Suppress progress bars and step-by-step output",
     "-v, --verbose      Increase output detail",
@@ -163,6 +194,7 @@ const GLOBAL_OPTIONS: [&str; 9] = [
     "--no-hooks         Skip every pre/post install, eject and update hook",
     "--no-color         Disable colored output",
     "--config <DIR>     Use an alternate baller directory",
+    "--no-referee       Skip the Referee security checks for this run",
     "-h, --help         Print a short usage summary",
     "-V, --version      Print baller's version",
 ];
@@ -542,6 +574,26 @@ mod tests {
             assert!(
                 find_builtin(name).is_some(),
                 "'{}' is a subcommand but has no entry in BUILTIN_COMMANDS",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_referee_subcommand_is_documented() {
+        let command = BallerCommand::command();
+        let referee = command
+            .find_subcommand("referee")
+            .expect("referee is a subcommand");
+        let entry = find_builtin("referee").unwrap();
+        for subcommand in referee.get_subcommands() {
+            let name = subcommand.get_name();
+            assert!(
+                entry
+                    .details
+                    .iter()
+                    .any(|line| line.split_whitespace().next() == Some(name)),
+                "'referee {}' is a subcommand but is not described in the referee help entry",
                 name
             );
         }

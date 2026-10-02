@@ -211,6 +211,8 @@ fn parse_cargo_info(name: &str, output: &str) -> Result<Package, BallError> {
         hash_algorithm: None,
         download_url: None,
         source: PackageSource::Cargo { crate_name },
+        advisory: None,
+        vulnerabilities: Vec::new(),
     })
 }
 
@@ -256,6 +258,8 @@ fn parse_cargo_search_output(output: &str) -> Vec<Package> {
             source: PackageSource::Cargo {
                 crate_name: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         });
     }
 

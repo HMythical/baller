@@ -25,6 +25,10 @@ the process exits with a non-zero status code.
 | `NoMatchingAsset` | A GitHub release has no asset built for the host platform. Carries the package, the host `<os>-<arch>`, and every asset name the release offered |
 | `NoBinaryFound` | An archive extracted cleanly but contained no executable (an empty file counts as none). Carries the package, version, extract directory and cached archive path |
 | `PlatformMismatch` | The extracted binary is a definite executable for another platform — PE/Windows on Linux, ELF on Windows. Carries the package, version, detected format, the rejected binary and the cached archive path; the host `<os>-<arch>` is rendered in the message |
+| `RefereeBlocked` | Referee's advisory gate refused the plan. Carries every package over the block threshold with its advisories and the reason. Raised before the install loop, so nothing was downloaded, linked or recorded |
+| `RefereeScanBlocked` | Referee's artifact scan refused a downloaded package. Carries the package, version and every finding. Raised after extraction and before linking; the extract directory and cached archive are both purged (`discarded = false` on `build`'s cargo path, where the user's own compiled binary is deliberately left in place) |
+| `RefereeUnavailable` | The advisory service could not be reached. Fatal only under `fail_policy = fail-closed`; the default fail-open path reports the packages as `unverified` and continues |
+| `RefereeAuditFailed` | `baller referee audit`/`check`/`scan --fail-on block\|warn` found an advisory or re-scan finding at or above that level; each package is named with the phase that tripped it. Raised after the report is printed, only to make the exit code non-zero for CI; nothing was changed |
 
 ## Database Startup Errors
 
@@ -37,12 +41,19 @@ command at startup with a single `InvalidConfig` error naming the step:
 | Open the file | `failed to open database at <path>` |
 | Apply pragmas | `failed to set pragmas` (a file that is not a SQLite database fails here) |
 | Create missing tables | `failed to create schema` |
-| Migrate the schema | `failed to inspect installed_packages schema for user_installed column` or `failed to migrate installed_packages: could not add user_installed column` |
+| Migrate the schema | `failed to inspect installed_packages schema for <column> column` or `failed to migrate installed_packages: could not add <column> column`, where `<column>` is `user_installed` or `advisory` |
 
-The migration adds the `user_installed` column to databases created before it
-existed; a healthy one is migrated silently. A database that gets past startup
-is fully migrated, so a later `query error` from an unrelated command points at
-a real defect, not at a migration that silently did not happen.
+Two migrations run at that step, each independent and each reported by its own
+name. `migrate_user_installed` adds the `user_installed` column to databases
+created before it existed. `migrate_advisory` adds the `advisory` column to
+databases created before Referee existed; existing rows migrate to NULL, which
+reads as "declared nothing" rather than an empty declaration. A healthy database
+is migrated silently by both, and each is idempotent.
+
+A database that gets past startup is fully migrated, so a later `query error`
+from an unrelated command — `no such column: user_installed` or
+`no such column: advisory` — points at a real defect, not at a migration that
+silently did not happen.
 
 ## GitHub Source Asset Errors
 
@@ -219,6 +230,39 @@ Per command:
 | `build` | Nothing is linked (neither the platform default nor `--install-dir`) and no row is written, so the manifest can be fixed and rebuilt |
 | `substitute` | Fails **before** the old package is ejected, so the roster keeps the working package rather than losing it for an unusable replacement |
 | `update` | The upgrade aborts. `update` prunes the old extract directory before unpacking the new archive, so the previously linked binary is gone — re-run `draft --force` (or `update` once upstream ships a usable asset) to restore it |
+
+## Referee Errors
+
+`RefereeBlocked` is raised by the Phase A gate, which runs on the whole resolved
+plan **before** the install loop and before the `pre_install` hook. Nothing has
+been fetched at that point, so the block is atomic by construction: a blocked
+dependency in the middle of a five-package plan leaves zero symlinks, zero
+roster rows and an empty cache.
+
+`RefereeScanBlocked` is raised after an archive is extracted and before its
+binary is linked. The extract directory and the cached archive are both removed
+through the same cleanup `NoBinaryFound` uses, so a retry re-downloads rather
+than reusing a rejected archive.
+
+| Command | On `RefereeScanBlocked` |
+|---------|-------------------------|
+| `draft` | The package is not linked and not recorded; earlier packages in the same run stay installed |
+| `substitute` | Fails before the old package is ejected |
+| `update` | The scan runs **before** the old extract directory is pruned, so a rejected upgrade leaves the previously linked binary intact and still runnable |
+| `build` (manifest) | Same as `draft`: the download is purged and nothing is linked or recorded |
+| `build` (Cargo project) | The scan covers the one compiled binary. It is **not** deleted — it is the user's own build output — so the error reads "…the compiled binary … was left in place and nothing was linked" instead of "the download was discarded" |
+
+Each finding in the error is prefixed with its severity in capitals —
+`• BLOCK: [rule] path — evidence` or `• WARN: …` — and block findings, including
+a VirusTotal detection, are listed first.
+
+Both carry the advisories or findings that caused them, and `RefereeBlocked`
+names the escape hatches (`--no-referee`, or raising `referee.block_at`).
+`RefereeUnavailable` is only fatal under `fail_policy = fail-closed`.
+`RefereeAuditFailed` is not an install failure at all: it is how
+`baller referee --fail-on` reports, through the exit code, that the audit found
+something at or above the chosen level.
+See [referee.md](referee.md).
 
 ## Rollback on Partial Failure
 

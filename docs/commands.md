@@ -1,3 +1,4 @@
+
 # CLI Reference
 
 ## Overview
@@ -24,6 +25,7 @@ These work on every subcommand and may appear before or after it —
 | `--no-hooks` | Skip every pre/post install, eject and update hook |
 | `--no-color` | Disable colored output (useful in CI) |
 | `--config <DIR>` | Use an alternate baller directory; db, cache and hooks all derive from it |
+| `--no-referee` | Skip the Referee security checks (both phases) for this run — see [referee.md](referee.md) |
 
 `--json` prints a single JSON document on stdout and suppresses every other
 print, so command output stays parseable.
@@ -44,6 +46,11 @@ baller draft <package_name> [--version <V>] [--source <S>] [--no-deps] [--dry-ru
 Fetches the package and all its transitive dependencies from the registry chain,
 downloads, verifies the package hash (SHA-256 for GitHub/Baller, SHA-512 for
 Chocolatey), extracts, symlinks the binary, and records in the SQLite database.
+
+Referee checks the whole resolved plan against public vulnerability data before
+the install loop starts, and scans each extracted archive before its binary is
+linked. A blocked plan installs nothing at all; `--no-referee` skips both
+checks. See [referee.md](referee.md).
 
 **Flags:**
 | Flag | Description |
@@ -431,7 +438,7 @@ see [Build a Rust project from source](#build-a-rust-project-from-source).
 **Flags:**
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Parse and validate the manifest, print the plan, and stop before any download |
+| `--dry-run` | Parse and validate the manifest, resolve a missing `download_url`, run Referee's advisory gate, print the plan (including any block it would hit), and stop before any download. A manifest without `download_url` therefore makes a registry call and an advisory call |
 | `--no-deps` | Ignore the manifest's declared dependencies, so none are recorded |
 | `--install-dir <DIR>` | Link the binary into this directory instead of the platform default |
 | `--force`, `-f` | Build over a package that is already on the roster (otherwise that is an error) |
@@ -444,24 +451,32 @@ The pipeline mirrors `draft`:
 
 1. Resolve and parse the manifest (selecting the host's `[source.<os>]` table, if
    any), then validate that `name` and `version` are present.
-2. Check that the effective source can serve this host and that the host's CPU
-   is in `architectures`, if declared. A mismatch fails here, before `--dry-run`
-   reports a plan and before any hook runs.
-3. Run the `pre_install` hook.
-4. Resolve the package source:
+2. Apply `--source` if given, then check that the effective source can serve this
+   host and that the host's CPU is in `architectures`, if declared. A mismatch
+   fails here, before `--dry-run` reports a plan, before any hook runs and
+   before anything is fetched.
+3. Fill in a missing `download_url` from the manifest's source (GitHub,
+   Chocolatey, Baller registry; system and cargo sources need none). The
+   registry's version replaces the manifest's when they differ.
+4. Run Referee's advisory gate on this one package — `build` does no dependency
+   resolution, so its recorded `dependencies` are not checked — then the
+   `--force` check, then the `pre_install` hook. A blocked package never runs a
+   hook.
+5. Resolve the package source and install from it:
    - `download_url` present → download it directly.
    - GitHub source → fetch the latest release to fill in the download URL (and
      the resolved version, which is printed when it differs from the manifest).
    - Chocolatey source → resolve the `.nupkg` from the manifest's `feed_url` (Windows only).
    - Baller registry source → resolve from the manifest's registry `url`.
    - System source → install via the native package manager (Linux only).
-5. Verify the checksum when the manifest carries one, extract the archive, and
-   locate the binary. An archive that extracts without an executable fails with
+6. Verify the checksum when the manifest carries one, extract the archive, run
+   Referee's artifact scan, and locate the binary. A scan block purges the
+   download; an archive that extracts without an executable fails with
    `NoBinaryFound`, and a binary built for another platform (a PE `.exe` on
-   Linux) fails with `PlatformMismatch`; either way nothing is linked and
-   nothing reaches the roster.
-6. Link the binary (symlink on Linux, `.exe` copy on Windows).
-7. Record the package in the database with `manifest_path` set and
+   Linux) fails with `PlatformMismatch`. Either way nothing is linked and
+   nothing is on the roster.
+7. Link the binary (symlink on Linux, `.exe` copy on Windows).
+8. Record the package in the database with `manifest_path` set and
    `user_installed = true`, then run the `post_install` hook.
 
 ```
@@ -488,12 +503,19 @@ When `<path>` is a directory with no `baller.toml`/`baller.json` but with a
 
 1. Read `package.name`, `package.version` (defaults to `0.0.0`) and the first
    `[[bin]]` name (defaults to the package name) out of `Cargo.toml`.
-2. Run `cargo build --release` in the project directory.
-3. Locate the artifact in `target/release` (the bin name, then the same name
+2. Run Referee's advisory gate on the crate's `crates.io` identity, so a
+   known-vulnerable crate is refused before any compile time is spent (a dry
+   run prints the block instead). An unpublished crate has no advisories.
+3. Run `cargo build --release` in the project directory.
+4. Locate the artifact in `target/release` (the bin name, then the same name
    with `-` swapped for `_`, plus `.exe` on Windows).
-4. Link it into the platform default bin directory — `~/.local/bin` on Linux,
+5. Scan that one binary with Referee's Phase B rules — not the whole
+   `target/release` tree, whose tens of thousands of build files would exhaust
+   the scan budget. A block leaves the binary where cargo put it and links
+   nothing.
+6. Link it into the platform default bin directory — `~/.local/bin` on Linux,
    `%LOCALAPPDATA%\baller\bin` on Windows — or into `--install-dir`.
-5. Record the package with `source = cargo`, `manifest_path` set to the
+7. Record the package with `source = cargo`, `manifest_path` set to the
    `Cargo.toml` and `user_installed = true`, then run the `post_install` hook.
 
 ```
@@ -586,6 +608,74 @@ Final confirmation: inject 'my-tool' from /usr/local/bin/my-tool? [yes/no] yes
 Done Injected 'my-tool' -> /usr/local/bin/my-tool
 Run it with: baller my-tool
 ```
+
+---
+
+## referee — Audit the Roster for Vulnerabilities
+
+```
+baller referee [package_name] [--refresh] [--no-scan]          # ≡ audit
+baller referee audit  [package...] [--refresh] [--no-scan]
+                      [--fail-on block|warn] [--format json|markdown|sarif] [--out FILE]
+baller referee check  [package...] [--refresh] [--fail-on block|warn]
+baller referee scan   [package...] [--fail-on block|warn]
+baller referee cache  [--status | --clear | --prune <DAYS> [--include-vulnerable]]
+baller referee config
+baller referee sbom   [--out FILE] [--format cyclonedx-json]
+```
+
+A command group over the Referee security layer. With no subcommand it audits,
+exactly as it always has: every installed package (or the one named) is
+re-checked against public vulnerability data and its extracted artifact is
+re-scanned. A package name and a subcommand cannot be mixed — `baller referee fd`
+audits `fd`; `baller referee audit fd` says the same thing explicitly.
+
+| Subcommand | What it does |
+|------------|--------------|
+| `audit` | Advisory check (Phase A) and artifact re-scan (Phase B). The default |
+| `check` | Advisory data only — the same path as `audit --no-scan`; no extracted tree is walked |
+| `scan` | Artifact re-scan only — no advisory lookup. A swept extract directory reports `artifact not on disk — nothing to re-scan`, distinct from a clean scan |
+| `cache` | Verdict-cache management: `--status` (the default) shows rows per ecosystem, the newest `checked_at` and how many `clean` verdicts `cache_ttl_days` has aged out (`stale` in `--json`); `--clear` empties the cache; `--prune <DAYS>` drops verdicts older than DAYS days **except `vulnerable` ones**, and reports how many vulnerable verdicts it kept; `--include-vulnerable` (only with `--prune`) drops those too and reports how many went. `--status`, `--clear` and `--prune` are mutually exclusive |
+| `config` | Prints the `[referee]` settings in effect. `enabled` accounts for `--no-referee`; `cache_ttl_days` shows `off` when unset; the VirusTotal key is shown only as `set`/`unset` |
+| `sbom` | Writes a CycloneDX 1.5 JSON inventory of the roster to stdout or `--out` |
+
+**Flags:**
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--refresh` | bare, `audit`, `check` | Drop cached verdicts and re-query the advisory service. A `clean` verdict recorded earlier was computed against the advisory data of that day |
+| `--no-scan` | bare, `audit` | Check advisory data only; skip the artifact re-scan |
+| `--fail-on block\|warn` | `audit`, `check`, `scan` | Exit 1 when any package reaches the level through an advisory (banded at or above `block_at`/`warn_at`) or a re-scan finding (`block`: a block-severity finding; `warn`: any finding). `warn` includes everything `block` catches. `check` never scans, so only advisories count there; `scan` has no advisories, so only findings count. Only the exit code changes — nothing is ejected or updated |
+| `--format json\|markdown\|sarif` | `audit` | Render the report in this format. Without `--out` it replaces the table on stdout |
+| `--out FILE` | `audit`, `sbom` | Write the formatted report (or SBOM) to FILE. On `audit` it requires `--format`, and stdout keeps the normal table or `--json` output |
+| `--format cyclonedx-json` | `sbom` | The SBOM format (the default and only one) |
+
+Every subcommand is read-only with respect to the roster; `cache` writes only
+to the verdict cache. `audit`, `check` and `scan` refuse to run when Referee is
+disabled; `cache`, `config` and `sbom` work either way.
+
+```
+$ baller referee --refresh
+Refereeing 2 package(s) — warn at 2.50, block at 4.00 on the 0-5 risk scale
+PACKAGE                  VERSION        STATUS       RISK     ADVISORIES
+alpha                    1.0.0          vulnerable   4.90     GHSA-late
+    • GHSA-late (CVE-2026-4242) CVSS 9.8 — a serious flaw in alpha
+beta                     2.0.0          clean        —        —
+
+Summary 2 package(s): 1 over the block threshold, 0 warned, 0 not verified
+Note the audit changes nothing — eject or update a flagged package yourself
+
+$ baller referee check --fail-on block -q
+...
+[Error]: referee found 1 package(s) at or above the 'block' band (--fail-on block): alpha v1.0.0
+$ echo $?
+1
+```
+
+Referee also runs automatically inside `draft`, `update`, `substitute` and
+`build` (one package — `build` resolves no dependencies). `eject` is not gated:
+it installs nothing.
+[referee.md](referee.md) documents the phases, the risk index, the scan rules,
+the SARIF and SBOM output and the `[referee]` config section.
 
 ---
 

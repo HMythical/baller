@@ -34,6 +34,8 @@ pub fn bench_db_operations(c: &mut Criterion) {
                     owner: "test".to_string(),
                     repo: "test".to_string(),
                 },
+                advisory: None,
+                vulnerabilities: Vec::new(),
             };
 
             let _ = db.insert_package(&package, "/install/path", None, None, true);

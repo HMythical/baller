@@ -35,8 +35,44 @@ pub struct InstalledPackage {
     pub manifest_path: Option<String>,
     #[allow(dead_code)]
     pub installed_at: String,
+    /// The package's self-declared advisory identity, as JSON.
+    ///
+    /// Kept on the roster so `baller referee` can re-check a package under the
+    /// same identity the install checked it under. Without it an audit would
+    /// know strictly less than the install did, which is the one thing an
+    /// audit must not do.
+    pub advisory: Option<String>,
     #[allow(dead_code)]
     pub dependencies: Vec<String>,
+}
+
+impl InstalledPackage {
+    /// Rebuild the `Package` this roster row was recorded from.
+    ///
+    /// Lossy by design: the roster keeps what an install produced, not the
+    /// registry document it came from. It keeps enough for Referee — name,
+    /// version, source and repository — which is exactly what advisory
+    /// identities are built out of.
+    pub fn to_package(&self) -> Package {
+        Package {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            description: self.description.clone(),
+            author: self.author.clone(),
+            repository: self.repository.clone(),
+            architectures: None,
+            dependencies: None,
+            sha256: self.sha256.clone(),
+            hash_algorithm: None,
+            download_url: self.download_url.clone(),
+            source: deserialize_source(&self.source, self.source_detail.as_deref()),
+            advisory: self
+                .advisory
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok()),
+            vulnerabilities: Vec::new(),
+        }
+    }
 }
 
 pub struct DbManager {
@@ -83,7 +119,8 @@ impl DbManager {
                 install_path TEXT NOT NULL,
                 bin_path TEXT,
                 manifest_path TEXT,
-                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                installed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                advisory TEXT
             );
 
             CREATE TABLE IF NOT EXISTS package_dependencies (
@@ -99,11 +136,23 @@ impl DbManager {
                 version TEXT NOT NULL,
                 source TEXT NOT NULL,
                 sha256 TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS referee_cache (
+                ecosystem   TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                verdict     TEXT NOT NULL,
+                risk        REAL,
+                advisories  TEXT NOT NULL,
+                checked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (ecosystem, name, version)
             );",
         )
         .map_err(|e| BallError::InvalidConfig(format!("failed to create schema: {}", e)))?;
 
         Self::migrate_user_installed(&conn)?;
+        Self::migrate_advisory(&conn)?;
 
         Ok(Self { conn })
     }
@@ -145,6 +194,49 @@ impl DbManager {
         Ok(())
     }
 
+    /// Adds the `advisory` column to an `installed_packages` table created before
+    /// Referee existed. Does nothing when the column is already there, so it is safe
+    /// on a fresh database and on every later initialization.
+    ///
+    /// Existing rows get NULL, which reads as "declared nothing" — the same answer a
+    /// package without an `[advisory]` section gives. There is no backfill statement;
+    /// a nullable column with no default *is* the backfill.
+    ///
+    /// Returns `Err(InvalidConfig)` when the schema cannot be inspected or the column
+    /// cannot be added, with a message naming which of the two failed. Swallowing
+    /// either would report an unmigrated database as healthy and defer the failure to
+    /// an unrelated `query error: no such column: advisory` from whichever Referee
+    /// command read the roster next.
+    fn migrate_advisory(conn: &Connection) -> Result<(), BallError> {
+        let has_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to inspect installed_packages schema for advisory column: {}",
+                    e
+                ))
+            })?;
+
+        if has_column == 0 {
+            conn.execute(
+                "ALTER TABLE installed_packages ADD COLUMN advisory TEXT",
+                [],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!(
+                    "failed to migrate installed_packages: could not add advisory column: {}",
+                    e
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
     pub fn insert_package(
         &self,
         pkg: &Package,
@@ -154,10 +246,17 @@ impl DbManager {
         user_installed: bool,
     ) -> Result<(), BallError> {
         let (source, source_detail) = serialize_source(&pkg.source);
+        // A declaration that cannot be re-encoded is dropped rather than
+        // failing the install: it is metadata about the package, not the
+        // package.
+        let advisory = pkg
+            .advisory
+            .as_ref()
+            .and_then(|declaration| serde_json::to_string(declaration).ok());
 
         self.conn.execute(
-            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, user_installed, install_path, bin_path, manifest_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO installed_packages (name, version, source, source_detail, description, author, repository, download_url, sha256, user_installed, install_path, bin_path, manifest_path, advisory)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(name) DO UPDATE SET
                  version=excluded.version,
                  source=excluded.source,
@@ -171,11 +270,13 @@ impl DbManager {
                  install_path=excluded.install_path,
                  bin_path=excluded.bin_path,
                  manifest_path=excluded.manifest_path,
+                 advisory=excluded.advisory,
                  installed_at=datetime('now')",
             params![
                 pkg.name, pkg.version, source, source_detail,
                 pkg.description, pkg.author, pkg.repository,
-                pkg.download_url, pkg.sha256, user_installed, install_path, bin_path, manifest_path
+                pkg.download_url, pkg.sha256, user_installed, install_path, bin_path, manifest_path,
+                advisory
             ],
         ).map_err(|e| BallError::InvalidConfig(format!("failed to insert package '{}': {}", pkg.name, e)))?;
 
@@ -240,7 +341,7 @@ impl DbManager {
     pub fn get_package(&self, name: &str) -> Result<InstalledPackage, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE name = ?1"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -262,6 +363,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -278,7 +380,7 @@ impl DbManager {
     pub fn list_packages(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -300,6 +402,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -315,7 +418,7 @@ impl DbManager {
         let pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -337,6 +440,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -409,7 +513,7 @@ impl DbManager {
     pub fn list_frozen(&self) -> Result<Vec<InstalledPackage>, BallError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, version, source, source_detail, description, author, repository,
-                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at
+                    download_url, sha256, frozen, user_installed, install_path, bin_path, manifest_path, installed_at, advisory
              FROM installed_packages WHERE frozen = 1 ORDER BY name"
         ).map_err(|e| BallError::InvalidConfig(format!("query error: {}", e)))?;
 
@@ -431,6 +535,7 @@ impl DbManager {
                     bin_path: row.get(12)?,
                     manifest_path: row.get(13)?,
                     installed_at: row.get(14)?,
+                    advisory: row.get(15)?,
                     dependencies: Vec::new(),
                 })
             })
@@ -476,6 +581,276 @@ impl DbManager {
                 BallError::InvalidConfig(format!("failed to query deps for '{}': {}", pkg_name, e))
             })?;
         Ok(count > 0)
+    }
+
+    #[allow(dead_code)]
+    /// A Referee verdict recorded earlier for this exact identity and version.
+    pub fn referee_cache_get(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<CachedVerdict>, BallError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT verdict, risk, advisories, checked_at FROM referee_cache
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let row = stmt.query_row(params![ecosystem, name, version], |row| {
+            Ok(CachedVerdict {
+                verdict: row.get(0)?,
+                risk: row.get(1)?,
+                advisories: row.get(2)?,
+                checked_at: row.get(3)?,
+            })
+        });
+
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(BallError::InvalidConfig(format!(
+                "failed to read the referee cache: {}",
+                e
+            ))),
+        }
+    }
+
+    /// A cached verdict that may still be acted on, and how long it has stood.
+    ///
+    /// `ttl_days` bounds how old a `clean` verdict may be. A `vulnerable` row
+    /// is exempt: re-querying one could only confirm the block it already
+    /// causes, so the answer is used whatever its age. `None` keeps every row,
+    /// which is baller's historical behaviour.
+    pub fn referee_cache_get_fresh(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        ttl_days: Option<u32>,
+    ) -> Result<Option<CachedVerdict>, BallError> {
+        // Strictly newer than the cutoff: a row written this second is not
+        // fresh under a TTL of `0`, which must re-ask every time.
+        let cutoff: Option<String> = ttl_days.map(|days| format!("-{} days", days));
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT verdict, risk, advisories, checked_at FROM referee_cache
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3
+                   AND (verdict = 'vulnerable' OR ?4 IS NULL
+                        OR checked_at > datetime('now', ?4))",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let row = stmt.query_row(params![ecosystem, name, version, cutoff], |row| {
+            Ok(CachedVerdict {
+                verdict: row.get(0)?,
+                risk: row.get(1)?,
+                advisories: row.get(2)?,
+                checked_at: row.get(3)?,
+            })
+        });
+
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(BallError::InvalidConfig(format!(
+                "failed to read the referee cache: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Whole days since `checked_at`, as SQLite counts them.
+    ///
+    /// `checked_at` is SQLite's own `datetime('now')` text, so the arithmetic
+    /// stays in SQLite rather than pulling in a date crate.
+    pub fn referee_age_days(&self, checked_at: &str) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT CAST(julianday('now') - julianday(?1) AS INTEGER)",
+                params![checked_at],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Age a cached verdict by a SQLite datetime modifier, e.g. `-40 days`.
+    ///
+    /// Lets the Referee tests prove a row has aged past the TTL without
+    /// sleeping or reaching for a date crate.
+    #[cfg(test)]
+    pub fn referee_cache_age_for_test(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        modifier: &str,
+    ) -> Result<usize, BallError> {
+        self.conn
+            .execute(
+                "UPDATE referee_cache SET checked_at = datetime('now', ?4)
+                 WHERE ecosystem = ?1 AND name = ?2 AND version = ?3",
+                params![ecosystem, name, version, modifier],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to age the referee cache: {}", e))
+            })
+    }
+
+    /// Record a verdict, replacing any earlier one for the same key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn referee_cache_put(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        verdict: &str,
+        risk: Option<f32>,
+        advisories: &str,
+    ) -> Result<(), BallError> {
+        self.conn
+            .execute(
+                "INSERT INTO referee_cache (ecosystem, name, version, verdict, risk, advisories, checked_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                 ON CONFLICT(ecosystem, name, version) DO UPDATE SET
+                     verdict=excluded.verdict,
+                     risk=excluded.risk,
+                     advisories=excluded.advisories,
+                     checked_at=excluded.checked_at",
+                params![
+                    ecosystem,
+                    name,
+                    version,
+                    verdict,
+                    risk.map(|risk| risk as f64),
+                    advisories
+                ],
+            )
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to write the referee cache: {}", e))
+            })?;
+        Ok(())
+    }
+
+    /// Drop every cached verdict, for `referee --refresh`.
+    pub fn referee_cache_clear(&self) -> Result<usize, BallError> {
+        self.conn
+            .execute("DELETE FROM referee_cache", [])
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to clear the referee cache: {}", e))
+            })
+    }
+
+    /// How many verdicts are cached.
+    pub fn referee_cache_count(&self) -> Result<i64, BallError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM referee_cache", [], |row| row.get(0))
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to count the referee cache: {}", e))
+            })
+    }
+
+    /// Cached verdicts per ecosystem, with the newest `checked_at` of each,
+    /// for `referee cache --status`.
+    pub fn referee_cache_stats(&self) -> Result<Vec<RefereeCacheStats>, BallError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT ecosystem, COUNT(*), MAX(checked_at) FROM referee_cache
+                 GROUP BY ecosystem ORDER BY ecosystem",
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("referee cache query error: {}", e)))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RefereeCacheStats {
+                    ecosystem: row.get(0)?,
+                    count: row.get(1)?,
+                    newest: row.get(2)?,
+                })
+            })
+            .map_err(|e| {
+                BallError::InvalidConfig(format!("failed to read the referee cache: {}", e))
+            })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            BallError::InvalidConfig(format!("failed to read the referee cache: {}", e))
+        })
+    }
+
+    /// Drop verdicts computed more than `days` days ago, for
+    /// `referee cache --prune`.
+    ///
+    /// `vulnerable` rows are kept unless `include_vulnerable` is set. The TTL
+    /// in [`Self::referee_cache_get_fresh`] honours a block no matter how old
+    /// it is, and pruning must agree: deleting a vulnerable verdict turns a
+    /// known vulnerability back into "no data", which an audit then reports as
+    /// `unknown` or `unverified`. How many vulnerable rows were kept is
+    /// returned so the command can say what it declined to delete — a silent
+    /// non-deletion is as misleading as a silent deletion.
+    pub fn referee_cache_prune(
+        &self,
+        days: u32,
+        include_vulnerable: bool,
+    ) -> Result<RefereeCachePrune, BallError> {
+        let to_err = |e: rusqlite::Error| {
+            BallError::InvalidConfig(format!("failed to prune the referee cache: {}", e))
+        };
+        let cutoff = format!("-{} days", days);
+
+        let old_vulnerable: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM referee_cache
+                 WHERE verdict = 'vulnerable' AND checked_at < datetime('now', ?1)",
+                params![cutoff],
+                |row| row.get(0),
+            )
+            .map_err(to_err)?;
+
+        let sql = if include_vulnerable {
+            "DELETE FROM referee_cache WHERE checked_at < datetime('now', ?1)"
+        } else {
+            "DELETE FROM referee_cache
+             WHERE checked_at < datetime('now', ?1) AND verdict <> 'vulnerable'"
+        };
+        let removed = self.conn.execute(sql, params![cutoff]).map_err(to_err)?;
+
+        let old_vulnerable = old_vulnerable as usize;
+        Ok(if include_vulnerable {
+            RefereeCachePrune {
+                removed,
+                removed_vulnerable: old_vulnerable,
+                kept_vulnerable: 0,
+            }
+        } else {
+            RefereeCachePrune {
+                removed,
+                removed_vulnerable: 0,
+                kept_vulnerable: old_vulnerable,
+            }
+        })
+    }
+
+    /// How many `clean` verdicts are older than `ttl_days` and will therefore
+    /// be re-queried on the next install. `None` is always `0`: with no TTL
+    /// nothing ages out.
+    pub fn referee_cache_stale_count(&self, ttl_days: Option<u32>) -> Result<i64, BallError> {
+        let Some(days) = ttl_days else {
+            return Ok(0);
+        };
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM referee_cache
+                 WHERE verdict = 'clean' AND checked_at <= datetime('now', ?1)",
+                params![format!("-{} days", days)],
+                |row| row.get(0),
+            )
+            .map_err(|e| BallError::InvalidConfig(format!("failed to count stale verdicts: {}", e)))
     }
 
     #[allow(dead_code)]
@@ -584,6 +959,79 @@ impl DbManager {
     }
 }
 
+/// The inverse of [`serialize_source`].
+///
+/// An unrecognised `source` column — written by another build, or hand-edited —
+/// falls back to a GitHub source with no owner, which produces no advisory
+/// identity at all. That reads as `Unknown`, which is the truthful answer for a
+/// row baller cannot interpret.
+pub fn deserialize_source(source: &str, detail: Option<&str>) -> PackageSource {
+    let detail = detail.unwrap_or("").trim();
+
+    match source {
+        "github" => {
+            let (owner, repo) = detail.split_once('/').unwrap_or(("", detail));
+            PackageSource::GitHub {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+            }
+        }
+        "baller_registry" => PackageSource::BallerRegistry {
+            url: detail.to_string(),
+        },
+        "chocolatey" => PackageSource::Chocolatey {
+            feed_url: detail.to_string(),
+        },
+        "system" => PackageSource::System {
+            manager: detail.to_string(),
+        },
+        "cargo" => PackageSource::Cargo {
+            crate_name: detail.to_string(),
+        },
+        other => {
+            tracing::debug!("unrecognised roster source '{}'", other);
+            PackageSource::GitHub {
+                owner: String::new(),
+                repo: String::new(),
+            }
+        }
+    }
+}
+
+/// A verdict recorded by an earlier Referee run.
+///
+/// Cached rows are keyed by the exact `(ecosystem, name, version)` they were
+/// computed from: a `Clean` verdict says nothing about any other version, and
+/// reusing it for one would be the whole point of the cache getting it wrong.
+#[derive(Debug, Clone)]
+pub struct CachedVerdict {
+    pub verdict: String,
+    pub risk: Option<f64>,
+    /// The matched advisories, as the JSON `referee_cache.advisories` holds
+    pub advisories: String,
+    pub checked_at: String,
+}
+
+/// One ecosystem's share of the verdict cache.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefereeCacheStats {
+    pub ecosystem: String,
+    pub count: i64,
+    /// The most recent `checked_at` in this ecosystem
+    pub newest: Option<String>,
+}
+
+/// What `referee cache --prune` did, and what it declined to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefereeCachePrune {
+    /// Rows deleted, of every verdict
+    pub removed: usize,
+    /// Of `removed`, how many were `vulnerable` (only with the opt-in)
+    pub removed_vulnerable: usize,
+    /// `vulnerable` rows past the cutoff left in place (only without it)
+    pub kept_vulnerable: usize,
+}
+
 fn serialize_source(source: &PackageSource) -> (String, Option<String>) {
     match source {
         PackageSource::GitHub { owner, repo } => {
@@ -676,6 +1124,8 @@ mod tests {
                 owner: "owner".to_string(),
                 repo: name.to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         }
     }
 
@@ -687,6 +1137,388 @@ mod tests {
     // `remove_file`. The DbManager owns an open sqlite Connection (holding an OS
     // file handle); on Windows a file cannot be deleted while a handle is open,
     // so dropping the connection first is required to avoid leaking .db files.
+
+    #[test]
+    fn test_advisory_declaration_survives_the_roster() {
+        use crate::core::package::AdvisoryDeclaration;
+
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        let mut pkg = make_pkg("declares", "1.0.0");
+        pkg.advisory = Some(AdvisoryDeclaration {
+            ecosystem: Some("crates.io".to_string()),
+            name: Some("declares".to_string()),
+            aliases: vec!["CVE-2026-1".to_string()],
+        });
+        db.insert_package(&pkg, "/install", None, None, true)
+            .unwrap();
+
+        let row = db.get_package("declares").unwrap();
+        assert!(row.advisory.is_some());
+
+        // The audit must be able to check a package under the same identity
+        // the install checked it under.
+        let restored = row.to_package();
+        assert_eq!(restored.advisory, pkg.advisory);
+        assert_eq!(
+            restored.advisory_identities(),
+            vec![("crates.io".to_string(), "declares".to_string())]
+        );
+        assert_eq!(restored.declared_aliases(), ["CVE-2026-1".to_string()]);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_a_package_without_a_declaration_stores_null() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        db.insert_package(&make_pkg("plain", "1.0.0"), "/install", None, None, true)
+            .unwrap();
+
+        let row = db.get_package("plain").unwrap();
+        assert!(row.advisory.is_none());
+        assert!(row.to_package().advisory.is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_a_pre_referee_database_gains_the_advisory_column() {
+        let path = test_db_path();
+        {
+            // A database written before Referee existed: no advisory column.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE installed_packages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'github',
+                    source_detail TEXT,
+                    description TEXT,
+                    author TEXT,
+                    repository TEXT,
+                    download_url TEXT,
+                    sha256 TEXT,
+                    frozen BOOLEAN NOT NULL DEFAULT 0,
+                    user_installed BOOLEAN NOT NULL DEFAULT 1,
+                    install_path TEXT NOT NULL,
+                    bin_path TEXT,
+                    manifest_path TEXT,
+                    installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO installed_packages (name, version, install_path)
+                VALUES ('legacy', '0.9.0', '/old/path');",
+            )
+            .unwrap();
+        }
+
+        let db = init_db(&path);
+        let row = db.get_package("legacy").unwrap();
+        assert_eq!(row.version, "0.9.0");
+        assert!(row.advisory.is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_round_trip() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        assert!(db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .is_none());
+        assert_eq!(db.referee_cache_count().unwrap(), 0);
+
+        db.referee_cache_put(
+            "crates.io",
+            "serde",
+            "1.0.0",
+            "vulnerable",
+            Some(3.75),
+            "[{\"id\":\"GHSA-a\",\"aliases\":[],\"cvss\":7.5,\"summary\":null}]",
+        )
+        .unwrap();
+
+        let cached = db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.verdict, "vulnerable");
+        assert!((cached.risk.unwrap() - 3.75).abs() < 1e-6);
+        assert!(cached.advisories.contains("GHSA-a"));
+        assert!(!cached.checked_at.is_empty());
+
+        // A different version is a different key.
+        assert!(db
+            .referee_cache_get("crates.io", "serde", "1.0.1")
+            .unwrap()
+            .is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_put_overwrites_the_same_key() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "serde", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "serde", "1.0.0", "vulnerable", Some(5.0), "[]")
+            .unwrap();
+
+        assert_eq!(db.referee_cache_count().unwrap(), 1);
+        let cached = db
+            .referee_cache_get("crates.io", "serde", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.verdict, "vulnerable");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_clear_empties_it() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "a", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("NuGet", "b", "2.0.0", "clean", None, "[]")
+            .unwrap();
+        assert_eq!(db.referee_cache_count().unwrap(), 2);
+
+        assert_eq!(db.referee_cache_clear().unwrap(), 2);
+        assert_eq!(db.referee_cache_count().unwrap(), 0);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Backdate one cached verdict, as if it had been computed `days` ago.
+    fn age_verdict(db: &DbManager, name: &str, days: u32) {
+        db.conn
+            .execute(
+                "UPDATE referee_cache SET checked_at = datetime('now', ?1) WHERE name = ?2",
+                params![format!("-{} days", days), name],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_referee_cache_stats_group_per_ecosystem() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        assert!(db.referee_cache_stats().unwrap().is_empty());
+
+        db.referee_cache_put("crates.io", "a", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "b", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("NuGet", "c", "2.0.0", "vulnerable", Some(4.5), "[]")
+            .unwrap();
+        age_verdict(&db, "a", 10);
+
+        let stats = db.referee_cache_stats().unwrap();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].ecosystem, "NuGet");
+        assert_eq!(stats[0].count, 1);
+        assert_eq!(stats[1].ecosystem, "crates.io");
+        assert_eq!(stats[1].count, 2);
+
+        // The newest crates.io row is `b`, not the backdated `a`.
+        let b = db
+            .referee_cache_get("crates.io", "b", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats[1].newest.as_deref(), Some(b.checked_at.as_str()));
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_prune_keeps_vulnerable_rows_by_default() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old-clean", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "old-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "new-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        age_verdict(&db, "old-clean", 40);
+        age_verdict(&db, "old-bad", 40);
+
+        let outcome = db.referee_cache_prune(30, false).unwrap();
+        assert_eq!(
+            outcome,
+            RefereeCachePrune {
+                removed: 1,
+                removed_vulnerable: 0,
+                kept_vulnerable: 1,
+            }
+        );
+        assert!(db
+            .referee_cache_get("crates.io", "old-bad", "1.0.0")
+            .unwrap()
+            .is_some());
+
+        // A second run still reports the vulnerable row it is keeping.
+        assert_eq!(
+            db.referee_cache_prune(30, false).unwrap().kept_vulnerable,
+            1
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_prune_opt_in_removes_vulnerable_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old-clean", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "old-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        db.referee_cache_put(
+            "crates.io",
+            "new-bad",
+            "1.0.0",
+            "vulnerable",
+            Some(4.5),
+            "[]",
+        )
+        .unwrap();
+        age_verdict(&db, "old-clean", 40);
+        age_verdict(&db, "old-bad", 40);
+
+        let outcome = db.referee_cache_prune(30, true).unwrap();
+        assert_eq!(
+            outcome,
+            RefereeCachePrune {
+                removed: 2,
+                removed_vulnerable: 1,
+                kept_vulnerable: 0,
+            }
+        );
+        // Only rows past the cutoff go, whatever their verdict.
+        assert!(db
+            .referee_cache_get("crates.io", "new-bad", "1.0.0")
+            .unwrap()
+            .is_some());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_prune_drops_only_stale_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+
+        db.referee_cache_put("crates.io", "old", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "older", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        db.referee_cache_put("crates.io", "fresh", "1.0.0", "clean", None, "[]")
+            .unwrap();
+        age_verdict(&db, "old", 10);
+        age_verdict(&db, "older", 40);
+
+        assert_eq!(db.referee_cache_prune(30, false).unwrap().removed, 1);
+        assert!(db
+            .referee_cache_get("crates.io", "older", "1.0.0")
+            .unwrap()
+            .is_none());
+        assert_eq!(db.referee_cache_count().unwrap(), 2);
+
+        assert_eq!(db.referee_cache_prune(7, false).unwrap().removed, 1);
+        assert!(db
+            .referee_cache_get("crates.io", "fresh", "1.0.0")
+            .unwrap()
+            .is_some());
+        assert_eq!(db.referee_cache_count().unwrap(), 1);
+
+        assert_eq!(db.referee_cache_prune(7, false).unwrap().removed, 0);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_deserialize_source_round_trips_every_variant() {
+        let cases = [
+            PackageSource::GitHub {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            PackageSource::BallerRegistry {
+                url: "https://registry.test/api".to_string(),
+            },
+            PackageSource::Chocolatey {
+                feed_url: "https://feed.test/api/v2".to_string(),
+            },
+            PackageSource::System {
+                manager: "apt".to_string(),
+            },
+            PackageSource::Cargo {
+                crate_name: "ripgrep".to_string(),
+            },
+        ];
+
+        for source in cases {
+            let (name, detail) = serialize_source(&source);
+            assert_eq!(deserialize_source(&name, detail.as_deref()), source);
+        }
+    }
+
+    #[test]
+    fn test_deserialize_source_of_an_unknown_name_is_inert() {
+        let source = deserialize_source("quantum", Some("whatever"));
+        assert_eq!(
+            source,
+            PackageSource::GitHub {
+                owner: String::new(),
+                repo: String::new()
+            }
+        );
+    }
 
     #[test]
     fn test_db_init_creates_schema() {
@@ -729,6 +1561,40 @@ mod tests {
     fn user_installed_columns(conn: &Connection) -> i64 {
         conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='user_installed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// A database whose `installed_packages` is a view: `CREATE TABLE IF NOT EXISTS`
+    /// and the schema probe both pass, but neither migration's `ALTER` can run.
+    /// Carries `user_installed` already, so the failure lands on the advisory
+    /// migration instead of stopping at the user_installed one.
+    fn view_db_with_user_installed(path: &PathBuf) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE legacy_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                version TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'github',
+                frozen BOOLEAN NOT NULL DEFAULT 0,
+                user_installed BOOLEAN NOT NULL DEFAULT 1,
+                install_path TEXT NOT NULL,
+                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO legacy_packages (name, version, install_path)
+                VALUES ('legacy-pkg', '1.0.0', '/p');
+            CREATE VIEW installed_packages AS SELECT * FROM legacy_packages;",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn advisory_columns(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('installed_packages') WHERE name='advisory'",
             [],
             |row| row.get(0),
         )
@@ -795,6 +1661,85 @@ mod tests {
         assert_eq!(user_installed_columns(&conn), 1);
 
         drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_init_fails_when_advisory_migration_fails() {
+        let path = test_db_path();
+        let conn = view_db_with_user_installed(&path);
+        drop(conn);
+
+        let err = DbManager::init_at_path(&path)
+            .err()
+            .expect("init must fail on a database it could not migrate")
+            .to_string();
+        assert!(
+            err.contains("advisory"),
+            "error should name the migration step: {}",
+            err
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_advisory_adds_column_to_legacy_db() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        assert_eq!(advisory_columns(&conn), 0);
+
+        DbManager::migrate_advisory(&conn).unwrap();
+        assert_eq!(advisory_columns(&conn), 1);
+
+        // NULL, not an empty string: a row that predates Referee declared nothing,
+        // which is what `audit` has to be able to tell apart from a real declaration
+        let advisory: Option<String> = conn
+            .query_row(
+                "SELECT advisory FROM installed_packages WHERE name = 'legacy-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            advisory.is_none(),
+            "existing rows migrate to NULL, not an empty declaration"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_migrate_advisory_is_idempotent() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+
+        DbManager::migrate_advisory(&conn).unwrap();
+        // The second call must see the column and skip the ALTER, not fail
+        // with "duplicate column name"
+        DbManager::migrate_advisory(&conn).unwrap();
+        assert_eq!(advisory_columns(&conn), 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_init_migrates_advisory_and_user_installed_together() {
+        let path = test_db_path();
+        let conn = legacy_db(&path);
+        drop(conn);
+
+        // A real pre-Referee database opens clean and ends up with both columns
+        let db = DbManager::init_at_path(&path).unwrap();
+        drop(db);
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(user_installed_columns(&conn), 1);
+        assert_eq!(advisory_columns(&conn), 1);
+        drop(conn);
+
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1170,6 +2115,8 @@ mod tests {
             source: PackageSource::System {
                 manager: "apt".to_string(),
             },
+            advisory: None,
+            vulnerabilities: Vec::new(),
         };
 
         db.insert_package(&pkg, "/usr/lib", None, None, true)
@@ -1182,6 +2129,91 @@ mod tests {
         assert_eq!(retrieved.source_detail, Some("apt".to_string()));
         assert_eq!(retrieved.description.unwrap(), "From system PM");
 
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn put_verdict(db: &DbManager, name: &str, verdict: &str) {
+        let risk = (verdict == "vulnerable").then_some(4.9);
+        db.referee_cache_put("crates.io", name, "1.0.0", verdict, risk, "[]")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_referee_cache_get_fresh_without_a_ttl_keeps_every_row() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "old", "clean");
+        db.referee_cache_age_for_test("crates.io", "old", "1.0.0", "-400 days")
+            .unwrap();
+
+        assert!(db
+            .referee_cache_get_fresh("crates.io", "old", "1.0.0", None)
+            .unwrap()
+            .is_some());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_get_fresh_excludes_only_a_stale_clean_row() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "fresh", "clean");
+        put_verdict(&db, "stale", "clean");
+        put_verdict(&db, "flagged", "vulnerable");
+        db.referee_cache_age_for_test("crates.io", "fresh", "1.0.0", "-1 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "stale", "1.0.0", "-40 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "flagged", "1.0.0", "-400 days")
+            .unwrap();
+
+        let get = |name: &str| {
+            db.referee_cache_get_fresh("crates.io", name, "1.0.0", Some(7))
+                .unwrap()
+        };
+        assert!(get("fresh").is_some());
+        assert!(get("stale").is_none());
+        let flagged = get("flagged").expect("a vulnerable row is never aged out");
+        assert_eq!(flagged.verdict, "vulnerable");
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_cache_stale_count_counts_only_stale_clean_rows() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "fresh", "clean");
+        put_verdict(&db, "stale", "clean");
+        put_verdict(&db, "flagged", "vulnerable");
+        db.referee_cache_age_for_test("crates.io", "stale", "1.0.0", "-40 days")
+            .unwrap();
+        db.referee_cache_age_for_test("crates.io", "flagged", "1.0.0", "-40 days")
+            .unwrap();
+
+        assert_eq!(db.referee_cache_stale_count(Some(7)).unwrap(), 1);
+        assert_eq!(db.referee_cache_stale_count(None).unwrap(), 0);
+        assert_eq!(db.referee_cache_stale_count(Some(0)).unwrap(), 2);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_referee_age_days_counts_whole_days() {
+        let path = test_db_path();
+        let db = init_db(&path);
+        put_verdict(&db, "old", "clean");
+        db.referee_cache_age_for_test("crates.io", "old", "1.0.0", "-40 days")
+            .unwrap();
+        let row = db
+            .referee_cache_get("crates.io", "old", "1.0.0")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(db.referee_age_days(&row.checked_at), Some(40));
+        assert_eq!(db.referee_age_days("not a date"), None);
         drop(db);
         let _ = std::fs::remove_file(&path);
     }

@@ -28,28 +28,56 @@ function print_help() {
     echo ""
 }
 
+# Cargo finds its project (and rustup its toolchain file) by walking up from
+# the working directory, not from this script. Run from anywhere else, a bare
+# `cargo` either finds no project or finds some other one — and `clean` then
+# wipes that project's target/ and reports success. Always run from the repo.
+function run_cargo() {
+    (cd "$BALLER_SRC_DIR" && cargo "$@")
+}
+
 function run_build() {
-    local cargo_cmd="cargo build ${CARGO_FLAGS[@]}"
-    
-    echo "Running: $cargo_cmd"
-    eval "$cargo_cmd"
+    echo "Running: cargo build ${CARGO_FLAGS[*]}"
+    run_cargo build "${CARGO_FLAGS[@]}"
 }
 
 function run_test() {
     echo "Running tests..."
-    cargo test
-    
+    run_cargo test
+
     echo "Running clippy..."
-    cargo clippy --all-targets -- -D warnings
-    
+    run_cargo clippy --all-targets -- -D warnings
+
     echo "Checking formatting..."
-    cargo fmt --check
+    run_cargo fmt --check
 }
 
 function run_clean() {
     echo "Cleaning build artifacts..."
-    cargo clean
-    
+
+    # A build run as another user — `sudo ./build.sh …`, or a container with
+    # the repo mounted — leaves directories in target/ this user cannot write,
+    # and cargo stops at the first file inside one with a bare "Permission
+    # denied (os error 13)", after removing an arbitrary part of the tree.
+    # Look before deleting anything, and say how to get the files back.
+    local target_dir="${CARGO_TARGET_DIR:-target}"
+    case "$target_dir" in
+        /*) ;;
+        *) target_dir="$BALLER_SRC_DIR/$target_dir" ;;
+    esac
+
+    local blocked
+    blocked="$(find "$target_dir" -type d ! -writable ! -empty -print -quit 2>/dev/null)" || true
+    if [ -n "$blocked" ]; then
+        echo "Error: cannot clean $target_dir: $blocked is not writable by $(id -un)." >&2
+        echo "A build was run as another user (usually root, via sudo or a container)." >&2
+        echo "Take the files back, then re-run clean:" >&2
+        echo "  sudo chown -R \"$(id -un):\" \"$target_dir\"" >&2
+        return 1
+    fi
+
+    run_cargo clean
+
     if [ -d "$BALLER_OUTPUT_DIR" ]; then
         echo "Removing $BALLER_OUTPUT_DIR"
         rm -rf "$BALLER_OUTPUT_DIR"
@@ -231,12 +259,12 @@ case "$1" in
     uninstall)
         run_uninstall
         ;;
-    help|*)
+    help)
         print_help
         ;;
     *)
-        echo "Unknown command: $1"
-        print_help
+        echo "Unknown command: $1" >&2
+        print_help >&2
         exit 1
         ;;
 esac

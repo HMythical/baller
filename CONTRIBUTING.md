@@ -111,6 +111,14 @@ location instead; `BALLER_SYSTEM_INSTALL_DIR` and `BALLER_USER_INSTALL_DIR`
 override one side each. `uninstall` removes from every directory it would have
 installed to.
 
+**Where the scripts run cargo.** Both scripts run every cargo command from the
+repository root, so they behave the same whatever directory you call them from,
+and stop with a non-zero exit as soon as cargo fails. On Linux, `clean` checks
+`target/` first: a build run as root (`sudo`, or a container with the repo
+mounted) leaves directories you cannot delete, and rather than failing halfway
+with `Permission denied (os error 13)`, `clean` deletes nothing and prints the
+`sudo chown` that gives them back.
+
 You can also use `cargo` directly. See [`docs/contributing.md`](docs/contributing.md) for the full project layout, configuration file format, and dependency list.
 
 ---

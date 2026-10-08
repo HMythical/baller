@@ -13,15 +13,39 @@ param(
 
 . "$PSScriptRoot\config.ps1"
 
+# Cargo finds its project (and rustup its toolchain file) by walking up from
+# the working directory, not from this script. Run from anywhere else, a bare
+# `cargo` either finds no project or finds some other one — and `clean` then
+# wipes that project's target\. Always run from the repo, and stop on a failing
+# cargo: PowerShell ignores a native command's exit code and carries on.
+#
+# Arguments come as one array, never as loose words: forwarded through `$args`,
+# an unquoted `--` is swallowed as PowerShell's own end-of-parameters marker.
+function Invoke-Cargo {
+    param([string[]]$CargoArgs)
+
+    Push-Location $ProjectRoot
+    try {
+        cargo @CargoArgs
+        if ($LASTEXITCODE -ne 0) { throw "cargo $($CargoArgs -join ' ') failed (exit code $LASTEXITCODE)" }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Invoke-Dev {
     Write-Host "Building (debug)..." -ForegroundColor Green
-    cargo build
+    Invoke-Cargo @('build')
 }
 
 function Invoke-Release {
     Write-Host "Building (release)..." -ForegroundColor Green
-    $targetFlag = if ($Target) { "--target $Target" } else { "" }
-    cargo build --release $targetFlag
+    # Each flag and its value are separate arguments. A single "--target <triple>"
+    # string reaches cargo as one unknown argument, and an empty one as `''` —
+    # which is how the Windows release job failed with no -Target at all.
+    $cargoArgs = @('build', '--release')
+    if ($Target) { $cargoArgs += @('--target', $Target) }
+    Invoke-Cargo $cargoArgs
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force }
     $binaryPath = if ($Target) { "$ProjectRoot\target\$Target\release\baller.exe" } else { "$ProjectRoot\target\release\baller.exe" }
     Copy-Item $binaryPath "$OutputDir\baller.exe"
@@ -30,21 +54,18 @@ function Invoke-Release {
 
 function Invoke-Test {
     Write-Host "Running tests..." -ForegroundColor Green
-    cargo test
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
+    Invoke-Cargo @('test')
 
     Write-Host "Running clippy..." -ForegroundColor Green
-    cargo clippy --all-targets -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw "Clippy failed" }
+    Invoke-Cargo @('clippy', '--all-targets', '--', '-D', 'warnings')
 
     Write-Host "Checking formatting..." -ForegroundColor Green
-    cargo fmt --check
-    if ($LASTEXITCODE -ne 0) { throw "Formatting check failed" }
+    Invoke-Cargo @('fmt', '--check')
 }
 
 function Invoke-Clean {
     Write-Host "Cleaning..." -ForegroundColor Yellow
-    cargo clean
+    Invoke-Cargo @('clean')
     if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 }
 

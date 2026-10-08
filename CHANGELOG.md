@@ -14,7 +14,22 @@ with a custom scheme:
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- **The build scripts run cargo in the repository, wherever they are called from**
+  `build.sh` and `build.ps1` ran a bare `cargo` in the caller's working directory, and cargo finds its project by walking up from there, not from the script. Called from outside the repo, every command failed with ``could not find `Cargo.toml` ``; called from inside *another* Cargo project, they built, tested and linted that project instead — and `clean` deleted that project's `target/` and reported success, leaving baller's own untouched. Every cargo invocation now runs from the repository root (`run_cargo` in `build.sh`, `Invoke-Cargo` in `build.ps1`), so the scripts behave the same from any directory. `build.sh`'s `run_build` no longer assembles its command as a string for `eval`; it passes `CARGO_FLAGS` to cargo as an array. Documented in `CONTRIBUTING.md` (Development Setup).
+
+- **`build.ps1` stops when cargo fails instead of carrying on**
+  PowerShell does not stop on a native command's non-zero exit code, and only `test` checked it. `clean` could fail — on a file it could not delete, or with no project found — and still delete `dist\` and exit 0; `dev` and `release` ignored a failed build, so `release` went on to a misleading `Copy-Item` error about a missing `baller.exe`. Every cargo call now goes through `Invoke-Cargo`, which throws `cargo <args> failed (exit code N)` before anything else runs, so the script exits 1 and a failed `clean` leaves `dist\` in place. `test`'s three separate messages (`Tests failed`, `Clippy failed`, `Formatting check failed`) become that one form. `Invoke-Cargo` takes its arguments as one array, because an unquoted `--` forwarded through `$args` is swallowed as PowerShell's own end-of-parameters marker and would have silently dropped the `--` from `clippy --all-targets -- -D warnings`.
+
+- **`build.ps1 -Command release` passes `--target` correctly, which fixes the Windows release job**
+  `Invoke-Release` built its target flag as a single string — `"--target <triple>"`, or `""` with no `-Target` — and passed it to cargo as one argument. PowerShell 7.3+ passes an empty string through as a real argument, so a plain `build.ps1 -Command release` ran `cargo build --release ''`, which cargo rejects (`unexpected argument '' found`); with `-Target` cargo instead received one unknown argument, `'--target x86_64-pc-windows-msvc'`. This is exactly how the v0.2.0 release workflow's `build-windows` job failed (followed by the `Copy-Item` error above), which skipped the `release` job. The flag and its value are now separate array elements. Verified under pwsh 7.4 on Linux with a stand-in `cargo` that records its argv: `build --release` with no `-Target`, `build --release --target x86_64-pc-windows-msvc` with one; not run on real Windows.
+
+- **`build.sh clean` explains a `target/` it cannot delete instead of failing halfway with `os error 13`**
+  A build run as root — `sudo ./build.sh …`, or a container with the repo bind-mounted — leaves root-owned directories in `target/`. `cargo clean` then removed an arbitrary part of the tree, stopped at the first file inside one of those directories with a bare `Permission denied (os error 13)`, and `set -e` ended the script before `dist/` was touched. `clean` now looks first: if any non-empty directory under the target directory (`CARGO_TARGET_DIR` when set) is not writable by the current user, it deletes nothing, names the directory, prints the `sudo chown -R "<user>:" "<target>"` that reclaims it, and exits 1. Running `clean` as root is unaffected, and an empty root-owned directory — which can still be removed — does not trigger it. `build.ps1` has no equivalent check; a failed `cargo clean` there now stops the script instead (above). Documented in `CONTRIBUTING.md`.
+
+- **`build.sh` rejects an unknown command**
+  The `case` matched `help|*` before the `*` branch, so a mistyped command (`./build.sh relase`) printed the help and exited 0 — a CI step with a typo would pass without building anything — and the `Unknown command` branch could never run. An unknown command now prints `Unknown command: <name>` and the help to stderr and exits 1; `help` and no arguments still print the help and exit 0.
 
 ---
 

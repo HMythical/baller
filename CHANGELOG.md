@@ -40,6 +40,12 @@ with a custom scheme:
 - **`version` under `--quiet` keeps printing, by design (closes #41)**
   #41 asked for `baller --json version` to print JSON — done in the `--json` fix above — and for `baller --quiet version` to print nothing. The second half is not adopted: `--quiet` suppresses progress output, and every command still prints its result under it (`-q roster` still prints the table), so a silent `-q version` would be the one command whose result disappears, and would do nothing at all. The `--quiet` row in `docs/commands.md` and the `version` section now say so, and `tests/json_output.rs` pins `-q version` printing `Baller <version>`.
 
+- **`draft` no longer prints a stray `quiet=false` while installing a system package**
+  Installing a system package printed `System installing via apt... quiet=false` on stderr. Before the tracing migration (#32, `d5bf020`) progress went through a helper, `output::info(quiet, msg)`, that skipped the line when quiet; the migration turned its calls into `tracing::info!(…)`, but one call in `src/commands/draft.rs` kept the `quiet` argument, which tracing reads as a field to print. The argument is gone: the tracer already drops `info` lines under `-q` and `--json`, so the line is still hidden there. The leftover `test_info_is_quiet_safe` in `src/utils/output.rs`, which still exercised `tracing::info!(bool, …)`, is removed with it.
+
+- **Referee's mock OSV server no longer drops a request that arrives late on Windows**
+  `test_a_cached_verdict_does_not_cover_another_version` and `test_refresh_re_queries_a_cached_identity` failed intermittently on the Windows CI runner with one request counted instead of two. The `MockServer` in `src/security/integration.rs` polls a non-blocking listener, and on Windows an accepted socket inherits that non-blocking mode, which voids `read_request`'s 5-second read timeout: a request still in flight when the connection was accepted read as `WouldBlock` and was dropped unrecorded, so the client saw a closed connection and Referee reported `unverified`. Linux sockets do not inherit the mode, so the bug never showed there. `read_request` now puts the stream back in blocking mode first. The new `test_the_mock_server_waits_for_a_request_that_arrives_late` sends its request 200 ms after connecting; built without the fix it failed 3 of 3 runs on a Windows 11 VM and under Wine, and with it it passed 3 of 3.
+
 ---
 
 ## [0.2.0] - 2026-10-01

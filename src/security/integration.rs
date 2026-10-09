@@ -108,6 +108,10 @@ impl Drop for MockServer {
 }
 
 fn read_request(stream: &TcpStream) -> Option<Request> {
+    // On Windows an accepted socket inherits the listener's non-blocking mode,
+    // which voids the read timeout: a request still in flight would read as
+    // `WouldBlock` and be dropped unrecorded.
+    stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let mut reader = BufReader::new(stream);
 
@@ -294,6 +298,31 @@ fn record(id: &str, ecosystem: &str, name: &str, cvss: &str) -> Value {
 const CRITICAL: &str = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
 const MEDIUM: &str = "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N";
 const LOW: &str = "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N";
+
+#[test]
+fn test_the_mock_server_waits_for_a_request_that_arrives_late() {
+    let server = MockServer::start(|_| (200, "{}".to_string()));
+    let address = server.base_url.trim_start_matches("http://").to_string();
+
+    // The server accepts within milliseconds; the request only follows later,
+    // as it can on a loaded CI runner.
+    let mut client = TcpStream::connect(&address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    thread::sleep(Duration::from_millis(200));
+    let _ = client.write_all(b"GET /late HTTP/1.1\r\nHost: mock\r\n\r\n");
+    let mut response = String::new();
+    let _ = client.read_to_string(&mut response);
+
+    assert_eq!(
+        server.request_count(),
+        1,
+        "a request that arrives after the accept was dropped"
+    );
+    assert_eq!(server.requests()[0].path, "/late");
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {:?}", response);
+}
 
 #[test]
 fn test_a_package_with_no_advisories_passes_silently() {

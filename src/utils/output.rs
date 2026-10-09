@@ -111,12 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn test_info_is_quiet_safe() {
-        tracing::info!(true, "suppressed");
-        tracing::info!(false, "printed");
-    }
-
-    #[test]
     fn test_debug_without_subscriber_is_safe() {
         tracing::debug!("verbose detail");
         tracing::debug!("formatted {}", "detail");

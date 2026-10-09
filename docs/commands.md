@@ -19,7 +19,7 @@ These work on every subcommand and may appear before or after it —
 | Flag | Description |
 |------|-------------|
 | `--yes`, `-y` | Skip confirmation prompts (`eject`, `sweep`, `substitute`, `inject`); required for them under `--json` |
-| `--quiet`, `-q` | Suppress progress bars and step-by-step output |
+| `--quiet`, `-q` | Suppress progress bars and step-by-step output; a command's result (a table, a report, `version`) is still printed |
 | `--verbose`, `-v` | Increase output detail: resolved URLs, source chains and cache paths on stderr. `roster` prints full detail blocks |
 | `--json` | Emit machine-readable JSON instead of formatted text; implies quiet |
 | `--no-hooks` | Skip every pre/post install, eject and update hook |
@@ -39,6 +39,10 @@ print, so command output stays parseable. That holds for every path:
 - Confirmation prompts are never shown: a command that would prompt fails with
   a `ConfirmationRequired` error instead, so pass `--yes` to run `eject`,
   `sweep`, `substitute` or `inject` under `--json`.
+- Programs baller runs on the way — hook scripts, `apt-get`/`dnf`/`pacman`
+  for system packages, `cargo install` — still run, but their output goes to
+  stderr instead of stdout. (An injected command's output is its own, and
+  passes straight through.)
 
 Progress lines and verbose detail are written to **stderr**; stdout carries
 only the data a command produces. `-v` raises the detail level, `-q` and
@@ -245,7 +249,11 @@ Active Roster (2 players):
 
 **With a package name:** Shows detailed info for a locally installed package,
 or falls back to searching remote registries. Remote search results include
-descriptions when available.
+descriptions when available. The `'<name>' not found locally, searching
+registries...` notice is progress output: it goes to stderr and is hidden by
+`-q` and `--json`, so `--json` prints only the search document. Only a package
+that is absent from the roster falls back to the search; if the roster itself
+cannot be read, that error is reported instead.
 
 ```
 $ baller roster ripgrep
@@ -758,7 +766,8 @@ baller version
 
 Prints `Baller <version>`. `baller -V`/`--version` is clap's own form of the
 same request (`baller <version>`). With `--json`, all three print
-`{"command": "version", "version": "<version>"}`.
+`{"command": "version", "version": "<version>"}`. `--quiet` does not hide it:
+like every command's result, the version is data, not progress.
 
 ---
 

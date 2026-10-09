@@ -1,3 +1,5 @@
+use std::io;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
@@ -8,6 +10,31 @@ use crate::error::error::BallError;
 /// Set once a document has gone to stdout, so the error path in `main` can
 /// tell whether stdout is still free for a JSON error.
 static DOCUMENT_PRINTED: AtomicBool = AtomicBool::new(false);
+
+/// `--json` for this run, set once by `main` before any command runs.
+static JSON_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Record whether this run is under `--json`.
+///
+/// Process-wide, like `colored`'s override, so the code that spawns child
+/// processes deep inside a command (hooks, package managers) can keep their
+/// output off stdout without threading the flag through every caller.
+pub fn set_json_mode(json: bool) {
+    JSON_MODE.store(json, Ordering::SeqCst);
+}
+
+/// Where a child process's stdout should go.
+///
+/// A hook or `apt-get` inherits baller's stdout, so under `--json` whatever it
+/// prints would land in front of the JSON document. There it goes to stderr
+/// instead, still visible; otherwise it is inherited as before.
+pub fn child_stdout() -> Stdio {
+    if JSON_MODE.load(Ordering::SeqCst) {
+        Stdio::from(io::stderr())
+    } else {
+        Stdio::inherit()
+    }
+}
 
 /// Print a value as pretty JSON on stdout.
 ///

@@ -329,6 +329,11 @@ subcommand from `cli::parse::scan_args`, which reads the raw arguments; the
 same scan rewrites `--json` with `-h`/`--help`/`-V`/`--version`, which clap
 would otherwise answer itself in text, into the JSON-aware `help [<command>]`
 and `version` subcommands.
+Child processes inherit baller's stdout, so hooks (`core::hooks`) and the
+package-manager installs (`http::system`, `http::cargo`) take theirs from
+`utils::output::child_stdout()`: stderr under `--json`, inherited otherwise.
+`main` sets the mode once with `set_json_mode`, the way it sets `colored`'s
+override, so the flag is not threaded through every `run_hook` caller.
 
 ### Version Comparison
 The `update` command uses `parse_version_flexible()` for version comparison,

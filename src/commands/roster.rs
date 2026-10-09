@@ -29,10 +29,12 @@ pub fn execute_roster(
     }
 
     if let Some(pkg_name) = package_name {
-        return match ctx.db.get_package(pkg_name) {
-            Ok(pkg) => show_detail(ctx, &pkg),
-            Err(_) => {
-                println!(
+        return match local_lookup(ctx.db.get_package(pkg_name))? {
+            Some(pkg) => show_detail(ctx, &pkg),
+            None => {
+                // Progress, not data: on stderr, and silent under -q/--json so
+                // the search result stays the only thing on stdout.
+                tracing::info!(
                     "{} '{}' not found locally, searching registries...",
                     "Searching".cyan(),
                     pkg_name.cyan()
@@ -43,6 +45,21 @@ pub fn execute_roster(
     }
 
     list_packages(ctx, opts)
+}
+
+/// A roster lookup: the installed package, or `None` when it is simply not
+/// installed here — the cue to search the registries instead.
+///
+/// Any other failure is the database's and is returned as-is: falling back to
+/// a registry search would report a broken roster as "not installed".
+fn local_lookup(
+    lookup: Result<InstalledPackage, BallError>,
+) -> Result<Option<InstalledPackage>, BallError> {
+    match lookup {
+        Ok(pkg) => Ok(Some(pkg)),
+        Err(BallError::PackageNotFound(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 fn list_packages(ctx: &AppContext, opts: &RosterOptions) -> Result<(), BallError> {
@@ -308,6 +325,23 @@ mod tests {
         assert_eq!(RegistrySource::BallerRegistry.db_name(), "baller_registry");
         assert_eq!(RegistrySource::Chocolatey.db_name(), "chocolatey");
         assert_eq!(RegistrySource::System.db_name(), "system");
+    }
+
+    #[test]
+    fn test_a_missing_package_falls_back_to_the_registries() {
+        let lookup = local_lookup(Err(BallError::PackageNotFound("fd".to_string())));
+        assert!(matches!(lookup, Ok(None)));
+    }
+
+    #[test]
+    fn test_a_failed_lookup_is_reported_not_searched() {
+        let lookup = local_lookup(Err(BallError::InvalidConfig(
+            "failed to query package 'fd': disk I/O error".to_string(),
+        )));
+        match lookup {
+            Err(BallError::InvalidConfig(msg)) => assert!(msg.contains("disk I/O error")),
+            other => panic!("expected the lookup error back, got {:?}", other),
+        }
     }
 
     #[test]

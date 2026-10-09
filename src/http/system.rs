@@ -2,23 +2,28 @@ use std::process::Command;
 
 use crate::core::package::{Package, PackageSource};
 use crate::error::error::BallError;
+use crate::utils::output::child_stdout;
 
 /// Install a system package using the native package manager.
 ///
 /// Invokes the appropriate CLI (`apt-get`, `dnf`, or `pacman`) under `sudo`.
-/// Returns an error for unknown managers.
+/// Returns an error for unknown managers. Under `--json` the manager's output
+/// goes to stderr (`child_stdout`), so it never lands in the JSON document.
 pub fn install_system_package(manager: &str, name: &str) -> Result<(), BallError> {
     let status = match manager {
         "apt" => Command::new("sudo")
             .args(["apt-get", "install", "-y", name])
+            .stdout(child_stdout())
             .status()
             .map_err(|e| BallError::PackageManagerError(format!("failed to run apt-get: {}", e)))?,
         "dnf" => Command::new("sudo")
             .args(["dnf", "install", "-y", name])
+            .stdout(child_stdout())
             .status()
             .map_err(|e| BallError::PackageManagerError(format!("failed to run dnf: {}", e)))?,
         "pacman" => Command::new("sudo")
             .args(["pacman", "-S", "--noconfirm", name])
+            .stdout(child_stdout())
             .status()
             .map_err(|e| BallError::PackageManagerError(format!("failed to run pacman: {}", e)))?,
         _ => {

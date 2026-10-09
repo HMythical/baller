@@ -23,7 +23,7 @@ use crate::{
     error::error::BallError,
     utils::fs::ensure_dir,
     utils::logging::init_tracing,
-    utils::output::{document_printed, print_json_error},
+    utils::output::{document_printed, print_json_error, set_json_mode},
 };
 
 /// What the error path needs to know about the run that failed.
@@ -71,6 +71,7 @@ fn entry(args: &[OsString], run: &mut Run) -> Result<(), BallError> {
     let command: BallerCommand = BallerCommand::parse_command(args)?;
     run.json = command.json;
     run.command = Some(command.command.name().to_string());
+    set_json_mode(command.json);
 
     // JSON is never coloured: escapes would land inside its strings.
     if command.no_color || command.json {

@@ -55,6 +55,13 @@ echo "Installing ripgrep $(echo $BALLER_PACKAGE_VERSION) via baller"
 echo "fd $BALLER_PACKAGE_VERSION installed at $BALLER_INSTALL_PATH"
 ```
 
+## Output
+
+A hook shares baller's terminal: what it prints appears alongside baller's own
+output. Under `--json` its stdout is sent to stderr instead, so the script
+still runs and its output is still visible, but it never lands in the JSON
+document on stdout.
+
 ## Environment Variables
 
 All hooks receive the following environment variables:

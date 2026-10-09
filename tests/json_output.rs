@@ -89,6 +89,25 @@ impl Sandbox {
     }
 }
 
+impl Sandbox {
+    /// A `hook` script for `package` that prints `hook-ran-for-<package>`.
+    fn write_hook(&self, package: &str, hook: &str) {
+        let hooks = self.dir.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        #[cfg(windows)]
+        let (file, body) = (
+            format!("{}_{}.ps1", package, hook),
+            "Write-Output \"hook-ran-for-$env:BALLER_PACKAGE_NAME\"\n",
+        );
+        #[cfg(not(windows))]
+        let (file, body) = (
+            format!("{}_{}.sh", package, hook),
+            "echo \"hook-ran-for-$BALLER_PACKAGE_NAME\"\n",
+        );
+        std::fs::write(hooks.join(file), body).unwrap();
+    }
+}
+
 impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -246,6 +265,13 @@ fn test_text_help_and_version_are_unchanged() {
     );
 
     let out = sandbox.run(&["version"]);
+    assert_eq!(
+        stdout(&out),
+        format!("Baller {}\n", env!("CARGO_PKG_VERSION"))
+    );
+
+    // --quiet hides progress, never a command's result (#41).
+    let out = sandbox.run(&["-q", "version"]);
     assert_eq!(
         stdout(&out),
         format!("Baller {}\n", env!("CARGO_PKG_VERSION"))
@@ -417,6 +443,70 @@ fn test_json_read_only_commands_print_one_document() {
         assert!(out.status.success(), "{:?} failed: {}", args, stderr(&out));
         document(&out);
     }
+}
+
+// ------------------------------------------------------------- roster search
+
+/// Every registry source switched off, so a search answers at once, with
+/// nothing, and never touches the network.
+const NO_SOURCES: &str = "github_enabled = false\nballer_enabled = false\n\
+                          chocolatey_enabled = false\nsystem_enabled = false\n\
+                          cargo_enabled = false\n";
+
+#[test]
+fn test_json_roster_of_an_uninstalled_name_is_one_document() {
+    let sandbox = Sandbox::new("roster_remote");
+    sandbox.write_conf(NO_SOURCES);
+
+    // The "not found locally" notice used to be printed ahead of this (#40).
+    let out = sandbox.run(&["--json", "roster", "not-installed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        document(&out),
+        json!({ "command": "roster", "query": "not-installed", "results": [] })
+    );
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn test_roster_search_notice_is_progress_on_stderr() {
+    let sandbox = Sandbox::new("roster_notice");
+    sandbox.write_conf(NO_SOURCES);
+
+    let out = sandbox.run(&["roster", "not-installed"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("No packages found matching 'not-installed'"));
+    assert!(!stdout(&out).contains("not found locally"));
+    assert!(stderr(&out).contains("'not-installed' not found locally, searching registries"));
+
+    let out = sandbox.run(&["-q", "roster", "not-installed"]);
+    assert!(out.status.success());
+    assert!(!stderr(&out).contains("not found locally"));
+}
+
+// ----------------------------------------------------------- child processes
+
+#[test]
+fn test_json_hook_output_goes_to_stderr() {
+    let sandbox = Sandbox::new("hook_output");
+    sandbox.seed_package("a-pkg", "1.0.0");
+    sandbox.seed_package("b-pkg", "1.0.0");
+    sandbox.write_hook("a-pkg", "pre_eject");
+    sandbox.write_hook("b-pkg", "pre_eject");
+
+    // The hook still runs under --json, but what it prints stays out of the
+    // document.
+    let out = sandbox.run(&["--json", "--yes", "eject", "a-pkg"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value = document(&out);
+    assert_eq!(value["command"], "eject");
+    assert_eq!(value["package"], "a-pkg");
+    assert!(stderr(&out).contains("hook-ran-for-a-pkg"));
+
+    // Text mode is unchanged: the hook shares baller's stdout.
+    let out = sandbox.run(&["--yes", "eject", "b-pkg"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("hook-ran-for-b-pkg"));
 }
 
 // --------------------------------------------------------- referee --fail-on

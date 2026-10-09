@@ -90,7 +90,7 @@ pub fn execute_substitute(
             )
         };
 
-        if !confirm(&prompt)? {
+        if !confirm(&prompt, ctx.flags.json)? {
             return Err(BallError::ConfirmationAborted);
         }
     }
@@ -188,7 +188,7 @@ pub fn execute_substitute(
                 if let Some((ref install_path, ref _bin_path)) = new_installed {
                     let _ = ctx.db.remove_package(&pkg.name);
                     let _ = std::fs::remove_dir_all(install_path);
-                    println!(
+                    tracing::warn!(
                         "{} Rolled back substitution due to error: {}",
                         "Warning".red(),
                         e

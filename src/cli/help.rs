@@ -1,7 +1,11 @@
 use colored::Colorize;
+use serde::Serialize;
+use serde_json::{json, Value};
 
+use crate::context::GlobalFlags;
 use crate::core::injected::{load_injected, InjectedCommand};
 use crate::error::error::BallError;
+use crate::utils::output::print_json;
 
 const TAGLINE: &str = "B.A.L.L.E.R - The Binary Allocation & Library Launch Environment in Rust";
 
@@ -14,8 +18,13 @@ struct BuiltinCommand {
     summary: &'static str,
     usage: &'static str,
     /// Argument and flag lines, already formatted as `name  explanation`.
+    ///
+    /// An indented line continues the explanation above it, and a
+    /// `Subcommands:` line starts the subcommand list: `--json` relies on both
+    /// to split the lines back into rows.
     details: &'static [&'static str],
-    /// Free-form paragraphs shown under the arguments.
+    /// Free-form paragraphs shown under the arguments. A `\n` inside one is a
+    /// line break in the text help and a space in `--json`.
     notes: &'static [&'static str],
 }
 
@@ -122,10 +131,8 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
             "-f, --force      Build over an existing installation of the same package",
             "--source <SRC>   Override the manifest's source before resolving",
         ],
-        notes: &[
-            "A Cargo project's dependencies are resolved by cargo itself, so",
-            "--source and --no-deps do not apply to one.",
-        ],
+        notes: &["A Cargo project's dependencies are resolved by cargo itself, so\n\
+            --source and --no-deps do not apply to one."],
     },
     BuiltinCommand {
         name: "inject",
@@ -133,10 +140,10 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
         usage: "baller inject <PATH>",
         details: &["<PATH>  .ball file describing the command to add"],
         notes: &[
-            "Injecting takes three confirmations: the named binary then runs as",
-            "'baller <command-name>' with your privileges.",
-            "Injected commands are stored in injected_commands.json under baller's",
-            "config directory, and are listed at the bottom of 'baller help'.",
+            "Injecting takes three confirmations: the named binary then runs as\n\
+             'baller <command-name>' with your privileges.",
+            "Injected commands are stored in injected_commands.json under baller's\n\
+             config directory, and are listed at the bottom of 'baller help'.",
         ],
     },
     BuiltinCommand {
@@ -160,14 +167,14 @@ const BUILTIN_COMMANDS: [BuiltinCommand; 12] = [
             "sbom             CycloneDX 1.5 JSON of the roster: --out <FILE>, --format cyclonedx-json",
         ],
         notes: &[
-            "Every subcommand is read-only: a flagged package stays installed until",
-            "you eject or update it yourself. --fail-on only changes the exit code",
-            "(1 when an advisory or a re-scan finding reaches the level), for CI.",
-            "'cache' writes only to the verdict cache; 'cache', 'config' and 'sbom'",
-            "work with Referee off.",
-            "Referee also runs automatically before draft, update, substitute and",
-            "build install anything. Pass --no-referee to skip it for one command, or",
-            "set 'enabled = false' under [referee] in baller.conf to turn it off.",
+            "Every subcommand is read-only: a flagged package stays installed until\n\
+             you eject or update it yourself. --fail-on only changes the exit code\n\
+             (1 when an advisory or a re-scan finding reaches the level), for CI.",
+            "'cache' writes only to the verdict cache; 'cache', 'config' and 'sbom'\n\
+             work with Referee off.",
+            "Referee also runs automatically before draft, update, substitute and\n\
+             build install anything. Pass --no-referee to skip it for one command, or\n\
+             set 'enabled = false' under [referee] in baller.conf to turn it off.",
         ],
     },
     BuiltinCommand {
@@ -202,22 +209,36 @@ const GLOBAL_OPTIONS: [&str; 10] = [
 /// Prints the command overview, or the details of a single command.
 ///
 /// `topic` resolves against built-ins first, then injected commands, so a
-/// built-in can never be shadowed in help output.
-pub fn execute_command_help(baller_dir: &str, topic: Option<&str>) -> Result<(), BallError> {
+/// built-in can never be shadowed in help output. Under `--json` the same
+/// content is printed as one JSON document instead.
+pub fn execute_command_help(
+    baller_dir: &str,
+    topic: Option<&str>,
+    flags: &GlobalFlags,
+) -> Result<(), BallError> {
     let injected = load_injected(baller_dir);
 
     let Some(name) = topic else {
+        if flags.json {
+            return print_json(&overview_json(&injected));
+        }
         println!("{}", render_overview(&injected));
         return Ok(());
     };
 
     if let Some(builtin) = find_builtin(name) {
+        if flags.json {
+            return print_json(&builtin_detail_json(builtin));
+        }
         println!("{}", render_builtin_detail(builtin));
         return Ok(());
     }
 
     match injected.iter().find(|c| c.command_name == name) {
         Some(command) => {
+            if flags.json {
+                return print_json(&injected_detail_json(command));
+            }
             println!("{}", render_injected_detail(command));
             Ok(())
         }
@@ -360,6 +381,128 @@ fn column_width(injected: &[InjectedCommand]) -> usize {
         .unwrap_or(0)
 }
 
+/// One `name  explanation` line of the help text, split for `--json`.
+#[derive(Debug, Serialize)]
+struct HelpRow {
+    name: String,
+    description: String,
+}
+
+/// Split preformatted help lines into `(arguments, subcommands)` rows.
+///
+/// The name ends at the first double space. An indented line is a wrapped
+/// explanation and joins the row above; `Subcommands:` moves every later row
+/// into the second list; blank lines only separate.
+fn split_rows(lines: &[&str]) -> (Vec<HelpRow>, Vec<HelpRow>) {
+    let mut arguments: Vec<HelpRow> = Vec::new();
+    let mut subcommands: Vec<HelpRow> = Vec::new();
+    let mut in_subcommands = false;
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if *line == "Subcommands:" {
+            in_subcommands = true;
+            continue;
+        }
+
+        let rows = if in_subcommands {
+            &mut subcommands
+        } else {
+            &mut arguments
+        };
+
+        if line.starts_with(' ') {
+            if let Some(row) = rows.last_mut() {
+                row.description.push(' ');
+                row.description.push_str(line.trim());
+            }
+            continue;
+        }
+
+        let (name, description) = line.split_once("  ").unwrap_or((line, ""));
+        rows.push(HelpRow {
+            name: name.trim().to_string(),
+            description: description.trim().to_string(),
+        });
+    }
+
+    (arguments, subcommands)
+}
+
+/// `baller --json help`: every command, built-in and injected.
+fn overview_json(injected: &[InjectedCommand]) -> Value {
+    let commands: Vec<Value> = BUILTIN_COMMANDS
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "summary": c.summary,
+                "usage": c.usage,
+            })
+        })
+        .collect();
+
+    let injected: Vec<Value> = injected
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.command_name,
+                "description": c.description,
+                "version": c.version,
+            })
+        })
+        .collect();
+
+    json!({
+        "command": "help",
+        "about": TAGLINE,
+        "usage": "baller <COMMAND> [ARGS]...",
+        "commands": commands,
+        "injected": injected,
+        "global_options": split_rows(&GLOBAL_OPTIONS).0,
+    })
+}
+
+/// `baller --json help <builtin>`.
+fn builtin_detail_json(command: &BuiltinCommand) -> Value {
+    let (arguments, subcommands) = split_rows(command.details);
+    let notes: Vec<String> = command
+        .notes
+        .iter()
+        .map(|note| note.replace('\n', " "))
+        .collect();
+
+    json!({
+        "command": "help",
+        "topic": command.name,
+        "kind": "builtin",
+        "summary": command.summary,
+        "usage": command.usage,
+        "arguments": arguments,
+        "subcommands": subcommands,
+        "notes": notes,
+    })
+}
+
+/// `baller --json help <injected>`: every field of its `.ball` manifest.
+fn injected_detail_json(command: &InjectedCommand) -> Value {
+    json!({
+        "command": "help",
+        "topic": command.command_name,
+        "kind": "injected",
+        "description": command.description,
+        "usage": format!("baller {} [ARGS]...", command.command_name),
+        "version": command.version,
+        "author": command.author,
+        "flags": command.flags,
+        "depends": command.depends,
+        "require_root": command.require_root,
+        "binary": command.path.display().to_string(),
+    })
+}
+
 fn describe(command: &InjectedCommand) -> String {
     if command.description.is_empty() {
         "no description provided".to_string()
@@ -393,6 +536,17 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir.to_string_lossy().to_string()
+    }
+
+    fn text() -> GlobalFlags {
+        GlobalFlags::default()
+    }
+
+    fn json_flags() -> GlobalFlags {
+        GlobalFlags {
+            json: true,
+            ..GlobalFlags::default()
+        }
     }
 
     fn sample() -> InjectedCommand {
@@ -515,7 +669,7 @@ mod tests {
     #[test]
     fn test_help_overview_runs() {
         let dir = test_dir("overview");
-        assert!(execute_command_help(&dir, None).is_ok());
+        assert!(execute_command_help(&dir, None, &text()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -524,7 +678,7 @@ mod tests {
         let dir = test_dir("builtin_topic");
         for command in BUILTIN_COMMANDS.iter() {
             assert!(
-                execute_command_help(&dir, Some(command.name)).is_ok(),
+                execute_command_help(&dir, Some(command.name), &text()).is_ok(),
                 "help failed for '{}'",
                 command.name
             );
@@ -536,14 +690,14 @@ mod tests {
     fn test_help_topic_resolves_injected_command() {
         let dir = test_dir("injected_topic");
         save_injected(&dir, &[sample()]).unwrap();
-        assert!(execute_command_help(&dir, Some("my-tool")).is_ok());
+        assert!(execute_command_help(&dir, Some("my-tool"), &text()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_help_topic_unknown_is_an_error() {
         let dir = test_dir("unknown_topic");
-        let err = execute_command_help(&dir, Some("not-a-command")).unwrap_err();
+        let err = execute_command_help(&dir, Some("not-a-command"), &text()).unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("not-a-command"));
         assert!(msg.contains("does not exist"));
@@ -559,11 +713,165 @@ mod tests {
 
         // Injection rejects built-in names, but a hand-edited store must not
         // be able to hide the real command's help either.
-        assert!(execute_command_help(&dir, Some("draft")).is_ok());
+        assert!(execute_command_help(&dir, Some("draft"), &text()).is_ok());
         let detail = render_builtin_detail(find_builtin("draft").unwrap());
         assert!(detail.contains("<PACKAGE_NAME>"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_help_json_runs_for_overview_and_every_topic() {
+        let dir = test_dir("json_topics");
+        save_injected(&dir, &[sample()]).unwrap();
+        assert!(execute_command_help(&dir, None, &json_flags()).is_ok());
+        for command in BUILTIN_COMMANDS.iter() {
+            assert!(execute_command_help(&dir, Some(command.name), &json_flags()).is_ok());
+        }
+        assert!(execute_command_help(&dir, Some("my-tool"), &json_flags()).is_ok());
+        assert!(matches!(
+            execute_command_help(&dir, Some("not-a-command"), &json_flags()),
+            Err(BallError::UnsupportedCommand(_))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_overview_json_lists_builtins_injected_and_global_options() {
+        let value = overview_json(&[sample()]);
+        assert_eq!(value["command"], "help");
+
+        let commands = value["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), BUILTIN_COMMANDS.len());
+        assert_eq!(commands[0]["name"], "draft");
+        assert_eq!(commands[0]["usage"], "baller draft <PACKAGE_NAME>");
+
+        assert_eq!(value["injected"][0]["name"], "my-tool");
+        assert_eq!(
+            value["injected"][0]["description"],
+            "A helpful tool that does X"
+        );
+        assert_eq!(value["injected"][0]["version"], "1.0.0");
+
+        let options = value["global_options"].as_array().unwrap();
+        assert_eq!(options.len(), GLOBAL_OPTIONS.len());
+        assert_eq!(options[0]["name"], "-y, --yes");
+        assert_eq!(options[0]["description"], "Skip confirmation prompts");
+        assert!(options.iter().any(|o| o["name"] == "--config <DIR>"));
+    }
+
+    #[test]
+    fn test_overview_json_with_no_injected_commands_is_an_empty_list() {
+        let value = overview_json(&[]);
+        assert_eq!(value["injected"], json!([]));
+    }
+
+    #[test]
+    fn test_builtin_detail_json_splits_arguments() {
+        let value = builtin_detail_json(find_builtin("eject").unwrap());
+        assert_eq!(value["topic"], "eject");
+        assert_eq!(value["kind"], "builtin");
+        assert_eq!(value["usage"], "baller eject <PACKAGE_NAME>");
+        assert_eq!(value["arguments"][1]["name"], "-f, --force");
+        assert_eq!(
+            value["arguments"][1]["description"],
+            "Eject even when the package is frozen"
+        );
+        assert_eq!(value["subcommands"], json!([]));
+        assert_eq!(
+            value["notes"],
+            json!(["Frozen packages must be unfrozen before they can be ejected."])
+        );
+    }
+
+    #[test]
+    fn test_builtin_detail_json_folds_wrapped_lines() {
+        let value = builtin_detail_json(find_builtin("build").unwrap());
+        let path = &value["arguments"][0];
+        assert_eq!(path["name"], "<PATH>");
+        assert_eq!(
+            path["description"],
+            "Manifest (.toml or .json) to build from, or a directory \
+             containing a Cargo project (Rust sources are compiled \
+             with 'cargo build --release' and installed)"
+        );
+        assert_eq!(
+            value["notes"],
+            json!([
+                "A Cargo project's dependencies are resolved by cargo itself, so \
+                    --source and --no-deps do not apply to one."
+            ])
+        );
+    }
+
+    #[test]
+    fn test_referee_detail_json_lists_its_subcommands() {
+        let value = builtin_detail_json(find_builtin("referee").unwrap());
+        let arguments = value["arguments"].as_array().unwrap();
+        assert_eq!(arguments.len(), 3);
+        assert_eq!(arguments[0]["name"], "[PACKAGE_NAME]");
+
+        let subcommands = value["subcommands"].as_array().unwrap();
+        let names: Vec<&str> = subcommands
+            .iter()
+            .map(|s| {
+                s["name"]
+                    .as_str()
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(names, ["audit", "check", "scan", "cache", "config", "sbom"]);
+        assert!(subcommands[0]["description"]
+            .as_str()
+            .unwrap()
+            .ends_with("--format <json|markdown|sarif>, --out <FILE>"));
+        assert_eq!(value["notes"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_every_help_row_has_a_name_and_a_description() {
+        for command in BUILTIN_COMMANDS.iter() {
+            let (arguments, subcommands) = split_rows(command.details);
+            for row in arguments.iter().chain(subcommands.iter()) {
+                assert!(
+                    !row.name.is_empty() && !row.description.is_empty(),
+                    "'{}' has a malformed help row: {:?}",
+                    command.name,
+                    row
+                );
+            }
+        }
+        for row in split_rows(&GLOBAL_OPTIONS).0 {
+            assert!(!row.name.is_empty() && !row.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_notes_render_as_lines_in_text_and_paragraphs_in_json() {
+        let command = find_builtin("inject").unwrap();
+        let detail = render_builtin_detail(command);
+        assert!(detail.contains("runs as\n'baller <command-name>' with your privileges."));
+
+        let value = builtin_detail_json(command);
+        let notes = value["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().all(|n| !n.as_str().unwrap().contains('\n')));
+    }
+
+    #[test]
+    fn test_injected_detail_json_carries_every_manifest_field() {
+        let value = injected_detail_json(&sample());
+        assert_eq!(value["topic"], "my-tool");
+        assert_eq!(value["kind"], "injected");
+        assert_eq!(value["usage"], "baller my-tool [ARGS]...");
+        assert_eq!(value["author"], "HMythical");
+        assert_eq!(value["flags"], json!(["-y", "--yes"]));
+        assert_eq!(value["depends"], json!(["python3"]));
+        assert_eq!(value["require_root"], true);
+        assert_eq!(value["binary"], "/usr/local/bin/my-tool");
     }
 
     #[test]

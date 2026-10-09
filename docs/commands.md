@@ -18,7 +18,7 @@ These work on every subcommand and may appear before or after it —
 
 | Flag | Description |
 |------|-------------|
-| `--yes`, `-y` | Skip confirmation prompts (`eject`, `sweep`, `substitute`) |
+| `--yes`, `-y` | Skip confirmation prompts (`eject`, `sweep`, `substitute`, `inject`); required for them under `--json` |
 | `--quiet`, `-q` | Suppress progress bars and step-by-step output |
 | `--verbose`, `-v` | Increase output detail: resolved URLs, source chains and cache paths on stderr. `roster` prints full detail blocks |
 | `--json` | Emit machine-readable JSON instead of formatted text; implies quiet |
@@ -28,7 +28,17 @@ These work on every subcommand and may appear before or after it —
 | `--no-referee` | Skip the Referee security checks (both phases) for this run — see [referee.md](referee.md) |
 
 `--json` prints a single JSON document on stdout and suppresses every other
-print, so command output stays parseable.
+print, so command output stays parseable. That holds for every path:
+
+- `help`, `help <command>`, `version`, and `-h`/`--help`/`-V`/`--version`
+  combined with `--json`, print JSON documents (see [help](#help--list-commands-or-describe-one)
+  and [version](#version--print-the-version)).
+- A failure prints `{"command": …, "error": …, "code": …}` on stdout instead of
+  `[Error]: …` on stderr, and still exits 1 — see
+  [error-handling.md](error-handling.md#overview).
+- Confirmation prompts are never shown: a command that would prompt fails with
+  a `ConfirmationRequired` error instead, so pass `--yes` to run `eject`,
+  `sweep`, `substitute` or `inject` under `--json`.
 
 Progress lines and verbose detail are written to **stderr**; stdout carries
 only the data a command produces. `-v` raises the detail level, `-q` and
@@ -609,6 +619,9 @@ Done Injected 'my-tool' -> /usr/local/bin/my-tool
 Run it with: baller my-tool
 ```
 
+Under `--json`, `inject` needs `--yes` (its prompts are never shown) and
+reports `{"command": "inject", "name": …, "binary": …}` on success.
+
 ---
 
 ## referee — Audit the Roster for Vulnerabilities
@@ -696,7 +709,35 @@ error. For an injected command the detail view shows its version, author,
 flags, dependencies, root requirement, and the binary it points at.
 
 `baller --help` and `-h` still print clap's own summary (stdout, exit 0) and
-point at `baller help` for the injected list.
+point at `baller help` for the injected list. Combined with `--json` they are
+answered by `help` instead: `baller --json --help` is `baller --json help`, and
+`baller --json eject -h` is `baller --json help eject` (a `referee` subcommand's
+`-h` describes `referee`).
+
+With `--json` the overview lists `commands` (`name`, `summary`, `usage`),
+`injected` (`name`, `description`, `version`) and `global_options` (`name`,
+`description`). A built-in's detail carries `topic`, `kind: "builtin"`,
+`summary`, `usage`, `arguments` and `subcommands` (each `name`/`description`)
+and `notes`; an injected command's carries `kind: "injected"` and every field
+of its `.ball` manifest. An unknown name is a JSON error.
+
+```
+$ baller --json help eject
+{
+  "command": "help",
+  "topic": "eject",
+  "kind": "builtin",
+  "summary": "Ejects (Uninstalls) a player from your team",
+  "usage": "baller eject <PACKAGE_NAME>",
+  "arguments": [
+    { "name": "<PACKAGE_NAME>", "description": "Package to uninstall" },
+    { "name": "-f, --force", "description": "Eject even when the package is frozen" },
+    …
+  ],
+  "subcommands": [],
+  "notes": ["Frozen packages must be unfrozen before they can be ejected."]
+}
+```
 
 ```
 $ baller help roster
@@ -706,6 +747,18 @@ Usage: baller roster [PACKAGE_NAME]
 
   [PACKAGE_NAME]  Package to look up; omit to list everything installed
 ```
+
+---
+
+## version — Print the Version
+
+```
+baller version
+```
+
+Prints `Baller <version>`. `baller -V`/`--version` is clap's own form of the
+same request (`baller <version>`). With `--json`, all three print
+`{"command": "version", "version": "<version>"}`.
 
 ---
 
@@ -721,4 +774,17 @@ Ejected myapp
 
 $ baller eject --yes myapp
 Ejected myapp
+```
+
+The prompt is written to stderr, so it never mixes into output piped from
+stdout. Under `--json` nothing is prompted: the command fails with a
+`ConfirmationRequired` JSON error and changes nothing, and `--yes` is required.
+
+```
+$ baller --json eject myapp
+{
+  "command": "eject",
+  "error": "confirmation required: Are you sure you want to eject myapp? — pass --yes/-y to proceed under --json",
+  "code": "ConfirmationRequired"
+}
 ```

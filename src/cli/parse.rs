@@ -18,7 +18,8 @@ use crate::core::injected::resolve_baller_dir;
 use crate::core::registry::RegistrySource;
 use crate::error::error::BallError;
 use clap::error::ErrorKind;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use std::ffi::OsString;
 
 #[derive(Parser, Debug)]
 #[command(name = "baller")]
@@ -396,13 +397,20 @@ impl RefereeArgs {
 }
 
 impl BallerCommand {
-    pub fn parse_command() -> Result<Self, BallError> {
-        match BallerCommand::try_parse() {
+    /// Parse a full command line, the binary's own name first.
+    pub fn parse_command(args: &[OsString]) -> Result<Self, BallError> {
+        match BallerCommand::try_parse_from(args) {
             Ok(cmd) => Ok(cmd),
+            // clap answers -h/-V itself, in text. Under --json the same request
+            // is re-parsed as the JSON-aware `help`/`version` subcommand.
+            Err(e) if is_display_request(e.kind()) && scan_args(args).json => {
+                BallerCommand::try_parse_from(display_request_as_subcommand(args, e.kind()))
+                    .map_err(cli_error)
+            }
             // Help and version are requests, not failures: let clap print them
             // on its own stream and exit the way it normally would.
             Err(e) if is_display_request(e.kind()) => e.exit(),
-            Err(e) => Err(BallError::InvalidConfig(format!("CLI Error: {}", e))),
+            Err(e) => Err(cli_error(e)),
         }
     }
 
@@ -544,10 +552,12 @@ impl BallerCommand {
             ),
             CommandTypes::Inject { path } => execute_inject(ctx, path),
             CommandTypes::Referee(args) => execute_referee(ctx, &args.to_command()),
-            CommandTypes::Help { command } => {
-                execute_command_help(&resolve_baller_dir(&ctx.config), command.as_deref())
-            }
-            CommandTypes::Version => execute_command_version(),
+            CommandTypes::Help { command } => execute_command_help(
+                &resolve_baller_dir(&ctx.config),
+                command.as_deref(),
+                &ctx.flags,
+            ),
+            CommandTypes::Version => execute_command_version(&ctx.flags),
             CommandTypes::External(args) => {
                 let (name, rest) = args
                     .split_first()
@@ -556,6 +566,32 @@ impl BallerCommand {
             }
         }
     }
+}
+
+impl CommandTypes {
+    /// The subcommand as named on the command line: the `command` a `--json`
+    /// error document reports.
+    pub fn name(&self) -> &str {
+        match self {
+            CommandTypes::Draft { .. } => "draft",
+            CommandTypes::Eject { .. } => "eject",
+            CommandTypes::Freeze { .. } => "freeze",
+            CommandTypes::Roster { .. } => "roster",
+            CommandTypes::Substitute { .. } => "substitute",
+            CommandTypes::Sweep { .. } => "sweep",
+            CommandTypes::Update { .. } => "update",
+            CommandTypes::Build { .. } => "build",
+            CommandTypes::Inject { .. } => "inject",
+            CommandTypes::Referee(_) => "referee",
+            CommandTypes::Help { .. } => "help",
+            CommandTypes::Version => "version",
+            CommandTypes::External(args) => args.first().map_or("", String::as_str),
+        }
+    }
+}
+
+fn cli_error(e: clap::Error) -> BallError {
+    BallError::InvalidConfig(format!("CLI Error: {}", e))
 }
 
 /// True when clap "failed" only because it was asked to print help or version.
@@ -568,10 +604,86 @@ fn is_display_request(kind: ErrorKind) -> bool {
     )
 }
 
+/// What a command line says before clap has parsed it.
+#[derive(Debug, Default, PartialEq)]
+pub struct RawArgs {
+    /// `--json` was passed to baller itself
+    pub json: bool,
+    /// `--config <DIR>`, so a rewritten help request still finds the injected
+    /// commands stored under it
+    pub config: Option<OsString>,
+    /// The built-in subcommand, by its canonical name
+    pub subcommand: Option<String>,
+}
+
+/// Read the global flags and the subcommand off a raw command line.
+///
+/// Only consulted where clap has no `BallerCommand` to give: a CLI error, or a
+/// help/version flag it would answer itself. Follows clap where it matters:
+/// baller's flags end at `--` and at an unknown (injected) subcommand, whose
+/// arguments are that command's own, and a top-level `-h`/`-V` is answered
+/// before any subcommand after it is read.
+pub fn scan_args(args: &[OsString]) -> RawArgs {
+    let command = BallerCommand::command();
+    let mut raw = RawArgs::default();
+    let mut top_level_display = false;
+    let mut iter = args.iter().skip(1);
+
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.to_str() else {
+            continue;
+        };
+        match text {
+            "--" => break,
+            "--json" => raw.json = true,
+            "--config" => raw.config = iter.next().cloned(),
+            _ if text.starts_with("--config=") => {
+                raw.config = Some(OsString::from(&text["--config=".len()..]));
+            }
+            "-h" | "--help" | "-V" | "--version" if raw.subcommand.is_none() => {
+                top_level_display = true;
+            }
+            _ if text.starts_with('-') || top_level_display || raw.subcommand.is_some() => {}
+            _ => match command.find_subcommand(text) {
+                Some(subcommand) => raw.subcommand = Some(subcommand.get_name().to_string()),
+                None => break,
+            },
+        }
+    }
+
+    raw
+}
+
+/// `baller --json [<command>] --help` as `baller --json help [<command>]`, and
+/// `baller --json -V` as `baller --json version`.
+///
+/// Only `--json` and `--config` survive the rewrite: they are the only flags
+/// that change what `help` and `version` print.
+fn display_request_as_subcommand(args: &[OsString], kind: ErrorKind) -> Vec<OsString> {
+    let raw = scan_args(args);
+    let mut rewritten: Vec<OsString> = vec![
+        args.first().cloned().unwrap_or_else(|| "baller".into()),
+        "--json".into(),
+    ];
+
+    if let Some(dir) = raw.config {
+        rewritten.push("--config".into());
+        rewritten.push(dir);
+    }
+
+    if kind == ErrorKind::DisplayVersion {
+        rewritten.push("version".into());
+    } else {
+        rewritten.push("help".into());
+        rewritten.extend(raw.subcommand.map(OsString::from));
+    }
+
+    rewritten
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     fn parse(args: &[&str]) -> BallerCommand {
         BallerCommand::try_parse_from(args).unwrap()
@@ -873,6 +985,117 @@ mod tests {
             CommandTypes::Version => {}
             other => panic!("expected Version, got {:?}", other),
         }
+    }
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn test_command_name_is_the_subcommand_typed() {
+        for args in [
+            vec!["baller", "draft", "fd"],
+            vec!["baller", "eject", "fd"],
+            vec!["baller", "freeze", "fd"],
+            vec!["baller", "roster"],
+            vec!["baller", "substitute", "a", "b"],
+            vec!["baller", "sweep"],
+            vec!["baller", "update"],
+            vec!["baller", "build", "."],
+            vec!["baller", "inject", "x.ball"],
+            vec!["baller", "referee"],
+            vec!["baller", "help"],
+            vec!["baller", "version"],
+            vec!["baller", "my-tool", "--flag"],
+        ] {
+            assert_eq!(parse(&args).command.name(), args[1]);
+        }
+    }
+
+    #[test]
+    fn test_scan_args_reads_json_config_and_subcommand() {
+        let raw = scan_args(&os_args(&[
+            "baller", "--config", "/tmp/b", "draft", "fd", "--json",
+        ]));
+        assert_eq!(
+            raw,
+            RawArgs {
+                json: true,
+                config: Some(OsString::from("/tmp/b")),
+                subcommand: Some("draft".to_string()),
+            }
+        );
+
+        let raw = scan_args(&os_args(&["baller", "--config=/tmp/c", "roster"]));
+        assert_eq!(raw.config, Some(OsString::from("/tmp/c")));
+        assert!(!raw.json);
+
+        // A --config value is never mistaken for the subcommand.
+        let raw = scan_args(&os_args(&["baller", "--config", "draft", "roster"]));
+        assert_eq!(raw.subcommand.as_deref(), Some("roster"));
+    }
+
+    #[test]
+    fn test_scan_args_leaves_an_injected_commands_arguments_alone() {
+        let raw = scan_args(&os_args(&["baller", "my-tool", "--json"]));
+        assert_eq!(raw, RawArgs::default());
+
+        let raw = scan_args(&os_args(&["baller", "--json", "my-tool", "--help"]));
+        assert!(raw.json);
+        assert_eq!(raw.subcommand, None);
+
+        let raw = scan_args(&os_args(&["baller", "--", "--json"]));
+        assert!(!raw.json);
+    }
+
+    #[test]
+    fn test_scan_args_follows_clap_on_a_top_level_display_flag() {
+        // clap answers a top-level -h before reading the subcommand after it.
+        let raw = scan_args(&os_args(&["baller", "--help", "draft", "--json"]));
+        assert!(raw.json);
+        assert_eq!(raw.subcommand, None);
+
+        // After the subcommand, --version is draft's own option.
+        let raw = scan_args(&os_args(&["baller", "draft", "--version", "1", "-h"]));
+        assert_eq!(raw.subcommand.as_deref(), Some("draft"));
+    }
+
+    #[test]
+    fn test_display_request_becomes_the_json_aware_subcommand() {
+        let rewritten = display_request_as_subcommand(
+            &os_args(&["baller", "--json", "--config", "/b", "draft", "--help"]),
+            ErrorKind::DisplayHelp,
+        );
+        assert_eq!(
+            rewritten,
+            os_args(&["baller", "--json", "--config", "/b", "help", "draft"])
+        );
+
+        let rewritten = display_request_as_subcommand(
+            &os_args(&["baller", "-q", "--json", "-h"]),
+            ErrorKind::DisplayHelp,
+        );
+        assert_eq!(rewritten, os_args(&["baller", "--json", "help"]));
+
+        let rewritten = display_request_as_subcommand(
+            &os_args(&["baller", "-V", "--json"]),
+            ErrorKind::DisplayVersion,
+        );
+        assert_eq!(rewritten, os_args(&["baller", "--json", "version"]));
+    }
+
+    #[test]
+    fn test_json_display_requests_parse_as_help_and_version() {
+        let cmd =
+            BallerCommand::parse_command(&os_args(&["baller", "--json", "eject", "-h"])).unwrap();
+        assert!(cmd.json);
+        match cmd.command {
+            CommandTypes::Help { command } => assert_eq!(command.as_deref(), Some("eject")),
+            other => panic!("expected Help, got {:?}", other),
+        }
+
+        let cmd = BallerCommand::parse_command(&os_args(&["baller", "--json", "-V"])).unwrap();
+        assert!(matches!(cmd.command, CommandTypes::Version));
     }
 
     fn referee(args: &[&str]) -> RefereeCommand {

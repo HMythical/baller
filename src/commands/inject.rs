@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
+use serde_json::json;
 
 use crate::context::AppContext;
 use crate::core::ball_parser::{parse_ball_file, BallManifest};
 use crate::core::injected::{resolve_baller_dir, upsert_injected, InjectedCommand};
 use crate::error::error::BallError;
 use crate::utils::fs::confirm;
+use crate::utils::output::print_json;
 
 /// Names baller reserves for its own subcommands; an injected command may not
 /// shadow any of them.
@@ -33,12 +35,14 @@ pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
     if !ctx.flags.yes {
         if !confirm(
             "This will modify baller's runtime behavior by adding a new command. Continue? [yes/no]",
+            ctx.flags.json,
         )? {
           return Err(BallError::ConfirmationAborted);
         }
 
         if !confirm(
             "Only inject .ball files from sources you trust: the binary they name runs with your privileges. Continue? [yes/no]",
+            ctx.flags.json,
         )? {
           return Err(BallError::ConfirmationAborted);
         }
@@ -47,11 +51,14 @@ pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
     let manifest = parse_ball_file(Path::new(path))?;
 
     if !ctx.flags.yes
-        && !confirm(&format!(
-            "Final confirmation: inject '{}' from {}? [yes/no]",
-            manifest.command_name.cyan(),
-            manifest.path.display().to_string().cyan()
-        ))?
+        && !confirm(
+            &format!(
+                "Final confirmation: inject '{}' from {}? [yes/no]",
+                manifest.command_name.cyan(),
+                manifest.path.display().to_string().cyan()
+            ),
+            ctx.flags.json,
+        )?
     {
         return Err(BallError::ConfirmationAborted);
     }
@@ -65,6 +72,14 @@ pub fn execute_inject(ctx: &AppContext, path: &str) -> Result<(), BallError> {
     let name = command.command_name.clone();
     let binary = command.path.display().to_string();
     upsert_injected(&baller_dir, command)?;
+
+    if ctx.flags.json {
+        return print_json(&json!({
+            "command": "inject",
+            "name": name,
+            "binary": binary,
+        }));
+    }
 
     println!(
         "{} Injected '{}' -> {}",

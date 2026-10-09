@@ -11,27 +11,56 @@ mod utils;
 
 use std::{
     env::{self, home_dir},
+    ffi::OsString,
     path::PathBuf,
     process::exit,
 };
 
 use crate::{
-    cli::parse::BallerCommand,
+    cli::parse::{scan_args, BallerCommand},
     config::config::{BallerConfig, HooksConfig},
     context::AppContext,
     error::error::BallError,
     utils::fs::ensure_dir,
     utils::logging::init_tracing,
+    utils::output::{document_printed, print_json_error},
 };
 
+/// What the error path needs to know about the run that failed.
+struct Run {
+    json: bool,
+    /// The subcommand, or `None` when the command line never named one
+    command: Option<String>,
+}
+
 fn main() {
-    if let Err(e) = entry() {
-        eprintln!("\n[Error]: {}", e);
+    let args: Vec<OsString> = env::args_os().collect();
+
+    // Read off the raw arguments first, so an error raised before clap returns
+    // a parsed command can still be reported as JSON.
+    let raw = scan_args(&args);
+    let mut run = Run {
+        json: raw.json,
+        command: raw.subcommand,
+    };
+
+    if let Err(e) = entry(&args, &mut run) {
+        report_error(&run, &e);
         exit(1);
     }
 }
 
-fn entry() -> Result<(), BallError> {
+/// Under `--json` the error is the run's JSON document on stdout; otherwise,
+/// and when a document already went out (`referee --fail-on` prints its report
+/// and then fails), it goes to stderr as text so stdout holds one document.
+fn report_error(run: &Run, e: &BallError) {
+    if run.json && !document_printed() && print_json_error(run.command.as_deref(), e).is_ok() {
+        return;
+    }
+    eprintln!("\n[Error]: {}", e);
+}
+
+fn entry(args: &[OsString], run: &mut Run) -> Result<(), BallError> {
     if !cfg!(target_os = "linux") && !cfg!(target_os = "windows") {
         return Err(BallError::UnsupportedOs(format!(
             "the following OS is unsupported: {}\n\t please use Windows or Linux",
@@ -39,9 +68,12 @@ fn entry() -> Result<(), BallError> {
         )));
     }
 
-    let command: BallerCommand = BallerCommand::parse_command()?;
+    let command: BallerCommand = BallerCommand::parse_command(args)?;
+    run.json = command.json;
+    run.command = Some(command.command.name().to_string());
 
-    if command.no_color {
+    // JSON is never coloured: escapes would land inside its strings.
+    if command.no_color || command.json {
         colored::control::set_override(false);
     }
 

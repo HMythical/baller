@@ -14,6 +14,7 @@ use crate::error::error::BallError;
 use crate::security::export::{render_markdown, render_sarif, ScanOutcome};
 use crate::security::GateOutcome;
 use crate::utils::fs::atomic_write;
+use crate::utils::output::mark_document_printed;
 
 /// Everything an audit produced, for rendering.
 pub struct AuditReport<'a> {
@@ -49,6 +50,7 @@ pub fn deliver(contents: &str, out: Option<&str>, label: &str) -> Result<(), Bal
     match out {
         None => {
             print!("{}", with_newline(contents));
+            mark_document_printed();
             Ok(())
         }
         Some(path) => {

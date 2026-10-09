@@ -34,10 +34,13 @@ pub fn execute_eject(
 
     // E4: Confirmation prompt (unless --yes/-y)
     if !ctx.flags.yes
-        && !confirm(&format!(
-            "Are you sure you want to eject {}? [y/N]",
-            installed.name.cyan()
-        ))?
+        && !confirm(
+            &format!(
+                "Are you sure you want to eject {}? [y/N]",
+                installed.name.cyan()
+            ),
+            ctx.flags.json,
+        )?
     {
         return Err(BallError::ConfirmationAborted);
     }

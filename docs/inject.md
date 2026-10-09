@@ -109,6 +109,11 @@ Final confirmation: inject 'lz4c' from /usr/local/bin/lz4c? [yes/no]
 Answering anything other than `yes` or `y` at any prompt **aborts immediately**
 without writing anything.
 
+The prompts are written to stderr. `--yes` skips all three. Under `--json` they
+are never shown: without `--yes` the injection fails with a
+`ConfirmationRequired` JSON error before the `.ball` file is read, and with it
+success is reported as `{"command": "inject", "name": …, "binary": …}`.
+
 ## Validation Rules
 
 `inject` rejects manifests that:

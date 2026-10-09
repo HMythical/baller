@@ -3,6 +3,7 @@ use std::process::Command;
 
 use crate::config::config::HooksConfig;
 use crate::error::error::BallError;
+use crate::utils::output::child_stdout;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HookType {
@@ -166,6 +167,9 @@ fn execute_hook(
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
+
+    // Under --json the script's output goes to stderr, not into the document.
+    cmd.stdout(child_stdout());
 
     let status = cmd.status().map_err(|e| {
         BallError::InvalidConfig(format!("failed to execute hook '{}': {}", script_name, e))

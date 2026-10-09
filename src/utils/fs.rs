@@ -221,7 +221,17 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Prompt user for confirmation from stdin. Returns true if user confirms.
-pub fn confirm(prompt: &str) -> Result<bool, BallError> {
+///
+/// The prompt goes to stderr so stdout only ever carries a command's output.
+/// Under `--json` (`json`) nothing is asked at all: the caller is a program,
+/// so the question comes back as a `ConfirmationRequired` error for `main` to
+/// report as JSON, and `--yes` is the way through.
+pub fn confirm(prompt: &str, json: bool) -> Result<bool, BallError> {
+    if json {
+        let question = prompt.rsplit_once(" [").map_or(prompt, |(q, _)| q);
+        return Err(BallError::ConfirmationRequired(question.to_string()));
+    }
+
     let stdin = io::stdin();
 
     if !stdin.is_terminal() {
@@ -231,8 +241,8 @@ pub fn confirm(prompt: &str) -> Result<bool, BallError> {
         });
     }
 
-    print!("{prompt} ");
-    io::stdout().flush().ok();
+    eprint!("{prompt} ");
+    io::stderr().flush().ok();
     let mut input = String::new();
     io::stdin().read_line(&mut input).ok();
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))

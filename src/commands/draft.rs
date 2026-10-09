@@ -142,12 +142,7 @@ pub fn execute_draft(
         // System packages are installed via the native package manager,
         // not downloaded/archived. Record them in the DB and continue.
         if let PackageSource::System { manager } = &pkg_to_install.source {
-            tracing::info!(
-                quiet,
-                "{} installing via {}...",
-                "System".green(),
-                manager.cyan(),
-            );
+            tracing::info!("{} installing via {}...", "System".green(), manager.cyan());
             install_system_package(manager, &pkg_to_install.name)?;
 
             let is_root = pkg_to_install.name == pkg.name;

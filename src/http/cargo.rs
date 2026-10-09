@@ -2,13 +2,16 @@ use std::process::Command;
 
 use crate::core::package::{Package, PackageSource};
 use crate::error::error::BallError;
+use crate::utils::output::child_stdout;
 
 /// Install a crate from crates.io with `cargo install`.
 ///
-/// Runs without `sudo`: cargo builds into the user's `~/.cargo/bin`.
+/// Runs without `sudo`: cargo builds into the user's `~/.cargo/bin`. Under
+/// `--json` its stdout goes to stderr (`child_stdout`), like a hook's.
 pub fn install_cargo_package(crate_name: &str) -> Result<(), BallError> {
     let status = Command::new("cargo")
         .args(["install", crate_name])
+        .stdout(child_stdout())
         .status()
         .map_err(|e| BallError::PackageManagerError(format!("failed to run cargo: {}", e)))?;
 

@@ -311,10 +311,29 @@ packages installed as dependencies are marked `user_installed = false`, while
 packages explicitly installed via `draft` are marked `user_installed = true`.
 
 ### Confirmation Prompts
-Destructive commands (`eject`, `sweep`, `substitute`) prompt for confirmation
-unless the global `--yes` / `-y` flag is passed. `--yes` is one of the global
-flags declared on `BallerCommand` and carried to commands via
-`AppContext::flags` (`src/context.rs`).
+Destructive commands (`eject`, `sweep`, `substitute`, `inject`) prompt for
+confirmation unless the global `--yes` / `-y` flag is passed. `--yes` is one of
+the global flags declared on `BallerCommand` and carried to commands via
+`AppContext::flags` (`src/context.rs`). `utils::fs::confirm` takes the `--json`
+flag too: prompts go to stderr, and under `--json` it returns
+`ConfirmationRequired` instead of prompting.
+
+### JSON Output
+Under `--json` every run leaves exactly one JSON document on stdout. Commands
+print theirs through `utils::output::print_json`, which also records that a
+document went out. `main` reports a failure as `utils::output::error_json`
+(`command`, `error`, `code`) on stdout, unless a document was already printed
+(`referee --fail-on`), in which case the error goes to stderr as text. Errors
+raised before clap returns a parsed command still know `--json` and the
+subcommand from `cli::parse::scan_args`, which reads the raw arguments; the
+same scan rewrites `--json` with `-h`/`--help`/`-V`/`--version`, which clap
+would otherwise answer itself in text, into the JSON-aware `help [<command>]`
+and `version` subcommands.
+Child processes inherit baller's stdout, so hooks (`core::hooks`) and the
+package-manager installs (`http::system`, `http::cargo`) take theirs from
+`utils::output::child_stdout()`: stderr under `--json`, inherited otherwise.
+`main` sets the mode once with `set_json_mode`, the way it sets `colored`'s
+override, so the flag is not threaded through every `run_hook` caller.
 
 ### Version Comparison
 The `update` command uses `parse_version_flexible()` for version comparison,

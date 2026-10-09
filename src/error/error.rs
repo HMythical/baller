@@ -42,6 +42,9 @@ pub enum BallError {
         msg: String,
     },
     ConfirmationAborted,
+    /// A prompt needed an answer under `--json`, where nobody is there to give
+    /// one. Carries the question, without its `[y/N]` hint.
+    ConfirmationRequired(String),
     /// No release asset matches the host platform.
     ///
     /// A hard error: only `PackageNotFound` is skippable during dependency
@@ -187,6 +190,12 @@ impl fmt::Display for BallError {
 
             BallError::ConfirmationAborted => write!(f, "Aborted"),
 
+            BallError::ConfirmationRequired(question) => write!(
+                f,
+                "confirmation required: {} — pass --yes/-y to proceed under --json",
+                question
+            ),
+
             BallError::NoMatchingAsset {
                 package,
                 platform,
@@ -320,6 +329,43 @@ impl fmt::Display for BallError {
                 "unresolved dependencies: {} could not be found in any configured registry",
                 names.join(", ")
             ),
+        }
+    }
+}
+
+impl BallError {
+    /// The variant name, as the `code` field of a `--json` error document.
+    ///
+    /// Stable across message rewording, so a script can branch on it without
+    /// parsing the human text.
+    pub fn code(&self) -> &'static str {
+        match self {
+            BallError::UnsupportedOs(_) => "UnsupportedOs",
+            BallError::UnsupportedCommand(_) => "UnsupportedCommand",
+            BallError::UnknownParameter(_) => "UnknownParameter",
+            BallError::FileIoErr(_) => "FileIoErr",
+            BallError::InvalidConfig(_) => "InvalidConfig",
+            BallError::UnknownConfigEntry(_) => "UnknownConfigEntry",
+            BallError::NetworkError(_) => "NetworkError",
+            BallError::PackageNotFound(_) => "PackageNotFound",
+            BallError::HashMismatch(_) => "HashMismatch",
+            BallError::ExtractionFailed(_) => "ExtractionFailed",
+            BallError::DependencyCycle(_) => "DependencyCycle",
+            BallError::VersionConflict(_) => "VersionConflict",
+            BallError::PackageFrozen(_) => "PackageFrozen",
+            BallError::PackageManagerError(_) => "PackageManagerError",
+            BallError::InjectedCommandError(_) => "InjectedCommandError",
+            BallError::PipeRedirected { .. } => "PipeRedirected",
+            BallError::ConfirmationAborted => "ConfirmationAborted",
+            BallError::ConfirmationRequired(_) => "ConfirmationRequired",
+            BallError::NoMatchingAsset { .. } => "NoMatchingAsset",
+            BallError::NoBinaryFound { .. } => "NoBinaryFound",
+            BallError::PlatformMismatch { .. } => "PlatformMismatch",
+            BallError::RefereeBlocked { .. } => "RefereeBlocked",
+            BallError::RefereeScanBlocked { .. } => "RefereeScanBlocked",
+            BallError::RefereeUnavailable { .. } => "RefereeUnavailable",
+            BallError::RefereeAuditFailed { .. } => "RefereeAuditFailed",
+            BallError::UnresolvedDependencies(_) => "UnresolvedDependencies",
         }
     }
 }
@@ -549,6 +595,42 @@ mod tests {
         let err = BallError::PackageNotFound("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("PackageNotFound"));
+    }
+
+    #[test]
+    fn test_confirmation_required_display() {
+        let err = BallError::ConfirmationRequired("Are you sure you want to eject fd?".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.starts_with("confirmation required: Are you sure you want to eject fd?"));
+        assert!(msg.contains("--yes"));
+    }
+
+    #[test]
+    fn test_code_is_the_variant_name() {
+        // The Debug form starts with the variant name, so the two must agree.
+        let errors = [
+            BallError::PackageNotFound("x".to_string()),
+            BallError::FileIoErr(std::io::Error::other("x")),
+            BallError::ConfirmationAborted,
+            BallError::ConfirmationRequired("x".to_string()),
+            BallError::PipeRedirected {
+                pipe: "stdin".to_string(),
+                msg: "x".to_string(),
+            },
+            BallError::RefereeAuditFailed {
+                band: "warn",
+                packages: vec![],
+            },
+            BallError::UnresolvedDependencies(vec![]),
+        ];
+        for err in &errors {
+            assert!(
+                format!("{:?}", err).starts_with(err.code()),
+                "code '{}' does not match {:?}",
+                err.code(),
+                err
+            );
+        }
     }
 
     #[test]

@@ -6,6 +6,25 @@ BALLER uses the `BallError` enum for all error types. Commands propagate errors
 via the `?` operator. User-facing errors are printed with `[Error]:` prefix and
 the process exits with a non-zero status code.
 
+Under the global `--json` flag the error is instead the run's JSON document, on
+stdout, and stderr stays empty:
+
+```json
+{
+  "command": "build",
+  "error": "manifest not found: /x/baller.toml",
+  "code": "InvalidConfig"
+}
+```
+
+`command` is the subcommand that failed — `null` when the command line could
+not be parsed far enough to name one — `error` is the same message the text
+form prints, and `code` is the `BallError` variant name below, stable for
+scripts to branch on. The exit code is still 1. The one exception is a command
+that has already printed its document: `baller --json referee … --fail-on`
+prints its report and then fails, so the `RefereeAuditFailed` message goes to
+stderr as text and stdout keeps the report as its only document.
+
 ## Error Types
 
 | Variant | Meaning |
@@ -28,6 +47,9 @@ the process exits with a non-zero status code.
 | `RefereeBlocked` | Referee's advisory gate refused the plan. Carries every package over the block threshold with its advisories and the reason. Raised before the install loop, so nothing was downloaded, linked or recorded |
 | `RefereeScanBlocked` | Referee's artifact scan refused a downloaded package. Carries the package, version and every finding. Raised after extraction and before linking; the extract directory and cached archive are both purged (`discarded = false` on `build`'s cargo path, where the user's own compiled binary is deliberately left in place) |
 | `RefereeUnavailable` | The advisory service could not be reached. Fatal only under `fail_policy = fail-closed`; the default fail-open path reports the packages as `unverified` and continues |
+| `ConfirmationAborted` | The user answered no to a confirmation prompt |
+| `ConfirmationRequired` | A destructive command needed confirmation under `--json`, where nothing is ever prompted. Carries the question; pass `--yes` to proceed |
+| `PipeRedirected` | A confirmation prompt could not be asked because stdin is not a terminal; pass `--yes` |
 | `RefereeAuditFailed` | `baller referee audit`/`check`/`scan --fail-on block\|warn` found an advisory or re-scan finding at or above that level; each package is named with the phase that tripped it. Raised after the report is printed, only to make the exit code non-zero for CI; nothing was changed |
 
 ## Database Startup Errors
@@ -281,6 +303,13 @@ Destructive operations require user confirmation unless `--yes` / `-y` is provid
 - **`eject`** — removes a package and its orphaned dependencies
 - **`sweep`** — clears cached archives (and, with `--all`, extracted packages)
 - **`substitute`** — installs the replacement and removes the old package
+- **`inject`** — adds a command that runs an arbitrary binary (three prompts)
+
+The prompt is written to stderr, so stdout only ever carries command output.
+With stdin redirected the prompt cannot be answered and the command fails with
+`PipeRedirected`; under `--json` nothing is prompted at all and the command
+fails with `ConfirmationRequired`, reported as a JSON error. Either way nothing
+has been changed, and `--yes` is the way through.
 
 ## Orphan Dependency Cleanup
 

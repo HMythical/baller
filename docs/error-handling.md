@@ -288,13 +288,23 @@ See [referee.md](referee.md).
 
 ## Rollback on Partial Failure
 
-When `draft` or `substitute` installs multiple packages and one fails mid-way,
-all packages installed during the current session are cleaned up:
-- Symlinks are removed
-- Database entries are deleted
-- The original error is returned after cleanup
+When `draft`, `substitute` or `update` fails partway through its plan, every
+package the run already changed is put back, newest first, before the original
+error is returned:
+- A package the run installed fresh is unlinked, removed from the roster, and
+  its extract dir and cached archive are deleted.
+- A package that was already installed (a `draft --force` reinstall, a
+  dependency `substitute` re-fetched, the package `update` was upgrading) gets
+  its previous roster row, dependency rows and link back. Its `installed_at`
+  is the one thing reset, to the time of the rollback.
 
-This ensures the system is never left in a partially-installed state.
+A warning names the packages rolled back (`Rolled back undid this run's changes
+to …`). Cleanup is best-effort: a step that cannot be undone is logged at
+`--verbose` and never replaces the original error. Rollback does not run hooks,
+and does not uninstall what a system package manager or `cargo install` put on
+the system — a warning says when such a package stays installed with only its
+roster entry removed. Post-hooks still never fail a command, so a failing
+`post_install` or `post_update` hook does not trigger a rollback.
 
 ## Confirmation Prompts
 

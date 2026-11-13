@@ -2,6 +2,7 @@ use colored::Colorize;
 use serde_json::json;
 
 use crate::commands::draft::{screen_artifact, source_label};
+use crate::commands::rollback::Session;
 use crate::context::AppContext;
 use crate::core::db::InstalledPackage;
 use crate::core::dep_solver::{get_installed_map, parse_version_flexible, resolve_deps};
@@ -145,89 +146,19 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     return Err(blocked);
                 }
 
-                // Install any missing dependencies first
-                for dep in &missing_deps {
-                    tracing::info!(
-                        "  {} new dependency: {}",
-                        "Fetching".cyan(),
-                        dep.name.cyan()
-                    );
-                    tracing::debug!(
-                        "{}: fetching dependency {} v{} from {}",
-                        pkg.name,
-                        dep.name,
-                        dep.version,
-                        dep.download_url
-                            .as_deref()
-                            .unwrap_or("<resolved by source>")
-                    );
-
-                    let downloaded = ctx.downloader.download_and_extract(dep, !quiet)?;
-
-                    tracing::debug!(
-                        "{}: dependency extracted to {}",
-                        dep.name,
-                        downloaded.extract_dir.display()
-                    );
-
-                    screen_artifact(ctx, dep, &downloaded)?;
-
-                    let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-
-                    // A dependency that extracts without an executable is not
-                    // installed, so it must not reach the database either.
-                    let binary_path = match downloaded.binary_path.as_ref() {
-                        Some(path) => path.clone(),
-                        None => return Err(ctx.downloader.no_binary_error(dep, &downloaded)),
-                    };
-                    let bin_path_str = Some(binary_path.to_string_lossy().to_string());
-
-                    ActiveManager::create_symlink(&binary_path, &dep.name)?;
-
-                    ctx.db.insert_package(
-                        dep,
-                        &install_path,
-                        bin_path_str.as_deref(),
-                        None,
-                        false,
-                    )?;
+                // Every step from the first new dependency to recording the
+                // new release is noted in `session`, so a failure anywhere in
+                // between unwinds the new dependencies and puts the old
+                // release's link and roster row back (#59).
+                let mut session = Session::default();
+                if let Err(e) = install_update(ctx, pkg, &remote_pkg, &missing_deps, &mut session) {
+                    session.rollback(ctx);
+                    return Err(e);
                 }
 
-                // U4: Pre-update hook receives both old and new versions
-                let pre_env = [
-                    ("BALLER_NEW_VERSION", remote_pkg.version.as_str()),
-                    ("BALLER_OLD_VERSION", pkg.version.as_str()),
-                ];
-                run_hook(
-                    &HookType::PreUpdate,
-                    &pkg.name,
-                    &remote_pkg.version,
-                    &ctx.config.hooks_dir,
-                    &ctx.config.hooks,
-                    &pre_env,
-                )?;
-
-                tracing::debug!(
-                    "{}: fetching v{} into cache {}",
-                    pkg.name,
-                    remote_pkg.version,
-                    ctx.config.cache_dir.display()
-                );
-
-                let downloaded = ctx.downloader.download_and_extract(&remote_pkg, !quiet)?;
-
-                tracing::debug!(
-                    "{}: extracted to {}",
-                    remote_pkg.name,
-                    downloaded.extract_dir.display()
-                );
-
-                // Referee Phase B runs *before* the old extract directory is
-                // pruned: a rejected upgrade must not also cost the user the
-                // version they already had working.
-                screen_artifact(ctx, &remote_pkg, &downloaded)?;
-
-                // U3: Clean old extracted directory before installing new one
+                // Only now, with the new release linked and recorded, is the
+                // old extract directory pruned: a failed upgrade must not also
+                // cost the user the version they already had working.
                 let old_extract_dir = ctx
                     .config
                     .cache_dir
@@ -238,27 +169,6 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
                     old_extract_dir.display()
                 );
                 let _ = std::fs::remove_dir_all(&old_extract_dir);
-
-                // The old extract dir is already gone; if the new archive holds
-                // no executable there is nothing to link, so fail instead of
-                // recording a version bump the user cannot run.
-                let binary_path = match downloaded.binary_path.as_ref() {
-                    Some(path) => path.clone(),
-                    None => return Err(ctx.downloader.no_binary_error(&remote_pkg, &downloaded)),
-                };
-
-                ActiveManager::create_symlink(&binary_path, &remote_pkg.name)?;
-
-                let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-                let bin_path_str = Some(binary_path.to_string_lossy().to_string());
-
-                ctx.db.insert_package(
-                    &remote_pkg,
-                    &install_path,
-                    bin_path_str.as_deref(),
-                    None,
-                    true,
-                )?;
 
                 // U4: Post-update hook receives both old and new versions
                 let post_env = [
@@ -326,6 +236,130 @@ pub fn execute_update(ctx: &AppContext, opts: &UpdateOptions) -> Result<(), Ball
     } else {
         println!("{} All packages are up-to-date", "OK".green());
     }
+
+    Ok(())
+}
+
+/// Install the new dependencies, then link and record the new release,
+/// noting every step in `session`.
+///
+/// The old release's extract directory is left alone: the caller prunes it
+/// once this returns `Ok`. Returns at the first failure without undoing
+/// anything; the caller rolls the session back.
+fn install_update(
+    ctx: &AppContext,
+    pkg: &InstalledPackage,
+    remote_pkg: &Package,
+    missing_deps: &[&Package],
+    session: &mut Session,
+) -> Result<(), BallError> {
+    let quiet = ctx.flags.is_quiet();
+
+    // Install any missing dependencies first
+    for dep in missing_deps {
+        tracing::info!(
+            "  {} new dependency: {}",
+            "Fetching".cyan(),
+            dep.name.cyan()
+        );
+        tracing::debug!(
+            "{}: fetching dependency {} v{} from {}",
+            pkg.name,
+            dep.name,
+            dep.version,
+            dep.download_url
+                .as_deref()
+                .unwrap_or("<resolved by source>")
+        );
+
+        session.begin(&ctx.db, dep)?;
+        let downloaded = ctx.downloader.download_and_extract(dep, !quiet)?;
+        session.downloaded(&downloaded);
+
+        tracing::debug!(
+            "{}: dependency extracted to {}",
+            dep.name,
+            downloaded.extract_dir.display()
+        );
+
+        screen_artifact(ctx, dep, &downloaded)?;
+
+        let install_path = downloaded.extract_dir.to_string_lossy().to_string();
+
+        // A dependency that extracts without an executable is not
+        // installed, so it must not reach the database either.
+        let binary_path = match downloaded.binary_path.as_ref() {
+            Some(path) => path.clone(),
+            None => return Err(ctx.downloader.no_binary_error(dep, &downloaded)),
+        };
+        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+        ActiveManager::create_symlink(&binary_path, &dep.name)?;
+        session.linked();
+
+        ctx.db
+            .insert_package(dep, &install_path, bin_path_str.as_deref(), None, false)?;
+        session.recorded();
+    }
+
+    // U4: Pre-update hook receives both old and new versions
+    let pre_env = [
+        ("BALLER_NEW_VERSION", remote_pkg.version.as_str()),
+        ("BALLER_OLD_VERSION", pkg.version.as_str()),
+    ];
+    run_hook(
+        &HookType::PreUpdate,
+        &pkg.name,
+        &remote_pkg.version,
+        &ctx.config.hooks_dir,
+        &ctx.config.hooks,
+        &pre_env,
+    )?;
+
+    tracing::debug!(
+        "{}: fetching v{} into cache {}",
+        pkg.name,
+        remote_pkg.version,
+        ctx.config.cache_dir.display()
+    );
+
+    // The session snapshots the installed row here, so a rollback puts the
+    // old release back rather than removing the package.
+    session.begin(&ctx.db, remote_pkg)?;
+    let downloaded = ctx.downloader.download_and_extract(remote_pkg, !quiet)?;
+    session.downloaded(&downloaded);
+
+    tracing::debug!(
+        "{}: extracted to {}",
+        remote_pkg.name,
+        downloaded.extract_dir.display()
+    );
+
+    // Referee Phase B: a rejected upgrade is purged before anything is
+    // linked, and the old release is still untouched.
+    screen_artifact(ctx, remote_pkg, &downloaded)?;
+
+    // If the new archive holds no executable there is nothing to link, so
+    // fail instead of recording a version bump the user cannot run.
+    let binary_path = match downloaded.binary_path.as_ref() {
+        Some(path) => path.clone(),
+        None => return Err(ctx.downloader.no_binary_error(remote_pkg, &downloaded)),
+    };
+
+    ActiveManager::create_symlink(&binary_path, &remote_pkg.name)?;
+    session.linked();
+
+    let install_path = downloaded.extract_dir.to_string_lossy().to_string();
+    let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+    ctx.db.insert_package(
+        remote_pkg,
+        &install_path,
+        bin_path_str.as_deref(),
+        None,
+        true,
+    )?;
+    session.recorded();
 
     Ok(())
 }

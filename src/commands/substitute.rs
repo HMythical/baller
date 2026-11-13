@@ -1,10 +1,13 @@
 use colored::Colorize;
 use serde_json::json;
+use std::path::Path;
 
 use crate::commands::draft::screen_artifact;
+use crate::commands::rollback::Session;
 use crate::context::AppContext;
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::hooks::{run_hook, HookType};
+use crate::core::package::Package;
 use crate::core::registry::ensure_installable;
 use crate::error::error::BallError;
 use crate::platform::common::PlatformManager;
@@ -114,55 +117,16 @@ pub fn execute_substitute(
         )?;
     }
 
-    // Install all resolved packages (deps first, then root — already ordered by topological sort)
-    let mut new_installed = None;
-    for pkg_to_install in &packages {
-        let downloaded = ctx
-            .downloader
-            .download_and_extract(pkg_to_install, !quiet)?;
+    // Every step of the replacement is noted in `session`. Until the old
+    // package is off the roster, any failure unwinds the whole replacement —
+    // including dependencies the user already had, which go back to the
+    // version they were at — so a failed substitution leaves the roster as
+    // it found it (#59).
+    let mut session = Session::default();
 
-        screen_artifact(ctx, pkg_to_install, &downloaded)?;
-
-        let install_path = downloaded.extract_dir.to_string_lossy().to_string();
-
-        // A replacement with no executable is not a replacement: fail before the
-        // old package is ejected, rather than recording an unusable roster entry.
-        let binary_path = match downloaded.binary_path.as_ref() {
-            Some(path) => path.clone(),
-            None => return Err(ctx.downloader.no_binary_error(pkg_to_install, &downloaded)),
-        };
-        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
-
-        ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
-
-        let is_root = pkg_to_install.name == pkg.name;
-        ctx.db.insert_package(
-            pkg_to_install,
-            &install_path,
-            bin_path_str.as_deref(),
-            None,
-            is_root,
-        )?;
-
-        // S2: Run post-install hooks
-        let bin_path_ref = bin_path_str.as_deref().unwrap_or("");
-        let post_env = [
-            ("BALLER_INSTALL_PATH", install_path.as_str()),
-            ("BALLER_BIN_PATH", bin_path_ref),
-        ];
-        run_hook(
-            &HookType::PostInstall,
-            &pkg_to_install.name,
-            &pkg_to_install.version,
-            &ctx.config.hooks_dir,
-            &ctx.config.hooks,
-            &post_env,
-        )?;
-
-        // Track the newest root package for rollback info
-        if pkg_to_install.name == pkg.name {
-            new_installed = Some((install_path, bin_path_str));
-        }
+    if let Err(e) = install_replacement(ctx, &pkg, &packages, &mut session) {
+        session.rollback(ctx);
+        return Err(e);
     }
 
     if opts.keep_old {
@@ -172,30 +136,9 @@ pub fn execute_substitute(
             old_package.cyan()
         );
     } else {
-        // Now remove the old package
-        ActiveManager::remove_symlink(old_package)?;
-        match ctx.db.remove_package(old_package) {
-            Ok(_) => {}
-            Err(BallError::PackageNotFound(_)) => {
-                tracing::info!(
-                    "{} '{}' was not in the roster",
-                    "Note".yellow(),
-                    old_package.cyan()
-                );
-            }
-            Err(e) => {
-                // S3: Rollback on failure — remove the newly installed packages
-                if let Some((ref install_path, ref _bin_path)) = new_installed {
-                    let _ = ctx.db.remove_package(&pkg.name);
-                    let _ = std::fs::remove_dir_all(install_path);
-                    tracing::warn!(
-                        "{} Rolled back substitution due to error: {}",
-                        "Warning".red(),
-                        e
-                    );
-                }
-                return Err(e);
-            }
+        if let Err(e) = remove_old(ctx, old_package) {
+            session.rollback(ctx);
+            return Err(e);
         }
 
         // S2: Run post-eject hook for old package
@@ -228,6 +171,106 @@ pub fn execute_substitute(
         new_package.cyan()
     );
     Ok(())
+}
+
+/// Install every resolved package (deps first, then the root — already in
+/// topological order), noting each step in `session`.
+///
+/// Returns at the first failure without undoing anything; the caller rolls
+/// the session back.
+fn install_replacement(
+    ctx: &AppContext,
+    root: &Package,
+    packages: &[Package],
+    session: &mut Session,
+) -> Result<(), BallError> {
+    let quiet = ctx.flags.is_quiet();
+
+    for pkg_to_install in packages {
+        session.begin(&ctx.db, pkg_to_install)?;
+
+        let downloaded = ctx
+            .downloader
+            .download_and_extract(pkg_to_install, !quiet)?;
+        session.downloaded(&downloaded);
+
+        screen_artifact(ctx, pkg_to_install, &downloaded)?;
+
+        let install_path = downloaded.extract_dir.to_string_lossy().to_string();
+
+        // A replacement with no executable is not a replacement: fail before the
+        // old package is ejected, rather than recording an unusable roster entry.
+        let binary_path = match downloaded.binary_path.as_ref() {
+            Some(path) => path.clone(),
+            None => return Err(ctx.downloader.no_binary_error(pkg_to_install, &downloaded)),
+        };
+        let bin_path_str = Some(binary_path.to_string_lossy().to_string());
+
+        ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
+        session.linked();
+
+        let is_root = pkg_to_install.name == root.name;
+        ctx.db.insert_package(
+            pkg_to_install,
+            &install_path,
+            bin_path_str.as_deref(),
+            None,
+            is_root,
+        )?;
+        session.recorded();
+
+        // S2: Run post-install hooks
+        let bin_path_ref = bin_path_str.as_deref().unwrap_or("");
+        let post_env = [
+            ("BALLER_INSTALL_PATH", install_path.as_str()),
+            ("BALLER_BIN_PATH", bin_path_ref),
+        ];
+        run_hook(
+            &HookType::PostInstall,
+            &pkg_to_install.name,
+            &pkg_to_install.version,
+            &ctx.config.hooks_dir,
+            &ctx.config.hooks,
+            &post_env,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Unlink the old package and take it off the roster.
+///
+/// The replacement is already in place, so a failure here fails the
+/// substitution and the caller rolls the replacement back. The old link is
+/// removed first, so if the roster then cannot be changed the link is put
+/// back: the old package must come out of a failed substitution as it went in.
+fn remove_old(ctx: &AppContext, old_package: &str) -> Result<(), BallError> {
+    let old_bin = match ctx.db.get_package(old_package) {
+        Ok(row) => row.bin_path,
+        Err(BallError::PackageNotFound(_)) => None,
+        Err(e) => return Err(e),
+    };
+
+    ActiveManager::remove_symlink(old_package)?;
+    match ctx.db.remove_package(old_package) {
+        Ok(_) => Ok(()),
+        Err(BallError::PackageNotFound(_)) => {
+            tracing::info!(
+                "{} '{}' was not in the roster",
+                "Note".yellow(),
+                old_package.cyan()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(bin) = old_bin {
+                if let Err(link_err) = ActiveManager::create_symlink(Path::new(&bin), old_package) {
+                    tracing::debug!("{}: could not restore its link: {}", old_package, link_err);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// `--dry-run`: describe the swap without installing or removing anything

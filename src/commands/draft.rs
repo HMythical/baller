@@ -1,7 +1,9 @@
 use colored::Colorize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
 
+use crate::commands::rollback::Session;
 use crate::context::{effective_source_order, AppContext};
 use crate::core::dep_solver::{get_installed_map, resolve_deps_with_root};
 use crate::core::downloader::DownloadedPackage;
@@ -81,8 +83,9 @@ pub fn execute_draft(
 
     // Every package this draft would install — the root and each dependency
     // the chain resolved — must be able to run on this host. Gated before the
-    // dry-run report and before the install loop, which has no rollback, so a
-    // mismatch deep in the graph cannot leave earlier packages installed.
+    // dry-run report and before the install loop, so a mismatch deep in the
+    // graph is reported as a plan that cannot work rather than as a failure
+    // the loop has to roll back.
     for candidate in &result_packages {
         if !installed.contains_key(&candidate.name) || opts.force {
             ensure_installable(candidate)?;
@@ -99,10 +102,11 @@ pub fn execute_draft(
     }
 
     // Referee Phase A: the whole plan is checked before any of it is
-    // installed. The loop below has no rollback — `session_packages` is
-    // tracked for reporting, not for undoing — so blocking here is the only
-    // place a block can be atomic. It also runs before the PreInstall hook, so
-    // a package Referee rejected never gets to run code of its own.
+    // installed. The loop below rolls back its own links and roster rows on a
+    // failure, but not what a system package manager, cargo or a hook already
+    // did, so blocking here is the only place a block is fully atomic. It also
+    // runs before the PreInstall hook, so a package Referee rejected never
+    // gets to run code of its own.
     let gate = ctx.referee.gate(&ctx.db, &result_packages)?;
     gate.report(quiet);
 
@@ -114,11 +118,56 @@ pub fn execute_draft(
         return Err(blocked);
     }
 
-    // D1: Track packages installed in this session for rollback
-    let mut session_packages: Vec<String> = Vec::new();
+    // Every step the loop takes is noted in `session`, so a failure partway
+    // through the plan unwinds the packages already installed instead of
+    // leaving a partial set behind (#59).
+    let mut session = Session::default();
     let mut skipped: Vec<String> = Vec::new();
 
-    for pkg_to_install in &result_packages {
+    if let Err(e) = install_plan(
+        ctx,
+        &pkg,
+        &result_packages,
+        opts,
+        &mut installed,
+        &mut session,
+        &mut skipped,
+    ) {
+        session.rollback(ctx);
+        return Err(e);
+    }
+
+    if ctx.flags.json {
+        return print_json(&json!({
+            "command": "draft",
+            "package": pkg.name,
+            "version": pkg.version,
+            "source": source_label(&pkg.source),
+            "installed": session.installed(),
+            "skipped": skipped,
+            "referee": gate.to_json(),
+        }));
+    }
+
+    Ok(())
+}
+
+/// Install each package of the plan in order, noting every step in `session`.
+///
+/// Returns at the first failure without undoing anything; the caller rolls
+/// the session back.
+fn install_plan(
+    ctx: &AppContext,
+    root: &Package,
+    plan: &[Package],
+    opts: &DraftOptions,
+    installed: &mut HashMap<String, String>,
+    session: &mut Session,
+    skipped: &mut Vec<String>,
+) -> Result<(), BallError> {
+    let quiet = ctx.flags.is_quiet();
+
+    for pkg_to_install in plan {
         if installed.contains_key(&pkg_to_install.name) && !opts.force {
             tracing::info!(
                 "{} {} already installed",
@@ -139,16 +188,18 @@ pub fn execute_draft(
             &[],
         )?;
 
+        session.begin(&ctx.db, pkg_to_install)?;
+
         // System packages are installed via the native package manager,
         // not downloaded/archived. Record them in the DB and continue.
         if let PackageSource::System { manager } = &pkg_to_install.source {
             tracing::info!("{} installing via {}...", "System".green(), manager.cyan());
             install_system_package(manager, &pkg_to_install.name)?;
 
-            let is_root = pkg_to_install.name == pkg.name;
+            let is_root = pkg_to_install.name == root.name;
             ctx.db
                 .insert_package(pkg_to_install, "", None, None, is_root)?;
-            session_packages.push(pkg_to_install.name.clone());
+            session.recorded();
             installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
 
             run_hook(
@@ -180,10 +231,10 @@ pub fn execute_draft(
             );
             install_cargo_package(crate_name)?;
 
-            let is_root = pkg_to_install.name == pkg.name;
+            let is_root = pkg_to_install.name == root.name;
             ctx.db
                 .insert_package(pkg_to_install, "", None, None, is_root)?;
-            session_packages.push(pkg_to_install.name.clone());
+            session.recorded();
             installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
 
             run_hook(
@@ -218,6 +269,7 @@ pub fn execute_draft(
         let downloaded = ctx
             .downloader
             .download_and_extract(pkg_to_install, !quiet)?;
+        session.downloaded(&downloaded);
 
         tracing::debug!(
             "{}: extracted to {} (binary: {})",
@@ -246,6 +298,7 @@ pub fn execute_draft(
         let bin_path_str = Some(binary_path.to_string_lossy().to_string());
 
         ActiveManager::create_symlink(&binary_path, &pkg_to_install.name)?;
+        session.linked();
         tracing::info!(
             "{} symlinked to {}",
             "Linked".green(),
@@ -253,7 +306,7 @@ pub fn execute_draft(
         );
 
         // Pass user_installed=true for root packages, false for deps
-        let is_root = pkg_to_install.name == pkg.name;
+        let is_root = pkg_to_install.name == root.name;
         ctx.db.insert_package(
             pkg_to_install,
             &install_path,
@@ -261,8 +314,7 @@ pub fn execute_draft(
             None,
             is_root,
         )?;
-
-        session_packages.push(pkg_to_install.name.clone());
+        session.recorded();
 
         // D3: Update the installed map so subsequent packages see this one
         installed.insert(pkg_to_install.name.clone(), pkg_to_install.version.clone());
@@ -287,18 +339,6 @@ pub fn execute_draft(
             pkg_to_install.name.cyan(),
             pkg_to_install.version.yellow()
         );
-    }
-
-    if ctx.flags.json {
-        return print_json(&json!({
-            "command": "draft",
-            "package": pkg.name,
-            "version": pkg.version,
-            "source": source_label(&pkg.source),
-            "installed": session_packages,
-            "skipped": skipped,
-            "referee": gate.to_json(),
-        }));
     }
 
     Ok(())

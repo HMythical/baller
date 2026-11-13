@@ -5,6 +5,7 @@ pub mod external;
 pub mod freeze;
 pub mod inject;
 pub mod referee;
+pub(crate) mod rollback;
 pub mod roster;
 pub mod substitute;
 pub mod sweep;

@@ -105,6 +105,12 @@ instead of reporting a plan that cannot work — see
 [error-handling.md](error-handling.md#github-source-asset-errors). `-v` logs
 the chosen asset's file name alongside the URL.
 
+If any step of the install fails partway through the plan — a download, a
+missing binary, a `pre_install` hook vetoing a later package — the packages
+this run already installed are rolled back before the error is reported, and a
+package `--force` reinstalled goes back to the version it was at. See
+[error-handling.md](error-handling.md#rollback-on-partial-failure).
+
 ### Installation Modes
 
 The `draft` command follows one of four code paths depending on the package
@@ -338,6 +344,12 @@ If the replacement extracts without an executable, the substitution fails with
 `NoBinaryFound` **before** the old package is ejected, so a broken replacement
 cannot cost you a working package.
 
+Any failure before the old package is off the roster rolls the whole
+replacement back: packages it installed fresh are removed, and dependencies you
+already had (which `substitute` re-fetches) go back to the version they were
+at. If the old package's roster entry cannot be removed, its link is put back
+too, so it comes out of a failed substitution exactly as it went in.
+
 **Example:**
 ```
 $ baller substitute ripgrep hound
@@ -420,7 +432,11 @@ not just strict semver. Falls back to string comparison when both versions
 cannot be parsed.
 
 New dependencies introduced by the updated version are automatically installed.
-Old extracted cache directories are cleaned before the new version is installed.
+The old version's extracted cache directory is pruned only once the new version
+is linked and recorded. If anything fails before that — a new dependency, the
+`pre_update` hook, the new download — the new dependencies are rolled back and
+the old version keeps its link, roster entry and files, and `update` stops with
+the error.
 
 Both `BALLER_OLD_VERSION` and `BALLER_NEW_VERSION` environment variables are
 available in pre-update and post-update hooks.

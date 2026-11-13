@@ -20,6 +20,7 @@ baller/
 │   │   ├── freeze.rs        # Pin/unpin packages
 │   │   ├── substitute.rs    # Swap packages
 │   │   ├── update.rs        # Update non-frozen packages
+│   │   ├── rollback.rs      # Undo a failed draft/substitute/update
 │   │   ├── sweep.rs         # Clean cache
 │   │   ├── referee/         # referee group: audit, check, scan, cache, config, sbom
 │   │   └── build.rs         # Assemble a package from a local manifest
@@ -298,9 +299,19 @@ The modules live in `src/security/` and are mapped in
 ## Error Handling and Rollback
 
 ### Partial Failure Rollback
-Commands that install multiple packages (`draft`, `substitute`) track packages
-installed during the current session. If any package fails to install, all
-packages from the session are rolled back (symlink removed, DB entry deleted).
+`draft`, `substitute` and `update` install a plan as separate persisted steps
+(extract, link, record) with no transaction around them, so each notes every
+step in a `commands::rollback::Session` as it goes. On a failure the session is
+unwound newest package first, then the original error is returned. A package
+new to the run is unlinked, taken off the roster and purged from the cache
+(extract dir and archive). A package the run found already installed — a
+`draft --force` reinstall, a dependency `substitute` re-fetched, `update`'s
+root — gets its snapshotted roster row and dependency rows written back and
+its link pointed at its old binary again. `update` prunes the old release's
+extract dir only after the new one is linked and recorded, so that binary is
+always still there to go back to. Rollback is best-effort (a step that cannot
+be undone is logged at `--verbose`) and runs no hooks; what a system package
+manager or `cargo install` did is not undone.
 
 ### Orphan Dependency Cleanup
 When ejecting a package, BALLER checks for orphaned dependencies — packages

@@ -262,8 +262,22 @@ pub fn find_binary_in_dir(dir: &Path, pkg_name: &str) -> Option<PathBuf> {
         }
     }
 
+    if let Some(subdir) = single_subdir(dir) {
+        return find_binary_in_dir(&subdir, pkg_name);
+    }
+
     let executables = find_executables(dir);
     executables.into_iter().next()
+}
+
+/// The directory a release archive wraps its contents in, when `dir` holds nothing else.
+fn single_subdir(dir: &Path) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(dir).ok()?.flatten();
+    let entry = entries.next()?;
+    if entries.next().is_some() || !entry.file_type().ok()?.is_dir() {
+        return None;
+    }
+    Some(entry.path())
 }
 
 #[cfg(test)]
@@ -526,6 +540,27 @@ mod tests {
         }
         let result = find_binary_in_dir(&dir, "myapp");
         assert!(result.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_find_binary_in_dir_wrapper_subdir() {
+        let dir = std::env::temp_dir().join("baller_test_findbin_wrapper");
+        let _ = std::fs::remove_dir_all(&dir);
+        let wrapper_dir = dir.join("myapp-v1.0.0-x86_64-unknown-linux-gnu");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        std::fs::write(wrapper_dir.join("myapp"), b"binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                wrapper_dir.join("myapp"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let result = find_binary_in_dir(&dir, "myapp");
+        assert_eq!(result, Some(wrapper_dir.join("myapp")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
